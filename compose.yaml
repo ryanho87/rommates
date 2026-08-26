@@ -1,0 +1,22 @@
+services:
+  rom-manager:
+    build: .
+    image: rom-manager:latest
+    container_name: rom-manager
+    restart: unless-stopped
+    user: "${PUID:-1000}:${PGID:-1000}"
+    ports:
+      - "${ROM_MANAGER_BIND:-0.0.0.0}:${ROM_MANAGER_PORT:-8080}:8080"
+    environment:
+      ROM_LIBRARY_ROOT: /emulation/roms
+      ROM_DEVICES_ROOT: /emulation/devices
+      ROM_TRASH_ROOT: /emulation/.rommanager-trash
+      ROM_DATABASE_PATH: /data/rommanager.db
+      ROM_SCAN_ON_START: "true"
+      ROM_REQUIRE_EXISTING_ROOTS: "true"
+      ROM_ACCESS_TOKEN: "${ROM_ACCESS_TOKEN:?Set ROM_ACCESS_TOKEN in .env}"
+    volumes:
+      - ./data:/data
+      - "${EMULATION_ROOT:?Set EMULATION_ROOT in .env}:/emulation"
+    security_opt:
+      - no-new-privileges:true

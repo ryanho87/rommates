@@ -1,0 +1,1 @@
+"""ROM Manager application package."""

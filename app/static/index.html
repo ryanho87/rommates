@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="color-scheme" content="light dark">
+    <title>ROM Manager</title>
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content">Skip to library</a>
+    <div class="shell">
+      <aside class="sidebar" aria-label="Primary navigation">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true">R</span>
+          <span>ROM Manager</span>
+        </div>
+        <nav id="navigation">
+          <button class="nav-item active" data-view="library">
+            <span>Library</span><span class="nav-count" id="nav-games">0</span>
+          </button>
+          <button class="nav-item" data-view="duplicates">
+            <span>Duplicates</span><span class="nav-count" id="nav-duplicates">0</span>
+          </button>
+          <button class="nav-item" data-view="devices">
+            <span>Devices</span><span class="nav-count" id="nav-devices">0</span>
+          </button>
+          <button class="nav-item" data-view="jobs"><span>Jobs</span></button>
+          <button class="nav-item" data-view="trash">
+            <span>Trash</span><span class="nav-count" id="nav-trash">0</span>
+          </button>
+        </nav>
+        <div class="sidebar-foot">
+          <div class="root-state">
+            <span>Library root</span>
+            <code id="library-root">/roms</code>
+          </div>
+          <button class="button secondary full" id="scan-button">Scan library</button>
+        </div>
+      </aside>
+
+      <main id="main-content" tabindex="-1">
+        <header class="topbar">
+          <div>
+            <h1 id="page-title">Library</h1>
+            <p id="page-subtitle">Browse and clean the canonical collection.</p>
+          </div>
+          <div class="topbar-actions">
+            <span class="job-pill hidden" id="job-pill" role="status"></span>
+            <button class="button secondary" id="refresh-button">Refresh</button>
+          </div>
+        </header>
+
+        <section id="view"></section>
+      </main>
+    </div>
+
+    <dialog id="confirm-dialog" aria-labelledby="dialog-title">
+      <form method="dialog">
+        <div class="dialog-head">
+          <h2 id="dialog-title">Confirm action</h2>
+          <button class="icon-button" value="cancel" aria-label="Close">×</button>
+        </div>
+        <div id="dialog-content"></div>
+        <div class="dialog-actions">
+          <button class="button secondary" id="dialog-cancel" value="cancel">Cancel</button>
+          <button class="button danger" id="dialog-confirm" value="confirm">Move to trash</button>
+        </div>
+      </form>
+    </dialog>
+
+    <div class="toast-region" id="toasts" aria-live="polite" aria-atomic="true"></div>
+    <script src="/static/app.js" defer></script>
+  </body>
+</html>
