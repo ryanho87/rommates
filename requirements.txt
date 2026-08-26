@@ -1,2 +1,4 @@
+# Runtime dependencies for the Docker image.
+# Kept in sync with [project.dependencies] in pyproject.toml — CI fails if they drift.
 fastapi==0.116.1
 uvicorn[standard]==0.35.0

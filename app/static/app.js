@@ -8,13 +8,18 @@ const state = {
   duplicate: "all",
   offset: 0,
   limit: 200,
-  selectedRows: new Set(),
+  // id -> {display_name, platform}. A map rather than a set so the bulk bar and the
+  // confirmation dialog can name selections that current filters have scrolled away.
+  selectedRows: new Map(),
   editingId: null,
   assigningId: null,
   assignmentDevices: [],
   deviceId: null,
   refreshTimer: null,
   gamesController: null,
+  // Job ids already surfaced to the user, so the poller and an awaited job do not
+  // both report the same outcome.
+  reportedJobs: new Set(),
 };
 
 const view = document.querySelector("#view");
@@ -27,6 +32,40 @@ const dialogTitle = document.querySelector("#dialog-title");
 const dialogContent = document.querySelector("#dialog-content");
 const dialogConfirm = document.querySelector("#dialog-confirm");
 const dialogCancel = document.querySelector("#dialog-cancel");
+
+// Views re-render by replacing their whole subtree, which destroys the element the
+// user is typing into. Capturing the focused control and its caret keeps search and
+// inline rename usable across the debounced re-render.
+function captureFocus() {
+  const active = document.activeElement;
+  if (!active || !active.id || !view.contains(active)) return null;
+  const snapshot = { id: active.id };
+  if (typeof active.selectionStart === "number") {
+    snapshot.start = active.selectionStart;
+    snapshot.end = active.selectionEnd;
+  }
+  return snapshot;
+}
+
+function restoreFocus(snapshot) {
+  if (!snapshot) return;
+  const element = document.getElementById(snapshot.id);
+  if (!element) return;
+  element.focus({ preventScroll: true });
+  if (typeof snapshot.start === "number" && typeof element.setSelectionRange === "function") {
+    try {
+      element.setSelectionRange(snapshot.start, snapshot.end);
+    } catch {
+      /* selectionRange is unsupported on some input types; focus alone is enough. */
+    }
+  }
+}
+
+function setViewHtml(html) {
+  const snapshot = captureFocus();
+  view.innerHTML = html;
+  restoreFocus(snapshot);
+}
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -54,7 +93,12 @@ function toast(message, type = "success") {
 }
 
 async function api(path, options = {}) {
-  const token = localStorage.getItem("rom-manager-token");
+  const legacyToken = localStorage.getItem("rom-manager-token");
+  const token = localStorage.getItem("rommates-token") || legacyToken;
+  if (legacyToken && !localStorage.getItem("rommates-token")) {
+    localStorage.setItem("rommates-token", legacyToken);
+    localStorage.removeItem("rom-manager-token");
+  }
   const response = await fetch(path, {
     ...options,
     headers: {
@@ -73,12 +117,30 @@ async function api(path, options = {}) {
   return body;
 }
 
+const JOB_LABELS = {
+  scan: "Scanning changed files…",
+  rename: "Renaming bundle…",
+  delete: "Moving to trash…",
+  device_apply: "Applying device changes…",
+  restore: "Restoring from trash…",
+  purge: "Deleting permanently…",
+};
+
+const JOB_POLL_INTERVAL = 700;
+const JOB_POLL_TIMEOUT = 30 * 60 * 1000;
+
 async function waitForJob(jobId) {
+  const deadline = Date.now() + JOB_POLL_TIMEOUT;
   for (;;) {
     const job = await api(`/api/jobs/${jobId}`);
     if (job.status === "complete") return job.result || {};
     if (job.status === "failed") throw new Error(job.detail || "The background job failed");
-    await new Promise((resolve) => setTimeout(resolve, 700));
+    if (Date.now() > deadline) {
+      throw new Error(
+        "Stopped waiting for this job after 30 minutes. It may still be running — check the Jobs view.",
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, JOB_POLL_INTERVAL));
   }
 }
 
@@ -97,11 +159,14 @@ async function refreshStatus() {
   document.querySelector("#nav-trash").textContent = state.status.trash.toLocaleString();
   document.querySelector("#library-root").textContent = state.status.roots.library;
   const pill = document.querySelector("#job-pill");
-  const running = state.status.job && ["queued", "running"].includes(state.status.job.status);
+  const job = state.status.job;
+  const running = job && ["queued", "running"].includes(job.status);
+  const scanning = running && job.kind === "scan";
   pill.classList.toggle("hidden", !running);
-  pill.textContent = running ? "Scanning changed files…" : "";
-  scanButton.disabled = running;
-  scanButton.textContent = running ? "Scanning…" : "Scan library";
+  pill.textContent = running ? JOB_LABELS[job.kind] || "Working…" : "";
+  // Only a scan conflicts with starting another scan; other jobs leave the button usable.
+  scanButton.disabled = scanning;
+  scanButton.textContent = scanning ? "Scanning…" : "Scan library";
   if (running) scheduleStatusRefresh();
 }
 
@@ -113,7 +178,7 @@ function scheduleStatusRefresh() {
       await refreshStatus();
       const isRunning = state.status?.job && ["queued", "running"].includes(state.status.job.status);
       if (wasRunning && !isRunning) {
-        toast(state.status.job.status === "complete" ? state.status.job.detail : `Scan failed: ${state.status.job.detail}`, state.status.job.status === "complete" ? "success" : "error");
+        await reportJobOutcome(state.status.job);
         await loadReferenceData();
         await renderCurrentView();
       }
@@ -277,10 +342,56 @@ function gamesTable(data, deviceMode = false) {
     <div class="pager"><span>Showing ${data.offset + 1}–${end} of ${data.total.toLocaleString()}</span><div class="bulk-actions"><button class="button secondary small" data-page="previous" ${data.offset === 0 ? "disabled" : ""}>Previous</button><button class="button secondary small" data-page="next" ${end >= data.total ? "disabled" : ""}>Next</button></div></div>`;
 }
 
+function bulkBarHtml() {
+  const count = state.selectedRows.size;
+  if (!count) return "";
+  // Selections survive filter changes, so say plainly when some are no longer on screen.
+  const visible = view.querySelectorAll("[data-row-select]");
+  let offScreen = 0;
+  for (const id of state.selectedRows.keys()) {
+    if (![...visible].some((box) => Number(box.dataset.rowSelect) === id)) offScreen += 1;
+  }
+  const hint = offScreen
+    ? `<span class="meta"> · ${offScreen} not shown by the current filters</span>`
+    : `<span class="meta"> for library cleanup</span>`;
+  return `<div class="bulk-bar"><div><strong>${count} selected</strong>${hint}</div><div class="bulk-actions"><button class="button secondary" data-clear-selection>Clear selection</button><button class="button danger" data-delete-selected>Move ${count} to trash</button></div></div>`;
+}
+
+// Row selection is client-side state, so refresh just this strip instead of refetching
+// and rebuilding the whole table on every checkbox toggle.
+function renderBulkBar() {
+  const slot = view.querySelector("#bulk-bar-slot");
+  if (!slot) return;
+  slot.innerHTML = bulkBarHtml();
+  bindBulkBarEvents();
+}
+
+function bindBulkBarEvents() {
+  view.querySelector("[data-clear-selection]")?.addEventListener("click", () => {
+    state.selectedRows.clear();
+    view.querySelectorAll("[data-row-select]").forEach((box) => { box.checked = false; });
+    const selectAll = view.querySelector("[data-select-all]");
+    if (selectAll) { selectAll.checked = false; selectAll.indeterminate = false; }
+    renderBulkBar();
+  });
+  view.querySelector("[data-delete-selected]")?.addEventListener("click", deleteSelected);
+}
+
+function syncSelectAll() {
+  const selectAll = view.querySelector("[data-select-all]");
+  if (!selectAll) return;
+  const boxes = [...view.querySelectorAll("[data-row-select]")];
+  const checked = boxes.filter((box) => box.checked).length;
+  selectAll.checked = boxes.length > 0 && checked === boxes.length;
+  selectAll.indeterminate = checked > 0 && checked < boxes.length;
+}
+
 async function renderLibrary() {
   setHeading("Library", "Browse, rename, and clean the canonical collection.");
   const data = await getGames();
-  view.innerHTML = `${libraryToolbar(true)}${gamesTable(data)}${state.selectedRows.size ? `<div class="bulk-bar"><div><strong>${state.selectedRows.size} selected</strong><span class="meta"> for library cleanup</span></div><div class="bulk-actions"><button class="button secondary" data-clear-selection>Clear selection</button><button class="button danger" data-delete-selected>Move ${state.selectedRows.size} to trash</button></div></div>` : ""}`;
+  setViewHtml(`${libraryToolbar(true)}${gamesTable(data)}<div id="bulk-bar-slot"></div>`);
+  renderBulkBar();
+  syncSelectAll();
   bindFilters(renderLibrary);
   bindGameEvents(data, false);
 }
@@ -289,21 +400,36 @@ async function renderDuplicates() {
   setHeading("Duplicates", "Exact hashes first, filename matches for manual review.");
   if (state.duplicate === "all" || state.duplicate === "unique") state.duplicate = "exact";
   const data = await getGames();
-  view.innerHTML = `${libraryToolbar(true)}<div class="section-heading"><div><h2>${state.duplicate === "possible" ? "Possible duplicates" : "Exact duplicates"}</h2><p>${state.duplicate === "possible" ? "Names normalize to the same title within a platform. Compare before deleting." : "Bundle content hashes match exactly."}</p></div></div>${gamesTable(data)}`;
+  setViewHtml(`${libraryToolbar(true)}<div class="section-heading"><div><h2>${state.duplicate === "possible" ? "Possible duplicates" : "Exact duplicates"}</h2><p>${state.duplicate === "possible" ? "Names normalize to the same title within a platform. Compare before deleting." : "Bundle content hashes match exactly."}</p></div></div>${gamesTable(data)}<div id="bulk-bar-slot"></div>`);
+  renderBulkBar();
+  syncSelectAll();
   bindFilters(renderDuplicates);
   bindGameEvents(data, false);
 }
 
 function bindGameEvents(data, deviceMode) {
+  const byId = new Map(data.items.map((game) => [game.id, game]));
   view.querySelectorAll("[data-row-select]").forEach((checkbox) => checkbox.addEventListener("change", () => {
     const id = Number(checkbox.dataset.rowSelect);
-    checkbox.checked ? state.selectedRows.add(id) : state.selectedRows.delete(id);
-    renderCurrentView();
+    const game = byId.get(id);
+    if (checkbox.checked) {
+      state.selectedRows.set(id, { display_name: game?.display_name ?? `Game ${id}`, platform: game?.platform ?? "" });
+    } else {
+      state.selectedRows.delete(id);
+    }
+    syncSelectAll();
+    renderBulkBar();
   }));
   if (!deviceMode) {
     view.querySelector("[data-select-all]")?.addEventListener("change", (event) => {
-      data.items.forEach((game) => event.target.checked ? state.selectedRows.add(game.id) : state.selectedRows.delete(game.id));
-      renderCurrentView();
+      const checked = event.target.checked;
+      data.items.forEach((game) => {
+        if (checked) state.selectedRows.set(game.id, { display_name: game.display_name, platform: game.platform });
+        else state.selectedRows.delete(game.id);
+      });
+      view.querySelectorAll("[data-row-select]").forEach((box) => { box.checked = checked; });
+      event.target.indeterminate = false;
+      renderBulkBar();
     });
   }
   view.querySelectorAll("[data-rename]").forEach((button) => button.addEventListener("click", () => {
@@ -383,10 +509,8 @@ function bindGameEvents(data, deviceMode) {
       toast(error.message, "error");
     }
   }));
-  view.querySelector("[data-clear-selection]")?.addEventListener("click", () => { state.selectedRows.clear(); renderCurrentView(); });
-  view.querySelector("[data-delete-selected]")?.addEventListener("click", deleteSelected);
   view.querySelector("[data-clear-filters]")?.addEventListener("click", () => { state.search = ""; state.platform = ""; state.duplicate = state.view === "duplicates" ? "exact" : "all"; renderCurrentView(); });
-  view.querySelector("[data-scan]")?.addEventListener("click", startScan);
+  view.querySelector("[data-scan]")?.addEventListener("click", () => startScan());
   view.querySelectorAll("[data-page]").forEach((button) => button.addEventListener("click", () => {
     state.offset = Math.max(0, state.offset + (button.dataset.page === "next" ? state.limit : -state.limit));
     renderCurrentView();
@@ -415,17 +539,23 @@ async function deleteOne(id, name) {
 }
 
 async function deleteSelected() {
-  const count = state.selectedRows.size;
+  const entries = [...state.selectedRows.entries()];
+  const count = entries.length;
+  // Selections persist across filter and page changes, so name every bundle that is
+  // actually about to be trashed rather than only the ones currently on screen.
+  const names = entries.map(([, game]) => `${game.display_name}${game.platform ? ` (${game.platform})` : ""}`);
+  const preview = names.slice(0, 12).map((name) => `<li>${escapeHtml(name)}</li>`).join("");
+  const overflow = count > 12 ? `<p class="meta">…and ${count - 12} more.</p>` : "";
   const confirmed = await confirmAction({
-    title: `Move ${count} bundles to trash?`,
-    content: `<p class="warning-copy">Each selected game and every file in its bundle will move to recoverable trash. Deployed copies managed by this app will be removed.</p>`,
-    confirmLabel: `Move ${count} bundles to trash`,
+    title: `Move ${count} ${count === 1 ? "bundle" : "bundles"} to trash?`,
+    content: `<p class="warning-copy">Each selected game and every file in its bundle will move to recoverable trash. Deployed copies managed by this app will be removed.</p><ul class="confirm-list">${preview}</ul>${overflow}`,
+    confirmLabel: `Move ${count} ${count === 1 ? "bundle" : "bundles"} to trash`,
     cancelLabel: "Keep selected ROMs",
     danger: true,
   });
   if (!confirmed) return;
   let completed = 0;
-  for (const id of [...state.selectedRows]) {
+  for (const [id] of entries) {
     try { await requestJob(`/api/games/${id}`, { method: "DELETE" }, `Moving bundle ${completed + 1} of ${count}`); completed += 1; }
     catch (error) { toast(`Stopped after ${completed}: ${error.message}`, "error"); break; }
   }
@@ -439,19 +569,19 @@ async function deleteSelected() {
 async function renderDevices() {
   setHeading("Devices", "Choose the desired library for each Syncthing target.");
   if (!state.devices.length) {
-    view.innerHTML = `<div class="empty-state"><div><h2>No device folders found</h2><p>Create a directory such as <code>/devices/retroid/roms</code>, then scan the library. Device folders are discovered automatically.</p><button class="button" data-scan>Scan again</button></div></div>`;
-    view.querySelector("[data-scan]")?.addEventListener("click", startScan);
+    setViewHtml(`<div class="empty-state"><div><h2>No device folders found</h2><p>Create a directory such as <code>/devices/retroid/roms</code>, then scan the library. Device folders are discovered automatically.</p><button class="button" data-scan>Scan again</button></div></div>`);
+    view.querySelector("[data-scan]")?.addEventListener("click", () => startScan());
     return;
   }
   const device = state.devices.find((item) => item.id === Number(state.deviceId)) || state.devices[0];
   state.deviceId = device.id;
   const [data, preview] = await Promise.all([getGames(device.id), api(`/api/devices/${device.id}/preview`)]);
-  view.innerHTML = `
+  setViewHtml(`
     <div class="device-strip">
       <label class="field"><span>Target device</span><select id="device-select">${state.devices.map((item) => `<option value="${item.id}" ${item.id === device.id ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("")}</select></label>
       <div class="device-summary"><span><strong>${preview.games}</strong> games selected</span><span><strong>${preview.additions}</strong> files to add</span><span><strong>${preview.removals}</strong> files to remove</span><button class="button" id="apply-device" ${preview.additions === 0 && preview.removals === 0 ? "disabled" : ""}>Review and apply</button></div>
     </div>
-    ${libraryToolbar(false)}${gamesTable(data, true)}`;
+    ${libraryToolbar(false)}${gamesTable(data, true)}`);
   bindFilters(renderDevices);
   document.querySelector("#device-select").addEventListener("change", (event) => { state.deviceId = Number(event.target.value); renderDevices(); });
   view.querySelectorAll("[data-device-select]").forEach((checkbox) => checkbox.addEventListener("change", async () => {
@@ -496,10 +626,10 @@ async function renderTrash() {
   setHeading("Trash", "Restore bundles or permanently delete them.");
   const items = await api("/api/trash");
   if (!items.length) {
-    view.innerHTML = `<div class="empty-state"><div><h2>Trash is empty</h2><p>Deleted ROM bundles remain recoverable here until you permanently delete them.</p></div></div>`;
+    setViewHtml(`<div class="empty-state"><div><h2>Trash is empty</h2><p>Deleted ROM bundles remain recoverable here until you permanently delete them.</p></div></div>`);
     return;
   }
-  view.innerHTML = `<div class="table-wrap"><table><thead><tr><th>Game</th><th>Platform</th><th>Files</th><th>Deleted</th><th>Actions</th></tr></thead><tbody>${items.map((item) => `<tr><td class="name-cell"><strong>${escapeHtml(item.game_name)}</strong><span class="path-line">${escapeHtml(item.original_relpath)}</span></td><td>${escapeHtml(item.platform)}</td><td class="meta">${item.file_count}</td><td class="meta">${escapeHtml(item.deleted_at)} UTC</td><td><button class="button secondary small" data-restore="${item.id}">Restore</button> <button class="button danger-subtle small" data-purge="${item.id}" data-name="${escapeHtml(item.game_name)}">Delete permanently</button></td></tr>`).join("")}</tbody></table></div>`;
+  setViewHtml(`<div class="table-wrap"><table><thead><tr><th>Game</th><th>Platform</th><th>Files</th><th>Deleted</th><th>Actions</th></tr></thead><tbody>${items.map((item) => `<tr><td class="name-cell"><strong>${escapeHtml(item.game_name)}</strong><span class="path-line">${escapeHtml(item.original_relpath)}</span></td><td>${escapeHtml(item.platform)}</td><td class="meta">${item.file_count}</td><td class="meta">${escapeHtml(item.deleted_at)} UTC</td><td><button class="button secondary small" data-restore="${item.id}">Restore</button> <button class="button danger-subtle small" data-purge="${item.id}" data-name="${escapeHtml(item.game_name)}">Delete permanently</button></td></tr>`).join("")}</tbody></table></div>`);
   view.querySelectorAll("[data-restore]").forEach((button) => button.addEventListener("click", async () => {
     try {
       const result = await requestJob(`/api/trash/${button.dataset.restore}/restore`, { method: "POST" }, "Restore queued");
@@ -523,7 +653,7 @@ async function renderJobs() {
   const [jobs, activity] = await Promise.all([api("/api/jobs"), api("/api/activity")]);
   const jobsHtml = jobs.length ? `<div class="table-wrap"><table><thead><tr><th>Job</th><th>Status</th><th>Detail</th><th>Started</th><th>Finished</th></tr></thead><tbody>${jobs.map((job) => `<tr><td>${escapeHtml(job.kind)}</td><td><span class="badge ${job.status === "failed" ? "exact" : job.status === "complete" ? "unique" : "possible"}">${escapeHtml(job.status)}</span></td><td class="name-cell">${escapeHtml(job.detail)}</td><td class="meta">${escapeHtml(job.created_at)}</td><td class="meta">${escapeHtml(job.completed_at || "In progress")}</td></tr>`).join("")}</tbody></table></div>` : `<div class="empty-state"><div><h2>No jobs yet</h2><p>Library scans will appear here.</p></div></div>`;
   const activityHtml = activity.length ? `<div class="section-heading"><div><h2>Activity</h2><p>Rename, delete, restore, and deployment history.</p></div></div><div class="table-wrap"><table><thead><tr><th>Action</th><th>Detail</th><th>Time</th></tr></thead><tbody>${activity.map((item) => `<tr><td>${escapeHtml(item.action)}</td><td class="name-cell">${escapeHtml(item.detail)}</td><td class="meta">${escapeHtml(item.created_at)} UTC</td></tr>`).join("")}</tbody></table></div>` : "";
-  view.innerHTML = jobsHtml + activityHtml;
+  setViewHtml(jobsHtml + activityHtml);
 }
 
 function confirmAction({ title, content, confirmLabel, cancelLabel = "Cancel", danger }) {
@@ -539,12 +669,68 @@ function confirmAction({ title, content, confirmLabel, cancelLabel = "Cancel", d
   });
 }
 
-async function startScan() {
+async function startScan(confirmPrune = false) {
+  let response;
   try {
-    await api("/api/scan", { method: "POST" });
-    toast("Library scan started");
+    response = await api(`/api/scan${confirmPrune ? "?confirm_prune=true" : ""}`, { method: "POST" });
+    toast(confirmPrune ? "Rescanning and removing missing games" : "Library scan started");
     await refreshStatus();
-  } catch (error) { toast(error.message, "error"); }
+  } catch (error) {
+    toast(error.message, "error");
+    return;
+  }
+  if (response.already_running) return;
+  // Await the job here rather than relying on the status poller: a scan that finishes
+  // before the first poll would otherwise report nothing at all, success or failure.
+  let outcome;
+  try {
+    await waitForJob(response.job_id);
+    outcome = { status: "complete" };
+  } catch (error) {
+    outcome = { status: "failed", detail: error.message };
+  }
+  await reportJobOutcome({ id: response.job_id, kind: "scan", ...outcome });
+  await refreshStatus();
+  await loadReferenceData();
+  await renderCurrentView();
+}
+
+// Both the status poller and a directly awaited job can observe the same completion.
+// Report each job once so a failure cannot raise two dialogs or two toasts.
+async function reportJobOutcome(job) {
+  if (!job || state.reportedJobs.has(job.id)) return;
+  state.reportedJobs.add(job.id);
+  if (state.reportedJobs.size > 200) {
+    state.reportedJobs = new Set([...state.reportedJobs].slice(-100));
+  }
+  if (job.status === "complete") {
+    if (job.detail) toast(job.detail);
+    return;
+  }
+  if (isPruneGuardFailure(job.detail)) {
+    await offerPruneConfirmation(job.detail);
+    return;
+  }
+  const label = (JOB_LABELS[job.kind] || "Job").replace(/[….]+$/, "");
+  toast(`${label} failed: ${job.detail}`, "error");
+}
+
+function isPruneGuardFailure(detail) {
+  return typeof detail === "string" && detail.startsWith("Scan would remove ");
+}
+
+// The server refuses a scan that would delete most of the catalog, because that
+// usually means the library volume is missing rather than the ROMs. Surface the
+// reason and require an explicit confirmation before pruning for real.
+async function offerPruneConfirmation(detail) {
+  const confirmed = await confirmAction({
+    title: "Scan stopped to protect your catalog",
+    content: `<p class="warning-copy">${escapeHtml(detail)}</p><p>Only confirm if you deliberately removed those files. Confirming deletes the catalog entries and every device selection that depends on them.</p>`,
+    confirmLabel: "Confirm removal and rescan",
+    cancelLabel: "Keep catalog unchanged",
+    danger: true,
+  });
+  if (confirmed) await startScan(true);
 }
 
 async function renderCurrentView() {
@@ -558,24 +744,27 @@ async function renderCurrentView() {
       renderAuthentication();
       return;
     }
-    view.innerHTML = `<div class="empty-state"><div><h2>This view could not load</h2><p>${escapeHtml(error.message)}</p><button class="button secondary" data-retry>Try again</button></div></div>`;
+    setViewHtml(`<div class="empty-state"><div><h2>This view could not load</h2><p>${escapeHtml(error.message)}</p><button class="button secondary" data-retry>Try again</button></div></div>`);
     view.querySelector("[data-retry]")?.addEventListener("click", renderCurrentView);
   } finally { view.removeAttribute("aria-busy"); }
 }
 
 function renderAuthentication() {
-  setHeading("Private access", "Enter the token configured on your ROM Manager server.");
-  view.innerHTML = `<div class="auth-panel"><h2>Access token required</h2><p>The token stays in this browser and is sent only to this ROM Manager server.</p><form class="auth-form" id="auth-form"><label class="field" for="access-token"><span>Access token</span><input class="input" id="access-token" name="token" type="password" autocomplete="current-password" required minlength="16"></label><button class="button">Unlock ROM Manager</button></form></div>`;
+  setHeading("Private access", "Enter the token configured on your ROMmates server.");
+  setViewHtml(`<div class="auth-panel"><h2>Access token required</h2><p>The token stays in this browser and is sent only to this ROMmates server.</p><form class="auth-form" id="auth-form"><label class="field" for="access-token"><span>Access token</span><input class="input" id="access-token" name="token" type="password" autocomplete="current-password" required minlength="16"></label><button class="button">Unlock ROMmates</button></form></div>`);
   document.querySelector("#auth-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     const token = new FormData(event.currentTarget).get("token").trim();
-    localStorage.setItem("rom-manager-token", token);
+    localStorage.setItem("rommates-token", token);
     try {
       await refreshStatus();
       await loadReferenceData();
       await renderCurrentView();
     } catch (error) {
-      if (error.status === 401) localStorage.removeItem("rom-manager-token");
+      if (error.status === 401) {
+        localStorage.removeItem("rommates-token");
+        localStorage.removeItem("rom-manager-token");
+      }
       toast(error.status === 401 ? "That access token was not accepted" : error.message, "error");
     }
   });
@@ -598,7 +787,7 @@ document.querySelector("#navigation").addEventListener("click", (event) => {
   renderCurrentView();
 });
 
-scanButton.addEventListener("click", startScan);
+scanButton.addEventListener("click", () => startScan());
 refreshButton.addEventListener("click", async () => {
   try { await refreshStatus(); await loadReferenceData(); await renderCurrentView(); }
   catch (error) { toast(error.message, "error"); }
@@ -621,7 +810,7 @@ async function initialize() {
       renderAuthentication();
       return;
     }
-    view.innerHTML = `<div class="empty-state"><div><h2>ROM Manager could not start</h2><p>${escapeHtml(error.message)}</p></div></div>`;
+    setViewHtml(`<div class="empty-state"><div><h2>ROMmates could not start</h2><p>${escapeHtml(error.message)}</p></div></div>`);
   }
 }
 

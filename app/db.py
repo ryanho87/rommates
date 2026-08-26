@@ -7,6 +7,9 @@ from pathlib import Path
 from typing import Iterator
 
 
+JOB_HISTORY_LIMIT = 500
+ACTIVITY_HISTORY_LIMIT = 1000
+
 SCHEMA = """
 PRAGMA journal_mode=WAL;
 PRAGMA foreign_keys=ON;
@@ -137,4 +140,20 @@ class Database:
             connection.execute(
                 "INSERT INTO activity(action, detail) VALUES (?, ?)",
                 (action, detail),
+            )
+
+    def prune_history(self, keep_jobs: int = JOB_HISTORY_LIMIT, keep_activity: int = ACTIVITY_HISTORY_LIMIT) -> None:
+        """Trim the jobs and activity logs so they cannot grow without bound.
+
+        Both tables are append-only and the UI only ever shows the newest 100 rows,
+        so anything past the retention window is unreachable history.
+        """
+        with self.write() as connection:
+            connection.execute(
+                "DELETE FROM jobs WHERE id NOT IN (SELECT id FROM jobs ORDER BY id DESC LIMIT ?)",
+                (keep_jobs,),
+            )
+            connection.execute(
+                "DELETE FROM activity WHERE id NOT IN (SELECT id FROM activity ORDER BY id DESC LIMIT ?)",
+                (keep_activity,),
             )

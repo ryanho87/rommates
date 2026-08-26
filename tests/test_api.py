@@ -23,17 +23,19 @@ class ApiIntegrationTests(unittest.TestCase):
         cls.environment = patch.dict(
             os.environ,
             {
-                "ROM_LIBRARY_ROOT": str(root / "roms"),
-                "ROM_DEVICES_ROOT": str(root / "devices"),
-                "ROM_TRASH_ROOT": str(root / "trash"),
-                "ROM_DATABASE_PATH": str(root / "data/rommanager.db"),
-                "ROM_SCAN_ON_START": "false",
-                "ROM_REQUIRE_EXISTING_ROOTS": "true",
-                "ROM_ACCESS_TOKEN": cls.token,
+                "ROMMATES_LIBRARY_ROOT": str(root / "roms"),
+                "ROMMATES_DEVICES_ROOT": str(root / "devices"),
+                "ROMMATES_TRASH_ROOT": str(root / "trash"),
+                "ROMMATES_DATABASE_PATH": str(root / "data/rommates.db"),
+                "ROMMATES_SCAN_ON_START": "false",
+                "ROMMATES_REQUIRE_EXISTING_ROOTS": "true",
+                "ROMMATES_ACCESS_TOKEN": cls.token,
             },
         )
         cls.environment.start()
-        cls.main = importlib.import_module("app.main")
+        # Reload rather than import: app.main reads settings at module scope, so a
+        # module already imported under different environment variables would be reused.
+        cls.main = importlib.reload(importlib.import_module("app.main"))
         cls.client_context = TestClient(cls.main.app)
         cls.client = cls.client_context.__enter__()
         cls.headers = {"Authorization": f"Bearer {cls.token}"}
@@ -84,6 +86,54 @@ class ApiIntegrationTests(unittest.TestCase):
         rename_job = self.wait_for_job(rename.json()["job_id"])
         self.assertEqual(rename_job["status"], "complete")
         self.assertEqual(rename_job["result"]["new_name"], "Renamed Game")
+
+
+class StartupTokenTests(unittest.TestCase):
+    """A missing token disables authentication entirely, so startup must reject it.
+
+    This previously depended on the existing-roots setting, which meant a bare
+    `docker run` — or turning that flag off to debug a mount — silently exposed every
+    destructive endpoint.
+    """
+
+    def _start(self, **overrides):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+        (root / "roms").mkdir()
+        (root / "devices").mkdir()
+        environment = {
+            "ROMMATES_LIBRARY_ROOT": str(root / "roms"),
+            "ROMMATES_DEVICES_ROOT": str(root / "devices"),
+            "ROMMATES_TRASH_ROOT": str(root / "trash"),
+            "ROMMATES_DATABASE_PATH": str(root / "data/rommates.db"),
+            "ROMMATES_SCAN_ON_START": "false",
+            "ROMMATES_REQUIRE_EXISTING_ROOTS": "false",
+            "ROMMATES_ACCESS_TOKEN": "",
+            "ROMMATES_ALLOW_ANONYMOUS": "false",
+            **overrides,
+        }
+        with patch.dict(os.environ, environment):
+            main = importlib.reload(importlib.import_module("app.main"))
+            return TestClient(main.app)
+
+    def tearDown(self):
+        # Leave the module bound to this class's environment rather than a stale one.
+        importlib.reload(importlib.import_module("app.main"))
+
+    def test_missing_token_fails_startup(self):
+        with self.assertRaisesRegex(Exception, "ROMMATES_ACCESS_TOKEN must contain at least"):
+            with self._start():
+                pass
+
+    def test_short_token_fails_startup(self):
+        with self.assertRaisesRegex(Exception, "ROMMATES_ACCESS_TOKEN must contain at least"):
+            with self._start(ROMMATES_ACCESS_TOKEN="too-short"):
+                pass
+
+    def test_anonymous_access_requires_an_explicit_opt_in(self):
+        with self._start(ROMMATES_ALLOW_ANONYMOUS="true") as client:
+            self.assertEqual(client.get("/api/status").status_code, 200)
 
 
 if __name__ == "__main__":

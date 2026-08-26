@@ -23,5 +23,26 @@ jobs:
       - run: python -m pip install -e '.[dev]'
       - run: python -m compileall -q app
       - run: node --check app/static/app.js
-      - run: python -m unittest discover -s tests -v
-      - run: docker build -t rom-manager:test .
+      - name: Tests
+        run: python -m pytest -q
+      - name: Build image
+        run: docker build -t rommates:test .
+      - name: Container refuses to start without an access token
+        run: |
+          set +e
+          output=$(docker run --rm \
+            -e ROMMATES_LIBRARY_ROOT=/tmp/roms -e ROMMATES_DEVICES_ROOT=/tmp/devices \
+            -e ROMMATES_TRASH_ROOT=/tmp/trash -e ROMMATES_DATABASE_PATH=/tmp/db.sqlite \
+            -e ROMMATES_SCAN_ON_START=false \
+            rommates:test 2>&1)
+          status=$?
+          set -e
+          echo "$output"
+          if [ $status -eq 0 ]; then
+            echo "::error::Container started without ROMMATES_ACCESS_TOKEN"
+            exit 1
+          fi
+          echo "$output" | grep -q "ROMMATES_ACCESS_TOKEN must contain at least" || {
+            echo "::error::Startup failed for an unexpected reason"
+            exit 1
+          }

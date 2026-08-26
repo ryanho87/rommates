@@ -1,1 +1,1 @@
-"""ROM Manager application package."""
+"""ROMmates application package."""

@@ -1,6 +1,6 @@
-# ROM Manager
+# ROMmates
 
-ROM Manager is a private, self-hosted web interface for cleaning a canonical ROM library and deploying selected games into per-device ES-DE folders. Syncthing continues to handle transport to each handheld.
+ROMmates is a private, self-hosted web interface for cleaning a canonical ROM library and giving each handheld its own game roster. It deploys selected games into per-device ES-DE folders, while Syncthing continues to handle transport to each device.
 
 The MVP supports:
 
@@ -34,7 +34,7 @@ Emulation/
 │   │   └── roms/
 │   └── steam-deck/
 │       └── roms/
-└── .rommanager-trash/
+└── .rommates-trash/
 ```
 
 Every direct child of `devices` containing a `roms` directory is discovered as a device during a library scan.
@@ -49,12 +49,12 @@ Every direct child of `devices` containing a `roms` directory is discovered as a
    openssl rand -hex 32
    ```
 
-   Put the generated value in `ROM_ACCESS_TOKEN` and set `EMULATION_ROOT` to the absolute host directory containing `roms` and `devices`. Compose refuses to start when either value is missing.
+   Put the generated value in `ROMMATES_ACCESS_TOKEN` and set `EMULATION_ROOT` to the absolute host directory containing `roms` and `devices`. ROMmates refuses to start when either value is missing.
 
 3. Create the state and trash directories as the same Linux user that owns the ROM library:
 
    ```bash
-   mkdir -p data /srv/Emulation/.rommanager-trash
+   mkdir -p data /srv/Emulation/.rommates-trash
    ```
 
 4. Set `PUID` and `PGID` in `.env` to the account that owns the Emulation directory. Find them with:
@@ -70,9 +70,11 @@ Every direct child of `devices` containing a `roms` directory is discovered as a
    docker compose up -d --build
    ```
 
-6. Open `http://SERVER-IP:8080`, enter `ROM_ACCESS_TOKEN`, and let the startup scan finish.
+6. Open `http://SERVER-IP:8080`, enter `ROMMATES_ACCESS_TOKEN`, and let the startup scan finish.
 
-The token protects the application from unauthenticated and cross-site API requests. It is still intended for a trusted private network. Bind `ROM_MANAGER_BIND=127.0.0.1` when placing it behind a reverse proxy.
+The token protects the application from unauthenticated and cross-site API requests. It is still intended for a trusted private network. Bind `ROMMATES_BIND=127.0.0.1` when placing it behind a reverse proxy.
+
+The application refuses to start without a token, so a misconfigured launch fails loudly instead of exposing the API. If an authenticated reverse proxy already guards the app, set `ROMMATES_ALLOW_ANONYMOUS=true` to opt out deliberately.
 
 ## Syncthing ignores
 
@@ -81,6 +83,8 @@ Add these patterns to the Syncthing folder ignore list as another layer of prote
 ```text
 ._*
 .DS_Store
+*.rommates-copy
+*.rommanager-copy
 ```
 
 ## How device reconciliation works
@@ -90,7 +94,9 @@ Selections represent the desired managed set for a device. Applying changes:
 1. Copies missing or changed files from `/emulation/roms` to `/emulation/devices/{device}/roms`.
 2. Removes previously managed files whose games were unselected.
 3. Leaves unrelated, unmanaged files alone.
-4. Removes Finder metadata from the target device ROM tree.
+4. Removes Finder metadata and interrupted ROMmates temp files from the target device ROM tree.
+
+Each copy is recorded as it lands, so an apply that fails or is interrupted partway leaves every file it already wrote under management. Re-running the apply finishes the job, and unselecting a game still removes what was copied.
 
 On the first run, existing files in a device directory are considered unmanaged and will not be deleted. Select matching games in the UI to bring them under management.
 
@@ -99,14 +105,29 @@ You can build the desired set in either direction:
 - **Library:** Find a game, select its device count, and choose every device that should include it.
 - **Devices:** Choose one device and select or unselect many games, then review and apply its pending changes.
 
-Library assignments update the desired selections only. Open Devices and apply a target when you want ROM Manager to change its filesystem.
+Library assignments update the desired selections only. Open Devices and apply a target when you want ROMmates to change its filesystem.
+
+## Scan safety
+
+A scan reconciles the catalog with the filesystem, and removing a game also removes the
+device selections and deployment records that depend on it. Because an unmounted or
+still-mounting library volume is indistinguishable from an emptied one, a scan refuses to
+continue when it would delete more than `ROMMATES_SCAN_PRUNE_LIMIT` (default 50%) of the
+catalog. The job fails with an explanation, nothing changes, and the UI offers a
+confirmation if you really did remove those files.
+
+Device folders are pruned the same way: a device whose directory is gone is removed, but
+a devices root that reports no devices at all is treated as unavailable rather than empty.
+
+Files that cannot be read — including symlinks, which are never indexed — are counted and
+named in the scan job detail instead of being dropped silently.
 
 ## Rename and delete safety
 
 - Renaming a descriptor bundle renames its primary file and companion files whose names share the primary stem. It then rewrites references in `.cue` and `.m3u` files.
 - Companion files with unrelated names remain unchanged but stay part of the bundle.
-- Deleting atomically moves the entire indexed bundle into `.rommanager-trash` and records its original paths. Library, device, and trash directories share one Emulation mount so the operation cannot degrade into an interruptible copy-and-delete.
-- Deleting a canonical game also moves copies previously deployed by ROM Manager into the same recoverable trash bundle. Restore puts both canonical and deployed copies back.
+- Deleting atomically moves the entire indexed bundle into `.rommates-trash` and records its original paths. Library, device, and trash directories share one Emulation mount so the operation cannot degrade into an interruptible copy-and-delete.
+- Deleting a canonical game also moves copies previously deployed by ROMmates into the same recoverable trash bundle. Restore puts both canonical and deployed copies back.
 - Permanent deletion is available only from the Trash screen.
 
 Keep normal filesystem backups. Recoverable trash protects against UI mistakes, not disk failure or manual filesystem changes.
@@ -115,32 +136,34 @@ Keep normal filesystem backups. Recoverable trash protects against UI mistakes, 
 
 | Variable | Default | Purpose |
 |---|---:|---|
-| `ROM_LIBRARY_ROOT` | `/emulation/roms` in Compose | Canonical platform-folder library |
-| `ROM_DEVICES_ROOT` | `/emulation/devices` in Compose | Parent of device directories |
-| `ROM_TRASH_ROOT` | `/emulation/.rommanager-trash` in Compose | Recoverable deleted bundles |
-| `ROM_DATABASE_PATH` | `/data/rommanager.db` | SQLite catalog and selections |
-| `ROM_SCAN_ON_START` | `true` | Start a background scan at boot |
-| `ROM_REQUIRE_EXISTING_ROOTS` | `true` in Compose | Fail startup instead of silently creating missing mounts |
-| `ROM_ACCESS_TOKEN` | required by Compose | Token entered in the browser and sent as a Bearer credential |
-| `ROM_EXTENSIONS` | built-in list | Optional comma-separated extension override |
+| `ROMMATES_LIBRARY_ROOT` | `/emulation/roms` in Compose | Canonical platform-folder library |
+| `ROMMATES_DEVICES_ROOT` | `/emulation/devices` in Compose | Parent of device directories |
+| `ROMMATES_TRASH_ROOT` | `/emulation/.rommates-trash` in Compose | Recoverable deleted bundles |
+| `ROMMATES_DATABASE_PATH` | `/data/rommates.db` | SQLite catalog and selections |
+| `ROMMATES_SCAN_ON_START` | `true` | Start a background scan at boot |
+| `ROMMATES_REQUIRE_EXISTING_ROOTS` | `true` in Compose | Fail startup instead of silently creating missing mounts |
+| `ROMMATES_ACCESS_TOKEN` | **required** | Token entered in the browser and sent as a Bearer credential. Startup fails if it is missing or under 16 characters |
+| `ROMMATES_ALLOW_ANONYMOUS` | `false` | Disables the token check. Only for instances already behind an authenticated reverse proxy |
+| `ROMMATES_SCAN_PRUNE_LIMIT` | `0.5` | Largest share of the catalog one scan may delete without confirmation |
+| `ROMMATES_EXTENSIONS` | built-in list | Optional comma-separated extension override |
 
 ## Local development
 
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -e '.[dev]'
-ROM_LIBRARY_ROOT=/tmp/roms \
-ROM_DEVICES_ROOT=/tmp/devices \
-ROM_TRASH_ROOT=/tmp/rom-trash \
-ROM_DATABASE_PATH=/tmp/rommanager.db \
-ROM_ACCESS_TOKEN=development-token-123456 \
+ROMMATES_LIBRARY_ROOT=/tmp/roms \
+ROMMATES_DEVICES_ROOT=/tmp/devices \
+ROMMATES_TRASH_ROOT=/tmp/rommates-trash \
+ROMMATES_DATABASE_PATH=/tmp/rommates.db \
+ROMMATES_ACCESS_TOKEN=development-token-123456 \
 .venv/bin/uvicorn app.main:app --reload --port 8080
 ```
 
 Run the filesystem and API tests with:
 
 ```bash
-.venv/bin/python -m unittest discover -s tests -v
+.venv/bin/python -m pytest
 ```
 
 ## Updating the NUC with Git
@@ -153,3 +176,18 @@ docker compose up -d --build
 ```
 
 Keep `.env`, `data/`, and the ROM library outside Git. Database migrations run automatically when the updated container starts.
+
+## Upgrading from ROM Manager
+
+Existing deployments upgrade in place. ROMmates accepts the previous `ROM_*` environment variables, migrates the default `rommanager.db` database and `.rommanager-trash` directory, cleans up legacy copy-temp files, and moves the saved browser token to the new key. New configuration should use the `ROMMATES_*` names above.
+
+For the rename release, update the remote and remove the old Compose service once:
+
+```bash
+git remote set-url origin https://github.com/ryanho87/rommates.git
+git pull --ff-only
+docker compose down --remove-orphans
+docker compose up -d --build
+```
+
+Later releases only need the normal `git pull` and `docker compose up` commands.

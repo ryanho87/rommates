@@ -16,7 +16,35 @@ from .db import Database
 from .library import LibraryError, LibraryService
 
 
+MINIMUM_TOKEN_LENGTH = 16
+
 settings = Settings.from_env()
+
+
+def migrate_legacy_path(configured: Path, new_default: Path, legacy: Path) -> bool:
+    if configured != new_default or configured.exists() or not legacy.exists():
+        return False
+    configured.parent.mkdir(parents=True, exist_ok=True)
+    legacy.replace(configured)
+    if configured.suffix == ".db":
+        for suffix in ("-wal", "-shm"):
+            legacy_sidecar = Path(f"{legacy}{suffix}")
+            if legacy_sidecar.exists():
+                legacy_sidecar.replace(Path(f"{configured}{suffix}"))
+    return True
+
+
+def migrate_legacy_storage() -> None:
+    """Move default ROM Manager storage to ROMmates without losing deployed state."""
+    migrations = [
+        (settings.database_path, Path("/data/rommates.db"), Path("/data/rommanager.db")),
+        (settings.trash_root, Path("/emulation/.rommates-trash"), Path("/emulation/.rommanager-trash")),
+    ]
+    for configured, new_default, legacy in migrations:
+        migrate_legacy_path(configured, new_default, legacy)
+
+
+migrate_legacy_storage()
 db = Database(settings.database_path)
 library = LibraryService(settings, db)
 
@@ -25,7 +53,12 @@ def job_result_detail(kind: str, result: object, fallback: str) -> str:
     if not isinstance(result, dict):
         return fallback
     if kind == "scan":
-        return f"Indexed {result.get('games', 0)} games across {result.get('platforms', 0)} platforms"
+        summary = f"Indexed {result.get('games', 0)} games across {result.get('platforms', 0)} platforms"
+        if result.get("skipped_count"):
+            summary += f", skipped {result['skipped_count']} unreadable files"
+        if result.get("removed_devices"):
+            summary += f", removed device {', '.join(result['removed_devices'])}"
+        return summary
     if kind == "rename":
         return f"Renamed {result.get('old_name', 'game')} to {result.get('new_name', 'game')}"
     if kind == "device_apply":
@@ -65,6 +98,7 @@ def enqueue_job(kind: str, detail: str, operation, *args) -> int:
             (kind, detail),
         )
         job_id = connection.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
+    db.prune_history()
     threading.Thread(target=run_job, args=(job_id, kind, detail, operation, *args), daemon=True).start()
     return job_id
 
@@ -77,8 +111,14 @@ async def lifespan(_: FastAPI):
             "UPDATE jobs SET status='failed',detail='Interrupted by application restart',completed_at=CURRENT_TIMESTAMP "
             "WHERE status IN ('queued','running')"
         )
-    if settings.require_existing_roots and len(settings.access_token) < 16:
-        raise LibraryError("ROM_ACCESS_TOKEN must contain at least 16 characters")
+    # Validated unconditionally: an unset token disables authentication entirely, so
+    # this must never depend on an unrelated flag or on which launcher started the app.
+    if not settings.allow_anonymous and len(settings.access_token) < MINIMUM_TOKEN_LENGTH:
+        raise LibraryError(
+            f"ROMMATES_ACCESS_TOKEN must contain at least {MINIMUM_TOKEN_LENGTH} characters. "
+            "Generate one with 'openssl rand -hex 32', or set ROMMATES_ALLOW_ANONYMOUS=true "
+            "if this instance is already protected by an authenticated reverse proxy."
+        )
     library.prepare_roots()
     if settings.scan_on_start:
         enqueue_job("scan", "Indexing library", library.scan)
@@ -86,7 +126,7 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(
-    title="ROM Manager",
+    title="ROMmates",
     version="0.1.0",
     lifespan=lifespan,
     docs_url=None,
@@ -186,14 +226,14 @@ def status():
 
 
 @app.post("/api/scan", status_code=202)
-def start_scan():
+def start_scan(confirm_prune: bool = False):
     with db.write() as connection:
         active = connection.execute(
             "SELECT id FROM jobs WHERE kind='scan' AND status IN ('queued','running') ORDER BY id DESC LIMIT 1"
         ).fetchone()
         if active:
             return {"job_id": active["id"], "already_running": True}
-    job_id = enqueue_job("scan", "Indexing library", library.scan)
+    job_id = enqueue_job("scan", "Indexing library", library.scan, confirm_prune)
     return {"job_id": job_id, "already_running": False}
 
 

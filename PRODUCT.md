@@ -1,4 +1,4 @@
-# Product
+# ROMmates
 
 ## Register
 
@@ -14,7 +14,7 @@ Provide a fast, trustworthy interface for discovering, cleaning, and deploying R
 
 ## Brand Personality
 
-Precise, quiet, and focused. The interface should feel as disciplined and dependable as Linear: dense enough for serious library work, visually calm, and direct about system state.
+Precise, quiet, and focused. The ROMmates name supplies the joke; the interface remains disciplined and dependable, dense enough for serious library work, visually calm, and direct about system state.
 
 ## Anti-references
 

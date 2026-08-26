@@ -16,6 +16,9 @@ from .config import Settings
 from .db import Database
 
 
+COPY_SUFFIX = ".rommates-copy"
+LEGACY_COPY_SUFFIX = ".rommanager-copy"
+
 CUE_FILE_RE = re.compile(r'^\s*FILE\s+"([^"]+)"', re.IGNORECASE)
 TAG_RE = re.compile(r"\s*[\(\[].*?[\)\]]")
 NON_WORD_RE = re.compile(r"[^a-z0-9]+")
@@ -184,6 +187,7 @@ class LibraryService:
         self,
         cache: dict[str, tuple[int, int, str]] | None = None,
         cache_updates: dict[str, tuple[int, int, str]] | None = None,
+        skipped: list[str] | None = None,
     ) -> list[GameCandidate]:
         root = self.settings.library_root.resolve()
         if cache is None:
@@ -194,6 +198,8 @@ class LibraryService:
                 }
         if cache_updates is None:
             cache_updates = {}
+        if skipped is None:
+            skipped = []
         candidates: list[GameCandidate] = []
         if not root.exists():
             return candidates
@@ -220,6 +226,9 @@ class LibraryService:
                     continue
                 if path.suffix.lower() not in self.settings.extensions:
                     continue
+                if path.is_symlink():
+                    skipped.append(f"{path.name}: symbolic links are not indexed")
+                    continue
                 if path.resolve() in referenced or path in primaries:
                     continue
                 primaries.append(path)
@@ -227,35 +236,64 @@ class LibraryService:
             for primary in primaries:
                 try:
                     candidates.append(self._candidate(primary, platform_dir.name, cache, cache_updates))
-                except (OSError, LibraryError):
+                except (OSError, LibraryError) as exc:
+                    skipped.append(f"{primary.name}: {exc}")
                     continue
         return candidates
 
-    def _discover_devices(self, connection) -> None:
+    def _discover_devices(self, connection) -> list[str]:
+        """Register device folders and drop ones whose directory is gone.
+
+        Returns the names of removed devices. Pruning is skipped entirely when the
+        devices root looks empty or unreadable, so an unmounted volume cannot
+        cascade-delete every device selection.
+        """
         root = self.settings.devices_root.resolve()
         if not root.exists():
-            return
-        for directory in sorted(item for item in root.iterdir() if item.is_dir()):
+            return []
+        try:
+            directories = sorted(item for item in root.iterdir() if item.is_dir())
+        except OSError:
+            return []
+        present: list[str] = []
+        for directory in directories:
             roms = directory / "roms"
             if roms.is_dir():
+                present.append(directory.name)
                 connection.execute(
                     "INSERT INTO devices(name,path) VALUES(?,?) "
                     "ON CONFLICT(name) DO UPDATE SET path=excluded.path",
                     (directory.name, directory.name),
                 )
+        known = [row["name"] for row in connection.execute("SELECT name FROM devices")]
+        if not present:
+            # Nothing discovered: treat as an unavailable mount rather than a deletion.
+            return []
+        stale = [name for name in known if name not in present]
+        if stale:
+            placeholders = ",".join("?" for _ in stale)
+            connection.execute(f"DELETE FROM devices WHERE name IN ({placeholders})", stale)
+        return stale
 
-    def scan(self) -> dict[str, int]:
+    def scan(self, force_prune: bool = False) -> dict[str, object]:
         with self._operation_lock:
             with self.db.connect() as connection:
                 cache = {
                     row["relpath"]: (row["size"], row["mtime_ns"], row["sha256"])
                     for row in connection.execute("SELECT relpath,size,mtime_ns,sha256 FROM file_cache")
                 }
+                known_relpaths = {
+                    row["primary_relpath"]
+                    for row in connection.execute("SELECT primary_relpath FROM games")
+                }
             cache_updates: dict[str, tuple[int, int, str]] = {}
-            candidates = self.discover_candidates(cache, cache_updates)
-            seen: set[str] = set()
+            skipped: list[str] = []
+            candidates = self.discover_candidates(cache, cache_updates, skipped)
+            seen = {candidate.primary_relpath for candidate in candidates}
+            # Check before writing anything: the guard aborts the whole scan.
+            self._guard_prune(known_relpaths, seen, skipped, force_prune)
             with self.db.write() as connection:
-                self._discover_devices(connection)
+                removed_devices = self._discover_devices(connection)
                 if cache_updates:
                     connection.executemany(
                         "INSERT INTO file_cache(relpath,size,mtime_ns,sha256) VALUES(?,?,?,?) "
@@ -266,7 +304,6 @@ class LibraryService:
                         ),
                     )
                 for candidate in candidates:
-                    seen.add(candidate.primary_relpath)
                     connection.execute(
                         "INSERT INTO games(platform,primary_relpath,display_name,extension,size,bundle_hash,normalized_name,mtime_ns) "
                         "VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(primary_relpath) DO UPDATE SET "
@@ -288,22 +325,66 @@ class LibraryService:
                         ((game_id, item.relpath, item.size, item.sha256, item.kind) for item in candidate.files),
                     )
                 if seen:
-                    placeholders = ",".join("?" for _ in seen)
-                    connection.execute(
-                        f"DELETE FROM games WHERE primary_relpath NOT IN ({placeholders})", tuple(seen)
+                    connection.execute("CREATE TEMP TABLE IF NOT EXISTS scan_seen(relpath TEXT PRIMARY KEY)")
+                    connection.execute("DELETE FROM scan_seen")
+                    connection.executemany(
+                        "INSERT OR IGNORE INTO scan_seen(relpath) VALUES(?)",
+                        ((relpath,) for relpath in seen),
                     )
                     connection.execute(
-                        f"DELETE FROM file_cache WHERE relpath NOT IN "
-                        f"(SELECT relpath FROM game_files)",
+                        "DELETE FROM games WHERE primary_relpath NOT IN (SELECT relpath FROM scan_seen)"
                     )
+                    connection.execute("DROP TABLE scan_seen")
                 else:
                     connection.execute("DELETE FROM games")
-                    connection.execute("DELETE FROM file_cache")
-            self.db.activity("scan", f"Indexed {len(candidates)} games")
+                connection.execute("DELETE FROM file_cache WHERE relpath NOT IN (SELECT relpath FROM game_files)")
+            detail = f"Indexed {len(candidates)} games"
+            if skipped:
+                detail += f", skipped {len(skipped)} unreadable files"
+            if removed_devices:
+                detail += f", removed device {', '.join(removed_devices)}"
+            self.db.activity("scan", detail)
+            self.db.prune_history()
             return {
                 "games": len(candidates),
                 "platforms": len({candidate.platform for candidate in candidates}),
+                "skipped": skipped[:50],
+                "skipped_count": len(skipped),
+                "removed_devices": removed_devices,
             }
+
+    def _guard_prune(
+        self,
+        known_relpaths: set[str],
+        seen: set[str],
+        skipped: list[str],
+        force_prune: bool,
+    ) -> None:
+        """Refuse to reconcile when a scan would delete an implausible share of the catalog.
+
+        Deleting a ``games`` row cascades into ``device_selections`` and ``deployments``,
+        so a library root that is present but empty or partially readable (an unmounted
+        volume, a mount race at boot, a disconnected network share) would otherwise wipe
+        every device selection without warning.
+        """
+        if force_prune or not known_relpaths:
+            return
+        missing = known_relpaths - seen
+        if not missing:
+            return
+        share = len(missing) / len(known_relpaths)
+        if share < self.settings.scan_prune_limit:
+            return
+        reason = (
+            f"Scan would remove {len(missing)} of {len(known_relpaths)} indexed games "
+            f"({share:.0%} of the catalog) and every device selection that depends on them. "
+            "This usually means the library volume is unmounted, still mounting, or only "
+            "partially readable, so nothing was changed."
+        )
+        if skipped:
+            reason += f" {len(skipped)} files could not be read, for example: {skipped[0]}"
+        reason += " Confirm the library root is fully mounted, then rescan with pruning confirmed."
+        raise LibraryError(reason)
 
     @staticmethod
     def _atomic_move(source: Path, target: Path) -> None:
@@ -391,7 +472,7 @@ class LibraryService:
                 for index, (old, target) in enumerate(mapping.items()):
                     if old == target:
                         continue
-                    temp = old.with_name(f".rommanager-rename-{game_id}-{index}{old.suffix}")
+                    temp = old.with_name(f".rommates-rename-{game_id}-{index}{old.suffix}")
                     if temp.exists():
                         raise LibraryError(f"Temporary rename path already exists: {temp.name}")
                     old.rename(temp)
@@ -638,6 +719,20 @@ class LibraryService:
                 )
         return len(valid_ids)
 
+    def _record_deployment(self, device_id: int, game_id: int, relpath: str) -> None:
+        with self.db.write() as connection:
+            connection.execute(
+                "INSERT OR IGNORE INTO deployments(device_id,game_id,relpath) VALUES(?,?,?)",
+                (device_id, game_id, relpath),
+            )
+
+    def _forget_deployment(self, device_id: int, game_id: int, relpath: str) -> None:
+        with self.db.write() as connection:
+            connection.execute(
+                "DELETE FROM deployments WHERE device_id=? AND game_id=? AND relpath=?",
+                (device_id, game_id, relpath),
+            )
+
     def apply_device(self, device_id: int) -> dict[str, int]:
         with self._operation_lock:
             with self.db.connect() as connection:
@@ -681,34 +776,33 @@ class LibraryService:
                 raise LibraryError(
                     f"Device needs {required_bytes} bytes but only {free_bytes} bytes are available"
                 )
+            # Files already present and identical are still part of the managed set.
+            for game_id, relpath in sorted(desired - {(g, r) for g, r, _, _ in copy_plan}):
+                self._record_deployment(device_id, game_id, relpath)
+            # Record every copy as it lands. Batching this until the end would leave
+            # files on the device that no deployment row claims, making them permanently
+            # unmanaged if the job fails or the container stops partway through.
             for game_id, relpath, source, target in copy_plan:
-                temp = target.with_name(f".{target.name}.rommanager-copy")
+                temp = target.with_name(f".{target.name}{COPY_SUFFIX}")
                 try:
                     shutil.copy2(source, temp)
                     os.replace(temp, target)
                 except Exception:
                     temp.unlink(missing_ok=True)
                     raise
+                self._record_deployment(device_id, game_id, relpath)
                 copied += 1
             for game_id, relpath in sorted(existing - desired):
                 target = _inside(device_root, device_root / relpath)
                 if target.is_file():
                     target.unlink()
                     removed += 1
-            for metadata in device_root.rglob("._*"):
-                if metadata.is_file():
-                    metadata.unlink()
-                    metadata_removed += 1
-            for metadata in device_root.rglob(".DS_Store"):
-                if metadata.is_file():
-                    metadata.unlink()
-                    metadata_removed += 1
-            with self.db.write() as connection:
-                connection.execute("DELETE FROM deployments WHERE device_id=?", (device_id,))
-                connection.executemany(
-                    "INSERT INTO deployments(device_id,game_id,relpath) VALUES(?,?,?)",
-                    ((device_id, game_id, relpath) for game_id, relpath in desired),
-                )
+                self._forget_deployment(device_id, game_id, relpath)
+            for pattern in ("._*", ".DS_Store", f"*{COPY_SUFFIX}", f"*{LEGACY_COPY_SUFFIX}"):
+                for metadata in device_root.rglob(pattern):
+                    if metadata.is_file():
+                        metadata.unlink()
+                        metadata_removed += 1
             detail = f"Applied {device['name']}: {copied} copied, {removed} removed"
             self.db.activity("device_apply", detail)
             return {

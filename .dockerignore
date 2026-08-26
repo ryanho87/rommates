@@ -9,3 +9,6 @@ tests
 PRODUCT.md
 DESIGN.md
 data
+.env
+.env.*
+!.env.example

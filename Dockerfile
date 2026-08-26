@@ -4,18 +4,24 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1
 
-RUN addgroup --system --gid 10001 rommanager \
-    && adduser --system --uid 10001 --ingroup rommanager --home /app rommanager
+RUN addgroup --system --gid 10001 rommates \
+    && adduser --system --uid 10001 --ingroup rommates --home /app rommates
 
 WORKDIR /app
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app ./app
+# World-readable so the image still works when compose overrides the runtime user with
+# PUID/PGID (an arbitrary uid with no entry in /etc/passwd). /data and /emulation are
+# bind mounts in practice, so their ownership comes from the host, not from here.
 RUN mkdir -p /data /emulation \
-    && chown -R rommanager:rommanager /app /data /emulation
+    && chown -R rommates:rommates /app /data /emulation \
+    && chmod -R a+rX /app
 
-USER rommanager
+# Default for a bare `docker run`. compose.yaml overrides this with PUID/PGID so the
+# container writes ROM files as the account that owns the Emulation directory.
+USER rommates
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \

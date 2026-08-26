@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 import tempfile
 import threading
 import time
@@ -9,7 +10,7 @@ from unittest.mock import patch
 
 from app.config import Settings
 from app.db import Database
-from app.library import LibraryService, normalize_name
+from app.library import LibraryError, LibraryService, normalize_name
 
 
 class LibraryServiceTests(unittest.TestCase):
@@ -23,7 +24,7 @@ class LibraryServiceTests(unittest.TestCase):
             library_root=self.roms,
             devices_root=self.devices,
             trash_root=self.trash,
-            database_path=root / "data" / "rommanager.db",
+            database_path=root / "data" / "rommates.db",
             scan_on_start=False,
         )
         self.db = Database(self.settings.database_path)
@@ -54,7 +55,9 @@ class LibraryServiceTests(unittest.TestCase):
         self.write("psx/Game (USA).bin", b"disc-data")
         self.write("psx/Game (USA).cue", 'FILE "Game (USA).bin" BINARY\n  TRACK 01 MODE2/2352\n')
         result = self.service.scan()
-        self.assertEqual(result, {"games": 1, "platforms": 1})
+        self.assertEqual(result["games"], 1)
+        self.assertEqual(result["platforms"], 1)
+        self.assertEqual(result["skipped_count"], 0)
         game, files = self.service.game_bundle(self.game_id("Game (USA)"))
         self.assertEqual(game["extension"], ".cue")
         self.assertEqual({Path(item["relpath"]).suffix for item in files}, {".cue", ".bin"})
@@ -179,6 +182,141 @@ class LibraryServiceTests(unittest.TestCase):
             apply_thread.join(timeout=2)
             scan_thread.join(timeout=2)
         self.assertTrue(scan_finished.is_set())
+
+    def test_scan_refuses_to_prune_a_catalog_when_the_library_disappears(self):
+        # An unmounted or still-mounting library root looks like an empty one. Pruning
+        # it would cascade through games -> device_selections -> deployments.
+        self.write("gba/One.gba", b"one")
+        self.write("gba/Two.gba", b"two")
+        (self.devices / "handheld" / "roms").mkdir(parents=True)
+        self.service.scan()
+        with self.db.connect() as connection:
+            device_id = connection.execute("SELECT id FROM devices").fetchone()["id"]
+            game_ids = [row["id"] for row in connection.execute("SELECT id FROM games")]
+        self.service.set_selections(device_id, game_ids, True)
+        self.service.apply_device(device_id)
+
+        shutil.rmtree(self.roms / "gba")
+        with self.assertRaisesRegex(LibraryError, "Scan would remove 2 of 2"):
+            self.service.scan()
+        with self.db.connect() as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) AS c FROM games").fetchone()["c"], 2)
+            self.assertEqual(
+                connection.execute("SELECT COUNT(*) AS c FROM device_selections").fetchone()["c"], 2
+            )
+            self.assertEqual(
+                connection.execute("SELECT COUNT(*) AS c FROM deployments").fetchone()["c"], 2
+            )
+
+    def test_confirmed_scan_prunes_the_catalog(self):
+        self.write("gba/One.gba", b"one")
+        self.service.scan()
+        shutil.rmtree(self.roms / "gba")
+        self.assertEqual(self.service.scan(force_prune=True)["games"], 0)
+        with self.db.connect() as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) AS c FROM games").fetchone()["c"], 0)
+
+    def test_small_removals_prune_without_confirmation(self):
+        for index in range(10):
+            self.write(f"gba/Game {index}.gba", f"rom-{index}".encode())
+        self.service.scan()
+        (self.roms / "gba/Game 3.gba").unlink()
+        self.assertEqual(self.service.scan()["games"], 9)
+
+    def test_stale_devices_are_removed_but_an_empty_devices_root_is_not_trusted(self):
+        self.write("gba/One.gba", b"one")
+        (self.devices / "keep" / "roms").mkdir(parents=True)
+        (self.devices / "gone" / "roms").mkdir(parents=True)
+        self.service.scan()
+        shutil.rmtree(self.devices / "gone")
+        self.assertEqual(self.service.scan()["removed_devices"], ["gone"])
+        with self.db.connect() as connection:
+            self.assertEqual([row["name"] for row in connection.execute("SELECT name FROM devices")], ["keep"])
+        shutil.rmtree(self.devices / "keep")
+        self.assertEqual(self.service.scan()["removed_devices"], [])
+        with self.db.connect() as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) AS c FROM devices").fetchone()["c"], 1)
+
+    def test_failed_apply_still_records_the_files_it_copied(self):
+        # Files on the device that no deployment row claims can never be cleaned up,
+        # so a partial apply must leave the catalog describing what actually landed.
+        for name in ("A", "B", "C"):
+            self.write(f"gba/{name}.gba", name.encode() * 8)
+        device_roms = self.devices / "handheld" / "roms"
+        device_roms.mkdir(parents=True)
+        self.service.scan()
+        with self.db.connect() as connection:
+            device_id = connection.execute("SELECT id FROM devices").fetchone()["id"]
+            game_ids = [row["id"] for row in connection.execute("SELECT id FROM games ORDER BY id")]
+        self.service.set_selections(device_id, game_ids, True)
+
+        original_copy = shutil.copy2
+        calls = {"count": 0}
+
+        def failing_copy(source, target, *args, **kwargs):
+            calls["count"] += 1
+            if calls["count"] == 2:
+                original_copy(source, target)
+                raise OSError("simulated I/O failure")
+            return original_copy(source, target, *args, **kwargs)
+
+        with patch("app.library.shutil.copy2", side_effect=failing_copy):
+            with self.assertRaises(OSError):
+                self.service.apply_device(device_id)
+
+        on_disk = sorted(p.name for p in device_roms.rglob("*") if p.is_file())
+        with self.db.connect() as connection:
+            recorded = connection.execute("SELECT COUNT(*) AS c FROM deployments").fetchone()["c"]
+        self.assertEqual(len(on_disk), recorded)
+
+        # Everything that landed is managed, so unselecting removes it.
+        self.service.set_selections(device_id, game_ids, False)
+        self.service.apply_device(device_id)
+        self.assertEqual([p.name for p in device_roms.rglob("*") if p.is_file()], [])
+
+    def test_apply_clears_interrupted_copy_temp_files(self):
+        self.write("gba/Real.gba", b"real")
+        device_roms = self.devices / "handheld" / "roms" / "gba"
+        device_roms.mkdir(parents=True)
+        (device_roms / ".Orphan.gba.rommates-copy").write_bytes(b"partial")
+        self.service.scan()
+        with self.db.connect() as connection:
+            device_id = connection.execute("SELECT id FROM devices").fetchone()["id"]
+        result = self.service.apply_device(device_id)
+        self.assertEqual(result["metadata_removed"], 1)
+        self.assertEqual(list(device_roms.rglob("*rommates-copy")), [])
+
+    def test_apply_also_clears_legacy_rom_manager_temp_files(self):
+        device_roms = self.devices / "handheld" / "roms" / "gba"
+        device_roms.mkdir(parents=True)
+        (device_roms / ".Orphan.gba.rommanager-copy").write_bytes(b"partial")
+        self.service.scan()
+        with self.db.connect() as connection:
+            device_id = connection.execute("SELECT id FROM devices").fetchone()["id"]
+        self.assertEqual(self.service.apply_device(device_id)["metadata_removed"], 1)
+
+    def test_symlinked_roms_are_reported_rather_than_silently_dropped(self):
+        outside = Path(self.temp.name) / "outside"
+        outside.mkdir()
+        (outside / "Escaped.gba").write_bytes(b"escaped")
+        self.write("gba/Normal.gba", b"normal")
+        (self.roms / "gba" / "Linked.gba").symlink_to(outside / "Escaped.gba")
+        result = self.service.scan()
+        self.assertEqual(result["games"], 1)
+        self.assertEqual(result["skipped_count"], 1)
+        self.assertIn("Linked.gba", result["skipped"][0])
+
+    def test_history_tables_are_trimmed(self):
+        with self.db.write() as connection:
+            connection.executemany(
+                "INSERT INTO activity(action,detail) VALUES('scan',?)",
+                ((f"entry {index}",) for index in range(40)),
+            )
+        self.db.prune_history(keep_jobs=5, keep_activity=10)
+        with self.db.connect() as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) AS c FROM activity").fetchone()["c"], 10)
+            newest = connection.execute("SELECT detail FROM activity ORDER BY id DESC LIMIT 1").fetchone()
+        self.assertEqual(newest["detail"], "entry 39")
 
     def test_required_roots_fail_fast(self):
         root = Path(self.temp.name) / "missing"

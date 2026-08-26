@@ -1,20 +1,22 @@
 services:
-  rom-manager:
+  rommates:
     build: .
-    image: rom-manager:latest
-    container_name: rom-manager
+    image: rommates:latest
+    container_name: rommates
     restart: unless-stopped
     user: "${PUID:-1000}:${PGID:-1000}"
     ports:
-      - "${ROM_MANAGER_BIND:-0.0.0.0}:${ROM_MANAGER_PORT:-8080}:8080"
+      - "${ROMMATES_BIND:-${ROM_MANAGER_BIND:-0.0.0.0}}:${ROMMATES_PORT:-${ROM_MANAGER_PORT:-8080}}:8080"
     environment:
-      ROM_LIBRARY_ROOT: /emulation/roms
-      ROM_DEVICES_ROOT: /emulation/devices
-      ROM_TRASH_ROOT: /emulation/.rommanager-trash
-      ROM_DATABASE_PATH: /data/rommanager.db
-      ROM_SCAN_ON_START: "true"
-      ROM_REQUIRE_EXISTING_ROOTS: "true"
-      ROM_ACCESS_TOKEN: "${ROM_ACCESS_TOKEN:?Set ROM_ACCESS_TOKEN in .env}"
+      ROMMATES_LIBRARY_ROOT: /emulation/roms
+      ROMMATES_DEVICES_ROOT: /emulation/devices
+      ROMMATES_TRASH_ROOT: /emulation/.rommates-trash
+      ROMMATES_DATABASE_PATH: /data/rommates.db
+      ROMMATES_SCAN_ON_START: "true"
+      ROMMATES_REQUIRE_EXISTING_ROOTS: "true"
+      ROMMATES_ACCESS_TOKEN: "${ROMMATES_ACCESS_TOKEN:-${ROM_ACCESS_TOKEN:-}}"
+      ROMMATES_ALLOW_ANONYMOUS: "${ROMMATES_ALLOW_ANONYMOUS:-${ROM_ALLOW_ANONYMOUS:-false}}"
+      ROMMATES_SCAN_PRUNE_LIMIT: "${ROMMATES_SCAN_PRUNE_LIMIT:-${ROM_SCAN_PRUNE_LIMIT:-0.5}}"
     volumes:
       - ./data:/data
       - "${EMULATION_ROOT:?Set EMULATION_ROOT in .env}:/emulation"
