@@ -1,3 +1,5 @@
+name: rommates
+
 services:
   rommates:
     build: .

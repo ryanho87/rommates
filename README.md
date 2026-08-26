@@ -186,7 +186,7 @@ For the rename release, update the remote and remove the old Compose service onc
 ```bash
 git remote set-url origin https://github.com/ryanho87/rommates.git
 git pull --ff-only
-docker compose down --remove-orphans
+docker compose -p rommanager down --remove-orphans
 docker compose up -d --build
 ```
 
