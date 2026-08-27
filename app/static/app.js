@@ -15,6 +15,7 @@ const state = {
   assigningId: null,
   assignmentDevices: [],
   deviceId: null,
+  deviceScope: "on_device",
   refreshTimer: null,
   gamesController: null,
   // Job ids already surfaced to the user, so the poller and an awaited job do not
@@ -244,7 +245,7 @@ function deviceSummary(game, interactive) {
   return `<button class="count-button" data-assign-devices="${game.id}" aria-label="Choose devices for ${escapeHtml(game.display_name)}" title="${escapeHtml(fullLabel)}">${tags}</button>`;
 }
 
-async function getGames(deviceId = null) {
+async function getGames(deviceId = null, deviceScope = "all") {
   state.gamesController?.abort();
   state.gamesController = new AbortController();
   const params = new URLSearchParams({
@@ -255,6 +256,7 @@ async function getGames(deviceId = null) {
     offset: state.offset,
   });
   if (deviceId) params.set("device_id", deviceId);
+  if (deviceId) params.set("device_scope", deviceScope);
   return api(`/api/games?${params}`, { signal: state.gamesController.signal });
 }
 
@@ -334,13 +336,26 @@ function gameRows(items, deviceMode = false) {
         <td>${duplicateLabel(game.duplicate_status)}</td>
         <td class="meta">${formatBytes(game.size)}</td>
         <td class="meta optional-column">${game.file_count} ${game.file_count === 1 ? "file" : "files"}</td>
-        <td class="meta optional-column">${deviceSummary(game, !deviceMode)}</td>
+        <td class="meta optional-column">${deviceMode ? deviceTargetState(game) : deviceSummary(game, true)}</td>
         ${deviceMode ? "" : `<td class="nowrap">
           <button class="button secondary small" data-rename="${game.id}" ${deviceMode ? "disabled" : ""}>Rename</button>
           <button class="button danger-subtle small" data-delete="${game.id}" data-name="${escapeHtml(game.display_name)}" ${deviceMode ? "disabled" : ""}>Trash</button>
         </td>`}
       </tr>${editor}${assignment}`;
   }).join("");
+}
+
+function deviceTargetState(game) {
+  const states = {
+    on_device: ["unique", "On device"],
+    pending_add: ["naming-strong", "Pending addition"],
+    pending_update: ["naming-strong", "On device · pending update"],
+    pending_remove: ["possible", "Pending removal"],
+    unmanaged: ["cancelled", "On device · unmanaged"],
+    available: ["cancelled", "Not selected"],
+  };
+  const [badge, label] = states[game.device_state] || states.available;
+  return `<span class="badge ${badge}">${label}</span>`;
 }
 
 function gamesTable(data, deviceMode = false) {
@@ -354,7 +369,7 @@ function gamesTable(data, deviceMode = false) {
       <table>
         <thead><tr>
           <th class="checkbox-cell"><input type="checkbox" aria-label="Select visible ROMs" data-select-all></th>
-          <th>Filename</th><th>Platform</th><th>Duplicate status</th><th>Size</th><th class="optional-column">Bundle</th><th class="optional-column">Devices</th>${deviceMode ? "" : "<th>Actions</th>"}
+          <th>Filename</th><th>Platform</th><th>Duplicate status</th><th>Size</th><th class="optional-column">Bundle</th><th class="optional-column">${deviceMode ? "Target state" : "Devices"}</th>${deviceMode ? "" : "<th>Actions</th>"}
         </tr></thead>
         <tbody>${gameRows(data.items, deviceMode)}</tbody>
       </table>
@@ -587,7 +602,7 @@ async function deleteSelected() {
 }
 
 async function renderDevices() {
-  setHeading("Devices", "Choose the desired library for each Syncthing target.");
+  setHeading("Devices", "See what is present now, then choose what changes next.");
   if (!state.devices.length) {
     setViewHtml(`<div class="empty-state"><div><h2>No device folders found</h2><p>Create a directory such as <code>/devices/retroid/roms</code>, then scan the library. Device folders are discovered automatically.</p><button class="button" data-scan>Scan again</button></div></div>`);
     view.querySelector("[data-scan]")?.addEventListener("click", () => startScan());
@@ -595,15 +610,47 @@ async function renderDevices() {
   }
   const device = state.devices.find((item) => item.id === Number(state.deviceId)) || state.devices[0];
   state.deviceId = device.id;
-  const [data, preview] = await Promise.all([getGames(device.id), api(`/api/devices/${device.id}/preview`)]);
+  const [data, preview] = await Promise.all([
+    getGames(device.id, state.deviceScope),
+    api(`/api/devices/${device.id}/preview`),
+  ]);
+  const inventory = data.device_inventory;
+  const noFilters = !state.search && !state.platform;
+  let table = gamesTable(data, true);
+  if (!data.items.length && noFilters && state.deviceScope === "on_device") {
+    table = `<div class="empty-state device-empty-state"><div><h2>No matching library ROMs are on ${escapeHtml(device.name)}</h2><p>ROMmates checks the actual device directory. Browse the library to choose games, or scan the canonical library if these filenames should already match.</p><button class="button secondary" data-device-empty-browse>Browse library</button></div></div>`;
+  } else if (!data.items.length && noFilters && state.deviceScope === "changes") {
+    table = `<div class="empty-state device-empty-state"><div><h2>${escapeHtml(device.name)} is up to date</h2><p>The desired selection matches the ROMs currently present in its device directory.</p></div></div>`;
+  }
   setViewHtml(`
     <div class="device-strip">
       <label class="field"><span>Target device</span><select id="device-select">${state.devices.map((item) => `<option value="${item.id}" ${item.id === device.id ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("")}</select></label>
-      <div class="device-summary"><span><strong>${preview.games}</strong> games selected</span><span><strong>${preview.additions}</strong> files to add</span><span><strong>${preview.removals}</strong> files to remove</span><button class="button" id="apply-device" ${preview.additions === 0 && preview.removals === 0 ? "disabled" : ""}>Review and apply</button></div>
+      <div class="device-summary"><span><strong>${inventory.present_games}</strong> currently on device</span><span><strong>${preview.games}</strong> desired</span><span><strong>${preview.additions}</strong> files to add/update</span><span><strong>${preview.removals}</strong> files to remove</span><button class="button" id="apply-device" ${preview.additions === 0 && preview.removals === 0 ? "disabled" : ""}>Review and apply</button></div>
     </div>
-    ${libraryToolbar(false)}${gamesTable(data, true)}`);
+    <div class="device-scope" role="group" aria-label="Device ROM view">
+      <button class="scope-button ${state.deviceScope === "on_device" ? "active" : ""}" data-device-scope="on_device" aria-pressed="${state.deviceScope === "on_device"}">On device <span>${inventory.present_games.toLocaleString()}</span></button>
+      <button class="scope-button ${state.deviceScope === "changes" ? "active" : ""}" data-device-scope="changes" aria-pressed="${state.deviceScope === "changes"}">Pending changes <span>${inventory.changes.toLocaleString()}</span></button>
+      <button class="scope-button ${state.deviceScope === "all" ? "active" : ""}" data-device-scope="all" aria-pressed="${state.deviceScope === "all"}">Browse library</button>
+    </div>
+    ${inventory.unmatched_files ? `<p class="device-inventory-note"><strong>${inventory.unmatched_files.toLocaleString()}</strong> ${inventory.unmatched_files === 1 ? "file does" : "files do"} not match a bundle in the current library index.</p>` : ""}
+    ${libraryToolbar(false)}${table}`);
   bindFilters(renderDevices);
-  document.querySelector("#device-select").addEventListener("change", (event) => { state.deviceId = Number(event.target.value); renderDevices(); });
+  document.querySelector("#device-select").addEventListener("change", (event) => {
+    state.deviceId = Number(event.target.value);
+    state.deviceScope = "on_device";
+    state.offset = 0;
+    renderDevices();
+  });
+  view.querySelectorAll("[data-device-scope]").forEach((button) => button.addEventListener("click", () => {
+    state.deviceScope = button.dataset.deviceScope;
+    state.offset = 0;
+    renderDevices();
+  }));
+  view.querySelector("[data-device-empty-browse]")?.addEventListener("click", () => {
+    state.deviceScope = "all";
+    state.offset = 0;
+    renderDevices();
+  });
   view.querySelectorAll("[data-device-select]").forEach((checkbox) => checkbox.addEventListener("change", async () => {
     checkbox.disabled = true;
     try {

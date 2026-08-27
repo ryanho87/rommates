@@ -72,6 +72,50 @@ class ApiIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 403)
 
+    def test_device_view_uses_actual_files_and_reports_selection_state(self):
+        scan = self.client.post("/api/scan", headers=self.headers)
+        self.assertEqual(self.wait_for_job(scan.json()["job_id"])["status"], "complete")
+        game = self.client.get("/api/games", headers=self.headers).json()["items"][0]
+        device = self.client.get("/api/devices", headers=self.headers).json()[0]
+        source = self.root / "roms" / game["primary_relpath"]
+        target = self.root / "devices" / device["path"] / "roms" / game["primary_relpath"]
+        unknown = target.parent / "Unknown.gba"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(source.read_bytes())
+        unknown.write_bytes(b"unknown")
+        try:
+            response = self.client.get(
+                f"/api/games?device_id={device['id']}&device_scope=on_device",
+                headers=self.headers,
+            )
+            self.assertEqual(response.status_code, 200)
+            data = response.json()
+            self.assertEqual(data["total"], 1)
+            self.assertEqual(data["items"][0]["device_state"], "unmanaged")
+            self.assertEqual(data["device_inventory"]["present_games"], 1)
+            self.assertEqual(data["device_inventory"]["unmatched_files"], 1)
+
+            selected = self.client.put(
+                f"/api/devices/{device['id']}/selection",
+                headers=self.headers,
+                json={"game_id": game["id"], "selected": True},
+            )
+            self.assertEqual(selected.status_code, 200)
+            updated = self.client.get(
+                f"/api/games?device_id={device['id']}&device_scope=on_device",
+                headers=self.headers,
+            ).json()
+            self.assertEqual(updated["items"][0]["device_state"], "pending_update")
+            self.assertEqual(updated["device_inventory"]["changes"], 1)
+        finally:
+            self.client.put(
+                f"/api/devices/{device['id']}/selection",
+                headers=self.headers,
+                json={"game_id": game["id"], "selected": False},
+            )
+            target.unlink(missing_ok=True)
+            unknown.unlink(missing_ok=True)
+
     def test_running_scan_can_be_cancelled(self):
         started = threading.Event()
 

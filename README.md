@@ -14,6 +14,7 @@ The MVP supports:
 - Confidence filters, collision checks, editable proposals, and bulk bundle renaming
 - Recoverable deletion, restoration, and explicit permanent deletion
 - Per-device desired game selections and previewed reconciliation
+- Actual device-directory inventory with On device, Pending changes, and Browse library views
 - Per-game device assignment directly from the Library screen
 - Inline device status tags showing synced, pending-add, and pending-remove assignments
 - Automatic cleanup of `._*` and `.DS_Store` inside device ROM folders during apply

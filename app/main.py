@@ -367,9 +367,13 @@ def games(
     platform: str = "",
     duplicate: str = Query("all", pattern="^(all|exact|possible|unique)$"),
     device_id: int | None = None,
+    device_scope: str = Query("all", pattern="^(all|on_device|changes)$"),
     limit: int = Query(200, ge=1, le=1000),
     offset: int = Query(0, ge=0),
 ):
+    if device_scope != "all" and device_id is None:
+        raise HTTPException(status_code=400, detail="A device is required for this view")
+    present_relpaths = library.device_inventory(device_id) if device_id is not None else set()
     where = ["1=1"]
     params: list[object] = []
     if search.strip():
@@ -388,19 +392,53 @@ def games(
         where.append(f"({status_expr})=?")
         params.append(duplicate)
     selected_expr = "0"
+    present_expr = "0"
+    managed_expr = "0"
+    synced_expr = "0"
     if device_id is not None:
-        selected_expr = "EXISTS(SELECT 1 FROM device_selections ds WHERE ds.device_id=? AND ds.game_id=g.id)"
-        params_for_select: list[object] = [device_id]
+        selected_expr = "EXISTS(SELECT 1 FROM device_selected ds WHERE ds.game_id=g.id)"
+        present_expr = (
+            "EXISTS(SELECT 1 FROM game_files dgf JOIN device_present df ON df.relpath=dgf.relpath "
+            "WHERE dgf.game_id=g.id)"
+        )
+        managed_expr = "EXISTS(SELECT 1 FROM device_managed dm WHERE dm.game_id=g.id)"
+        synced_expr = (
+            "((SELECT COUNT(*) FROM device_managed dm WHERE dm.game_id=g.id)="
+            "(SELECT COUNT(*) FROM game_files sgf WHERE sgf.game_id=g.id) AND "
+            "(SELECT COUNT(*) FROM game_files sgf WHERE sgf.game_id=g.id)>0)"
+        )
+        params_for_select: list[object] = []
+        if device_scope == "on_device":
+            where.append(f"({present_expr})")
+        elif device_scope == "changes":
+            where.append(f"(({selected_expr}) != ({synced_expr}))")
     else:
         params_for_select = []
     where_sql = " AND ".join(where)
     with db.connect() as connection:
+        if device_id is not None:
+            connection.execute("CREATE TEMP TABLE device_present(relpath TEXT PRIMARY KEY)")
+            connection.execute("CREATE TEMP TABLE device_selected(game_id INTEGER PRIMARY KEY)")
+            connection.execute("CREATE TEMP TABLE device_managed(game_id INTEGER,relpath TEXT,PRIMARY KEY(game_id,relpath))")
+            connection.executemany(
+                "INSERT OR IGNORE INTO device_present(relpath) VALUES(?)",
+                ((relpath,) for relpath in present_relpaths),
+            )
+            connection.execute(
+                "INSERT INTO device_selected(game_id) SELECT game_id FROM device_selections WHERE device_id=?",
+                (device_id,),
+            )
+            connection.execute(
+                "INSERT INTO device_managed(game_id,relpath) SELECT game_id,relpath FROM deployments WHERE device_id=?",
+                (device_id,),
+            )
         total = connection.execute(f"SELECT COUNT(*) AS count FROM games g WHERE {where_sql}", params).fetchone()["count"]
         rows = connection.execute(
             f"SELECT g.*,({status_expr}) AS duplicate_status,"
             f"(SELECT COUNT(*) FROM game_files gf WHERE gf.game_id=g.id) AS file_count,"
             f"(SELECT COUNT(*) FROM device_selections ds WHERE ds.game_id=g.id) AS device_count,"
-            f"({selected_expr}) AS selected FROM games g WHERE {where_sql} "
+            f"({selected_expr}) AS selected,({present_expr}) AS on_device,"
+            f"({managed_expr}) AS managed,({synced_expr}) AS synced FROM games g WHERE {where_sql} "
             "ORDER BY g.display_name COLLATE NOCASE,g.platform LIMIT ? OFFSET ?",
             params_for_select + params + [limit, offset],
         ).fetchall()
@@ -436,7 +474,40 @@ def games(
                 )
             for item in items:
                 item["devices"] = by_game[item["id"]]
-    return {"items": items, "total": total, "limit": limit, "offset": offset}
+                if device_id is not None:
+                    item["device_state"] = (
+                        "on_device" if item["on_device"] and item["selected"] and item["synced"]
+                        else "pending_update" if item["on_device"] and item["selected"]
+                        else "pending_remove" if item["on_device"] and item["managed"]
+                        else "unmanaged" if item["on_device"]
+                        else "pending_add" if item["selected"]
+                        else "available"
+                    )
+        device_inventory = None
+        if device_id is not None:
+            present_games = connection.execute(
+                f"SELECT COUNT(*) AS count FROM games g WHERE {present_expr}"
+            ).fetchone()["count"]
+            changes = connection.execute(
+                f"SELECT COUNT(*) AS count FROM games g WHERE ({selected_expr}) != ({synced_expr})"
+            ).fetchone()["count"]
+            unmatched_files = connection.execute(
+                "SELECT COUNT(*) AS count FROM device_present df WHERE NOT EXISTS("
+                "SELECT 1 FROM game_files gf WHERE gf.relpath=df.relpath)"
+            ).fetchone()["count"]
+            device_inventory = {
+                "present_games": present_games,
+                "changes": changes,
+                "unmatched_files": unmatched_files,
+                "files": len(present_relpaths),
+            }
+    return {
+        "items": items,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "device_inventory": device_inventory,
+    }
 
 
 @app.get("/api/games/{game_id}")

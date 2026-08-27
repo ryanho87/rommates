@@ -907,6 +907,36 @@ class LibraryService:
                     "DELETE FROM device_selections WHERE device_id=? AND game_id=?", (device_id, game_id)
                 )
 
+    def device_inventory(self, device_id: int) -> set[str]:
+        """Return actual device ROM paths without treating them as managed copies."""
+        with self.db.connect() as connection:
+            device = connection.execute("SELECT path FROM devices WHERE id=?", (device_id,)).fetchone()
+        if not device:
+            raise LibraryError("Device was not found")
+        device_root = _inside(
+            self.settings.devices_root,
+            self.settings.devices_root / device["path"] / "roms",
+        )
+        if not device_root.is_dir():
+            return set()
+        inventory: set[str] = set()
+        try:
+            paths = device_root.rglob("*")
+            for path in paths:
+                try:
+                    if path.is_symlink() or not path.is_file():
+                        continue
+                    if path.name.startswith("._") or path.name == ".DS_Store":
+                        continue
+                    if path.name.endswith((COPY_SUFFIX, LEGACY_COPY_SUFFIX)):
+                        continue
+                    inventory.add(path.relative_to(device_root).as_posix())
+                except OSError:
+                    continue
+        except OSError:
+            return inventory
+        return inventory
+
     def set_selections(self, device_id: int, game_ids: Iterable[int], selected: bool) -> int:
         ids = sorted(set(int(game_id) for game_id in game_ids))
         if not ids:
