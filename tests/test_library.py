@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 from app.config import Settings
 from app.db import Database
-from app.library import LibraryError, LibraryService, normalize_name
+from app.library import COPY_SUFFIX, JobCancelled, LibraryError, LibraryService, normalize_name
 
 
 class LibraryServiceTests(unittest.TestCase):
@@ -107,6 +107,28 @@ class LibraryServiceTests(unittest.TestCase):
         with patch("pathlib.Path.open", new=track_open):
             self.service.scan()
         self.assertEqual(reused, ["B.gba"])
+
+    def test_cancelled_scan_keeps_hash_checkpoint_without_reconciling_catalog(self):
+        self.write("gba/A.gba", b"first")
+        self.write("gba/B.gba", b"second")
+        cancel_requested = False
+
+        def progress(_, detail):
+            nonlocal cancel_requested
+            if "Hashing 1 of 2 files" in detail:
+                cancel_requested = True
+
+        def check_cancelled():
+            if cancel_requested:
+                raise JobCancelled("Stopped by user")
+
+        with patch("app.library.HASH_CACHE_BATCH_FILES", 1), self.assertRaises(JobCancelled):
+            self.service.scan(progress_callback=progress, cancel_check=check_cancelled)
+
+        with self.db.connect() as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) AS c FROM games").fetchone()["c"], 0)
+            cached = connection.execute("SELECT relpath FROM file_cache ORDER BY relpath").fetchall()
+        self.assertEqual([row["relpath"] for row in cached], ["gba/A.gba"])
 
     def test_rename_bundle_updates_cue_reference(self):
         self.write("psx/Old Name.bin", b"disc-data")
@@ -331,6 +353,27 @@ class LibraryServiceTests(unittest.TestCase):
         result = self.service.apply_device(device_id)
         self.assertEqual(result["metadata_removed"], 1)
         self.assertEqual(list(device_roms.rglob("*rommates-copy")), [])
+
+    def test_cancelled_apply_removes_partial_copy_and_records_nothing(self):
+        self.write("gba/Large.gba", b"x" * (2 * 1024 * 1024))
+        device_roms = self.devices / "handheld" / "roms"
+        device_roms.mkdir(parents=True)
+        self.service.scan()
+        with self.db.connect() as connection:
+            device_id = connection.execute("SELECT id FROM devices").fetchone()["id"]
+        self.service.set_selection(device_id, self.game_id("Large"), True)
+
+        def cancel_during_copy():
+            if list(device_roms.rglob(f"*{COPY_SUFFIX}")):
+                raise JobCancelled("Stopped by user")
+
+        with self.assertRaises(JobCancelled):
+            self.service.apply_device(device_id, cancel_check=cancel_during_copy)
+
+        self.assertFalse((device_roms / "gba/Large.gba").exists())
+        self.assertEqual(list(device_roms.rglob("*rommates-copy")), [])
+        with self.db.connect() as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) AS c FROM deployments").fetchone()["c"], 0)
 
     def test_apply_also_clears_legacy_rom_manager_temp_files(self):
         device_roms = self.devices / "handheld" / "roms" / "gba"

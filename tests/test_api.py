@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import os
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -51,7 +52,7 @@ class ApiIntegrationTests(unittest.TestCase):
             response = self.client.get(f"/api/jobs/{job_id}", headers=self.headers)
             self.assertEqual(response.status_code, 200)
             job = response.json()
-            if job["status"] in {"complete", "failed"}:
+            if job["status"] in {"complete", "failed", "cancelled"}:
                 return job
             time.sleep(0.02)
         self.fail("Job did not complete")
@@ -69,6 +70,30 @@ class ApiIntegrationTests(unittest.TestCase):
             headers={**self.headers, "Origin": "https://attacker.example"},
         )
         self.assertEqual(response.status_code, 403)
+
+    def test_running_scan_can_be_cancelled(self):
+        started = threading.Event()
+
+        def slow_scan(*_, progress_callback=None, cancel_check=None, **__):
+            if progress_callback:
+                progress_callback(10, "Hashing a test file")
+            started.set()
+            while True:
+                cancel_check()
+                time.sleep(0.01)
+
+        with patch.object(self.main.library, "scan", side_effect=slow_scan):
+            response = self.client.post("/api/scan", headers=self.headers)
+            self.assertEqual(response.status_code, 202)
+            job_id = response.json()["job_id"]
+            self.assertTrue(started.wait(timeout=1))
+            cancelled = self.client.post(f"/api/jobs/{job_id}/cancel", headers=self.headers)
+            self.assertEqual(cancelled.status_code, 202)
+            job = self.wait_for_job(job_id)
+
+        self.assertEqual(job["status"], "cancelled")
+        self.assertEqual(job["detail"], "Stopped by user")
+        self.assertFalse(job["cancellable"])
 
     def test_naming_catalog_suggestions_apply_as_background_job(self):
         scan = self.client.post("/api/scan", headers=self.headers)

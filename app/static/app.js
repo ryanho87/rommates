@@ -28,6 +28,7 @@ const view = document.querySelector("#view");
 const pageTitle = document.querySelector("#page-title");
 const pageSubtitle = document.querySelector("#page-subtitle");
 const scanButton = document.querySelector("#scan-button");
+const stopJobButton = document.querySelector("#stop-job-button");
 const refreshButton = document.querySelector("#refresh-button");
 const dialog = document.querySelector("#confirm-dialog");
 const dialogTitle = document.querySelector("#dialog-title");
@@ -138,6 +139,11 @@ async function waitForJob(jobId) {
     const job = await api(`/api/jobs/${jobId}`);
     if (job.status === "complete") return job.result || {};
     if (job.status === "failed") throw new Error(job.detail || "The background job failed");
+    if (job.status === "cancelled") {
+      const error = new Error(job.detail || "Job stopped by user");
+      error.cancelled = true;
+      throw error;
+    }
     if (Date.now() > deadline) {
       throw new Error(
         "Stopped waiting for this job after 30 minutes. It may still be running — check the Jobs view.",
@@ -163,13 +169,18 @@ async function refreshStatus() {
   document.querySelector("#library-root").textContent = state.status.roots.library;
   const pill = document.querySelector("#job-pill");
   const job = state.status.job;
-  const running = job && ["queued", "running"].includes(job.status);
+  const running = job && ["queued", "running", "cancelling"].includes(job.status);
   const scanning = running && job.kind === "scan";
   pill.classList.toggle("hidden", !running);
   pill.textContent = running
     ? scanning ? `${job.progress}% · ${job.detail}` : JOB_LABELS[job.kind] || "Working…"
     : "";
   pill.title = running ? job.detail : "";
+  const canStop = running && job.cancellable;
+  stopJobButton.classList.toggle("hidden", !canStop);
+  stopJobButton.dataset.jobId = canStop ? job.id : "";
+  stopJobButton.disabled = job?.status === "cancelling";
+  stopJobButton.textContent = job?.status === "cancelling" ? "Stopping…" : "Stop job";
   // Only a scan conflicts with starting another scan; other jobs leave the button usable.
   scanButton.disabled = scanning;
   scanButton.textContent = scanning ? "Scanning…" : "Scan library";
@@ -180,9 +191,9 @@ function scheduleStatusRefresh() {
   clearTimeout(state.refreshTimer);
   state.refreshTimer = setTimeout(async () => {
     try {
-      const wasRunning = state.status?.job && ["queued", "running"].includes(state.status.job.status);
+      const wasRunning = state.status?.job && ["queued", "running", "cancelling"].includes(state.status.job.status);
       await refreshStatus();
-      const isRunning = state.status?.job && ["queued", "running"].includes(state.status.job.status);
+      const isRunning = state.status?.job && ["queued", "running", "cancelling"].includes(state.status.job.status);
       if (isRunning && state.view === "jobs") await renderJobs();
       if (wasRunning && !isRunning) {
         await reportJobOutcome(state.status.job);
@@ -770,9 +781,26 @@ async function renderNaming() {
 async function renderJobs() {
   setHeading("Jobs", "Recent scans and filesystem activity.");
   const [jobs, activity] = await Promise.all([api("/api/jobs"), api("/api/activity")]);
-  const jobsHtml = jobs.length ? `<div class="table-wrap"><table><thead><tr><th>Job</th><th>Status</th><th>Detail</th><th>Started</th><th>Finished</th></tr></thead><tbody>${jobs.map((job) => `<tr><td>${escapeHtml(job.kind)}</td><td><span class="badge ${job.status === "failed" ? "exact" : job.status === "complete" ? "unique" : "possible"}">${escapeHtml(job.status)}${job.status === "running" ? ` · ${job.progress}%` : ""}</span></td><td class="name-cell">${escapeHtml(job.detail)}</td><td class="meta">${escapeHtml(job.created_at)}</td><td class="meta">${escapeHtml(job.completed_at || "In progress")}</td></tr>`).join("")}</tbody></table></div>` : `<div class="empty-state"><div><h2>No jobs yet</h2><p>Library scans will appear here.</p></div></div>`;
+  const jobsHtml = jobs.length ? `<div class="table-wrap"><table><thead><tr><th>Job</th><th>Status</th><th>Detail</th><th>Started</th><th>Finished</th><th>Action</th></tr></thead><tbody>${jobs.map((job) => `<tr><td>${escapeHtml(job.kind)}</td><td><span class="badge ${job.status === "failed" ? "exact" : job.status === "complete" ? "unique" : job.status === "cancelled" ? "cancelled" : "possible"}">${escapeHtml(job.status)}${["running", "cancelling"].includes(job.status) ? ` · ${job.progress}%` : ""}</span></td><td class="name-cell">${escapeHtml(job.detail)}</td><td class="meta">${escapeHtml(job.created_at)}</td><td class="meta">${escapeHtml(job.completed_at || "In progress")}</td><td>${job.cancellable ? `<button class="button danger-subtle small" data-cancel-job="${job.id}" ${job.status === "cancelling" ? "disabled" : ""}>${job.status === "cancelling" ? "Stopping…" : "Stop"}</button>` : ""}</td></tr>`).join("")}</tbody></table></div>` : `<div class="empty-state"><div><h2>No jobs yet</h2><p>Library scans will appear here.</p></div></div>`;
   const activityHtml = activity.length ? `<div class="section-heading"><div><h2>Activity</h2><p>Rename, delete, restore, and deployment history.</p></div></div><div class="table-wrap"><table><thead><tr><th>Action</th><th>Detail</th><th>Time</th></tr></thead><tbody>${activity.map((item) => `<tr><td>${escapeHtml(item.action)}</td><td class="name-cell">${escapeHtml(item.detail)}</td><td class="meta">${escapeHtml(item.created_at)} UTC</td></tr>`).join("")}</tbody></table></div>` : "";
   setViewHtml(jobsHtml + activityHtml);
+  view.querySelectorAll("[data-cancel-job]").forEach((button) => button.addEventListener("click", () => cancelJob(Number(button.dataset.cancelJob), button)));
+}
+
+async function cancelJob(jobId, button = stopJobButton) {
+  if (!jobId) return;
+  button.disabled = true;
+  button.textContent = "Stopping…";
+  try {
+    const result = await api(`/api/jobs/${jobId}/cancel`, { method: "POST" });
+    toast(result.already_finished ? "Job already finished" : "Stop requested. Finishing the current file safely.");
+    await refreshStatus();
+    if (state.view === "jobs") await renderJobs();
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = "Stop";
+    toast(error.message, "error");
+  }
 }
 
 function confirmAction({ title, content, confirmLabel, cancelLabel = "Cancel", danger }) {
@@ -806,7 +834,7 @@ async function startScan(confirmPrune = false) {
     await waitForJob(response.job_id);
     outcome = { status: "complete" };
   } catch (error) {
-    outcome = { status: "failed", detail: error.message };
+    outcome = { status: error.cancelled ? "cancelled" : "failed", detail: error.message };
   }
   await reportJobOutcome({ id: response.job_id, kind: "scan", ...outcome });
   await refreshStatus();
@@ -824,6 +852,10 @@ async function reportJobOutcome(job) {
   }
   if (job.status === "complete") {
     if (job.detail) toast(job.detail);
+    return;
+  }
+  if (job.status === "cancelled") {
+    toast("Job stopped safely");
     return;
   }
   if (isPruneGuardFailure(job.detail)) {
@@ -908,6 +940,7 @@ document.querySelector("#navigation").addEventListener("click", (event) => {
 });
 
 scanButton.addEventListener("click", () => startScan());
+stopJobButton.addEventListener("click", () => cancelJob(Number(stopJobButton.dataset.jobId), stopJobButton));
 refreshButton.addEventListener("click", async () => {
   try { await refreshStatus(); await loadReferenceData(); await renderCurrentView(); }
   catch (error) { toast(error.message, "error"); }

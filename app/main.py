@@ -14,11 +14,12 @@ from pydantic import BaseModel, Field
 
 from .config import Settings
 from .db import Database
-from .library import LibraryError, LibraryService
+from .library import JobCancelled, LibraryError, LibraryService
 from .naming import NamingService
 
 
 MINIMUM_TOKEN_LENGTH = 16
+CANCELLABLE_JOB_KINDS = frozenset({"scan", "device_apply"})
 
 settings = Settings.from_env()
 
@@ -50,6 +51,17 @@ migrate_legacy_storage()
 db = Database(settings.database_path)
 library = LibraryService(settings, db)
 naming = NamingService(db, settings.library_root, library)
+job_cancellations: dict[int, threading.Event] = {}
+job_cancellations_lock = threading.Lock()
+
+
+def job_payload(row) -> dict[str, object]:
+    payload = dict(row)
+    payload["cancellable"] = (
+        payload["kind"] in CANCELLABLE_JOB_KINDS
+        and payload["status"] in {"queued", "running", "cancelling"}
+    )
+    return payload
 
 
 def job_result_detail(kind: str, result: object, fallback: str) -> str:
@@ -78,11 +90,22 @@ def job_result_detail(kind: str, result: object, fallback: str) -> str:
     return fallback
 
 
-def run_job(job_id: int, kind: str, detail: str, operation, *args) -> None:
+def run_job(
+    job_id: int,
+    kind: str,
+    detail: str,
+    operation,
+    cancellation: threading.Event,
+    *args,
+) -> None:
     try:
         with db.write() as connection:
             connection.execute("UPDATE jobs SET status='running' WHERE id=?", (job_id,))
         last_progress_update = 0.0
+
+        def check_cancelled() -> None:
+            if cancellation.is_set():
+                raise JobCancelled("Stopped by user")
 
         def report_progress(progress: int, progress_detail: str) -> None:
             nonlocal last_progress_update
@@ -99,14 +122,26 @@ def run_job(job_id: int, kind: str, detail: str, operation, *args) -> None:
                 )
             last_progress_update = now
 
+        check_cancelled()
         if kind == "scan":
-            result = operation(*args, progress_callback=report_progress)
+            result = operation(
+                *args, progress_callback=report_progress, cancel_check=check_cancelled
+            )
+        elif kind == "device_apply":
+            result = operation(*args, cancel_check=check_cancelled)
         else:
             result = operation(*args)
+        check_cancelled()
         with db.write() as connection:
             connection.execute(
                 "UPDATE jobs SET status='complete',progress=100,detail=?,result_json=?,completed_at=CURRENT_TIMESTAMP WHERE id=?",
                 (job_result_detail(kind, result, detail), json.dumps(result), job_id),
+            )
+    except JobCancelled as exc:
+        with db.write() as connection:
+            connection.execute(
+                "UPDATE jobs SET status='cancelled',detail=?,completed_at=CURRENT_TIMESTAMP WHERE id=?",
+                (str(exc), job_id),
             )
     except Exception as exc:
         with db.write() as connection:
@@ -114,6 +149,9 @@ def run_job(job_id: int, kind: str, detail: str, operation, *args) -> None:
                 "UPDATE jobs SET status='failed',detail=?,completed_at=CURRENT_TIMESTAMP WHERE id=?",
                 (str(exc), job_id),
             )
+    finally:
+        with job_cancellations_lock:
+            job_cancellations.pop(job_id, None)
 
 
 def enqueue_job(kind: str, detail: str, operation, *args) -> int:
@@ -123,8 +161,15 @@ def enqueue_job(kind: str, detail: str, operation, *args) -> int:
             (kind, detail),
         )
         job_id = connection.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
+    cancellation = threading.Event()
+    with job_cancellations_lock:
+        job_cancellations[job_id] = cancellation
     db.prune_history()
-    threading.Thread(target=run_job, args=(job_id, kind, detail, operation, *args), daemon=True).start()
+    threading.Thread(
+        target=run_job,
+        args=(job_id, kind, detail, operation, cancellation, *args),
+        daemon=True,
+    ).start()
     return job_id
 
 
@@ -134,7 +179,7 @@ async def lifespan(_: FastAPI):
     with db.write() as connection:
         connection.execute(
             "UPDATE jobs SET status='failed',detail='Interrupted by application restart',completed_at=CURRENT_TIMESTAMP "
-            "WHERE status IN ('queued','running')"
+            "WHERE status IN ('queued','running','cancelling')"
         )
     # Validated unconditionally: an unset token disables authentication entirely, so
     # this must never depend on an unrelated flag or on which launcher started the app.
@@ -256,7 +301,7 @@ def status():
         "devices": devices,
         "trash": trash,
         "duplicates": duplicates,
-        "job": dict(current_job) if current_job else None,
+        "job": job_payload(current_job) if current_job else None,
         "roots": {
             "library": str(settings.library_root),
             "devices": str(settings.devices_root),
@@ -269,7 +314,7 @@ def status():
 def start_scan(confirm_prune: bool = False):
     with db.write() as connection:
         active = connection.execute(
-            "SELECT id FROM jobs WHERE kind='scan' AND status IN ('queued','running') ORDER BY id DESC LIMIT 1"
+            "SELECT id FROM jobs WHERE kind='scan' AND status IN ('queued','running','cancelling') ORDER BY id DESC LIMIT 1"
         ).fetchone()
         if active:
             return {"job_id": active["id"], "already_running": True}
@@ -504,7 +549,7 @@ def job(job_id: int):
         row = connection.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Job was not found")
-    result = dict(row)
+    result = job_payload(row)
     result_json = result.pop("result_json", None)
     result["result"] = json.loads(result_json) if result_json else None
     return result
@@ -514,7 +559,35 @@ def job(job_id: int):
 def jobs():
     with db.connect() as connection:
         rows = connection.execute("SELECT * FROM jobs ORDER BY id DESC LIMIT 100").fetchall()
-    return [dict(row) for row in rows]
+    return [job_payload(row) for row in rows]
+
+
+@app.post("/api/jobs/{job_id}/cancel", status_code=202)
+def cancel_job(job_id: int):
+    with db.connect() as connection:
+        row = connection.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Job was not found")
+    if row["status"] in {"complete", "failed", "cancelled"}:
+        return {"job_id": job_id, "status": row["status"], "already_finished": True}
+    if row["kind"] not in CANCELLABLE_JOB_KINDS:
+        raise HTTPException(
+            status_code=409,
+            detail="This filesystem operation is too short or atomic to stop safely",
+        )
+    with job_cancellations_lock:
+        cancellation = job_cancellations.get(job_id)
+        if cancellation:
+            cancellation.set()
+    if not cancellation:
+        raise HTTPException(status_code=409, detail="The job is no longer running")
+    with db.write() as connection:
+        connection.execute(
+            "UPDATE jobs SET status='cancelling',detail='Stopping safely at the next checkpoint' "
+            "WHERE id=? AND status IN ('queued','running')",
+            (job_id,),
+        )
+    return {"job_id": job_id, "status": "cancelling", "already_finished": False}
 
 
 @app.get("/api/activity")

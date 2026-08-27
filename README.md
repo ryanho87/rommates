@@ -18,6 +18,7 @@ The MVP supports:
 - Inline device status tags showing synced, pending-add, and pending-remove assignments
 - Automatic cleanup of `._*` and `.DS_Store` inside device ROM folders during apply
 - Background jobs for scans, copies, renames, delete, restore, and purge operations
+- Safe stop controls for scans and device deployment jobs
 - Bearer-token protection for the private API
 - Browser/OS light and dark themes
 
@@ -100,6 +101,11 @@ Selections represent the desired managed set for a device. Applying changes:
 
 Each copy is recorded as it lands, so an apply that fails or is interrupted partway leaves every file it already wrote under management. Re-running the apply finishes the job, and unselecting a game still removes what was copied.
 
+Device apply jobs can be stopped from the header or Jobs screen. ROMmates checks for
+cancellation between copy chunks, removes the current temporary partial file, and leaves
+previously completed copies recorded for the next apply. Short atomic operations such as
+rename, trash, restore, and purge are not interruptible once they begin.
+
 On the first run, existing files in a device directory are considered unmanaged and will not be deleted. Select matching games in the UI to bring them under management.
 
 You can build the desired set in either direction:
@@ -123,6 +129,11 @@ a devices root that reports no devices at all is treated as unavailable rather t
 
 Files that cannot be read — including symlinks, which are never indexed — are counted and
 named in the scan job detail instead of being dropped silently.
+
+Running scans can be stopped from the header or Jobs screen. Cancellation is cooperative:
+ROMmates finishes the current filesystem checkpoint, preserves completed hash-cache batches,
+and does not commit a partially reconciled catalog. A later scan resumes from those cached
+hashes.
 
 ## Rename and delete safety
 

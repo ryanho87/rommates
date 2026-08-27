@@ -27,9 +27,14 @@ HASH_CACHE_BATCH_FILES = 16
 HASH_CACHE_BATCH_BYTES = 128 * 1024 * 1024
 
 ProgressCallback = Callable[[int, str], None]
+CancelCheck = Callable[[], None]
 
 
 class LibraryError(RuntimeError):
+    pass
+
+
+class JobCancelled(RuntimeError):
     pass
 
 
@@ -159,7 +164,10 @@ class LibraryService:
         cache: dict[str, tuple[int, int, str]],
         cache_updates: dict[str, tuple[int, int, str]],
         progress: ScanProgress | None = None,
+        cancel_check: CancelCheck | None = None,
     ) -> tuple[str, os.stat_result]:
+        if cancel_check:
+            cancel_check()
         stat = path.stat()
         cached = cache.get(relpath)
         if cached and cached[0] == stat.st_size and cached[1] == stat.st_mtime_ns:
@@ -171,6 +179,8 @@ class LibraryService:
         digest = hashlib.sha256()
         with path.open("rb") as handle:
             for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                if cancel_check:
+                    cancel_check()
                 digest.update(chunk)
                 if progress:
                     progress.advance(len(chunk))
@@ -205,12 +215,14 @@ class LibraryService:
                     refs.append(descriptor.parent / value.replace("\\", "/"))
         return refs
 
-    def _bundle_paths(self, primary: Path) -> tuple[Path, ...]:
+    def _bundle_paths(self, primary: Path, cancel_check: CancelCheck | None = None) -> tuple[Path, ...]:
         root = self.settings.library_root.resolve()
         found: list[Path] = []
         seen: set[Path] = set()
 
         def visit(path: Path) -> None:
+            if cancel_check:
+                cancel_check()
             try:
                 resolved = _inside(root, path)
             except (LibraryError, FileNotFoundError):
@@ -234,13 +246,14 @@ class LibraryService:
         cache_updates: dict[str, tuple[int, int, str]],
         paths: tuple[Path, ...] | None = None,
         progress: ScanProgress | None = None,
+        cancel_check: CancelCheck | None = None,
     ) -> GameCandidate:
         root = self.settings.library_root.resolve()
         paths = paths if paths is not None else self._bundle_paths(primary)
         records: list[FileRecord] = []
         for path in paths:
             relpath = _rel(root, path)
-            sha256, stat = self._hash_file(path, relpath, cache, cache_updates, progress)
+            sha256, stat = self._hash_file(path, relpath, cache, cache_updates, progress, cancel_check)
             kind = "descriptor" if path.suffix.lower() in {".cue", ".m3u"} else "content"
             records.append(FileRecord(relpath, stat.st_size, sha256, kind, stat.st_mtime_ns))
         if not records:
@@ -268,6 +281,7 @@ class LibraryService:
         cache_updates: dict[str, tuple[int, int, str]] | None = None,
         skipped: list[str] | None = None,
         progress_callback: ProgressCallback | None = None,
+        cancel_check: CancelCheck | None = None,
     ) -> list[GameCandidate]:
         root = self.settings.library_root.resolve()
         if cache is None:
@@ -287,9 +301,16 @@ class LibraryService:
             progress_callback(0, "Discovering library files")
         work: list[tuple[Path, str, tuple[Path, ...]]] = []
         for platform_dir in sorted((item for item in root.iterdir() if item.is_dir()), key=lambda p: p.name.lower()):
+            if cancel_check:
+                cancel_check()
+            platform_paths: list[Path] = []
+            for path in platform_dir.rglob("*"):
+                if cancel_check:
+                    cancel_check()
+                platform_paths.append(path)
             descriptors = sorted(
                 (
-                    path for path in platform_dir.rglob("*")
+                    path for path in platform_paths
                     if path.is_file() and path.suffix.lower() in {".m3u", ".cue"} and not path.name.startswith("._")
                 ),
                 key=lambda p: (0 if p.suffix.lower() == ".m3u" else 1, p.as_posix().lower()),
@@ -301,10 +322,12 @@ class LibraryService:
                 if resolved in referenced:
                     continue
                 primaries.append(descriptor)
-                bundle = self._bundle_paths(descriptor)
+                bundle = self._bundle_paths(descriptor, cancel_check)
                 referenced.update(path for path in bundle if path != resolved)
 
-            for path in sorted(platform_dir.rglob("*"), key=lambda p: p.as_posix().lower()):
+            for path in sorted(platform_paths, key=lambda p: p.as_posix().lower()):
+                if cancel_check:
+                    cancel_check()
                 if not path.is_file() or path.name.startswith("._") or path.name == ".DS_Store":
                     continue
                 if path.suffix.lower() not in self.settings.extensions:
@@ -317,12 +340,16 @@ class LibraryService:
                 primaries.append(path)
 
             for primary in primaries:
-                work.append((primary, platform_dir.name, self._bundle_paths(primary)))
+                if cancel_check:
+                    cancel_check()
+                work.append((primary, platform_dir.name, self._bundle_paths(primary, cancel_check)))
 
         total_bytes = 0
         total_files = 0
         for _, _, paths in work:
             for path in paths:
+                if cancel_check:
+                    cancel_check()
                 try:
                     total_bytes += path.stat().st_size
                     total_files += 1
@@ -333,8 +360,12 @@ class LibraryService:
         progress._emit()
         try:
             for primary, platform, paths in work:
+                if cancel_check:
+                    cancel_check()
                 try:
-                    candidates.append(self._candidate(primary, platform, cache, cache_updates, paths, progress))
+                    candidates.append(
+                        self._candidate(primary, platform, cache, cache_updates, paths, progress, cancel_check)
+                    )
                 except (OSError, LibraryError) as exc:
                     skipped.append(f"{primary.name}: {exc}")
         finally:
@@ -395,6 +426,7 @@ class LibraryService:
         self,
         force_prune: bool = False,
         progress_callback: ProgressCallback | None = None,
+        cancel_check: CancelCheck | None = None,
     ) -> dict[str, object]:
         with self._operation_lock:
             with self.db.connect() as connection:
@@ -408,15 +440,23 @@ class LibraryService:
                 }
             cache_updates: dict[str, tuple[int, int, str]] = {}
             skipped: list[str] = []
-            candidates = self.discover_candidates(cache, cache_updates, skipped, progress_callback)
+            candidates = self.discover_candidates(
+                cache, cache_updates, skipped, progress_callback, cancel_check
+            )
+            if cancel_check:
+                cancel_check()
             seen = {candidate.primary_relpath for candidate in candidates}
             # Check before writing anything: the guard aborts the whole scan.
             self._guard_prune(known_relpaths, seen, skipped, force_prune)
             if progress_callback:
                 progress_callback(92, f"Updating catalog with {len(candidates):,} games")
             with self.db.write() as connection:
+                if cancel_check:
+                    cancel_check()
                 removed_devices = self._discover_devices(connection)
                 for candidate in candidates:
+                    if cancel_check:
+                        cancel_check()
                     connection.execute(
                         "INSERT INTO games(platform,primary_relpath,display_name,extension,size,bundle_hash,normalized_name,mtime_ns) "
                         "VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(primary_relpath) DO UPDATE SET "
@@ -893,7 +933,9 @@ class LibraryService:
                 (device_id, game_id, relpath),
             )
 
-    def apply_device(self, device_id: int) -> dict[str, int]:
+    def apply_device(
+        self, device_id: int, cancel_check: CancelCheck | None = None
+    ) -> dict[str, int]:
         with self._operation_lock:
             with self.db.connect() as connection:
                 device = connection.execute("SELECT * FROM devices WHERE id=?", (device_id,)).fetchone()
@@ -920,6 +962,8 @@ class LibraryService:
             copy_plan: list[tuple[int, str, Path, Path]] = []
             required_bytes = 0
             for game_id, relpath in sorted(desired):
+                if cancel_check:
+                    cancel_check()
                 source = _inside(source_root, source_root / relpath)
                 target = _inside(device_root, device_root / relpath)
                 target.parent.mkdir(parents=True, exist_ok=True)
@@ -938,14 +982,25 @@ class LibraryService:
                 )
             # Files already present and identical are still part of the managed set.
             for game_id, relpath in sorted(desired - {(g, r) for g, r, _, _ in copy_plan}):
+                if cancel_check:
+                    cancel_check()
                 self._record_deployment(device_id, game_id, relpath)
             # Record every copy as it lands. Batching this until the end would leave
             # files on the device that no deployment row claims, making them permanently
             # unmanaged if the job fails or the container stops partway through.
             for game_id, relpath, source, target in copy_plan:
+                if cancel_check:
+                    cancel_check()
                 temp = target.with_name(f".{target.name}{COPY_SUFFIX}")
                 try:
-                    shutil.copy2(source, temp)
+                    if cancel_check:
+                        with source.open("rb") as source_handle, temp.open("wb") as target_handle:
+                            for chunk in iter(lambda: source_handle.read(1024 * 1024), b""):
+                                cancel_check()
+                                target_handle.write(chunk)
+                        shutil.copystat(source, temp)
+                    else:
+                        shutil.copy2(source, temp)
                     os.replace(temp, target)
                 except Exception:
                     temp.unlink(missing_ok=True)
@@ -953,6 +1008,8 @@ class LibraryService:
                 self._record_deployment(device_id, game_id, relpath)
                 copied += 1
             for game_id, relpath in sorted(existing - desired):
+                if cancel_check:
+                    cancel_check()
                 target = _inside(device_root, device_root / relpath)
                 if target.is_file():
                     target.unlink()
@@ -960,6 +1017,8 @@ class LibraryService:
                 self._forget_deployment(device_id, game_id, relpath)
             for pattern in ("._*", ".DS_Store", f"*{COPY_SUFFIX}", f"*{LEGACY_COPY_SUFFIX}"):
                 for metadata in device_root.rglob(pattern):
+                    if cancel_check:
+                        cancel_check()
                     if metadata.is_file():
                         metadata.unlink()
                         metadata_removed += 1
