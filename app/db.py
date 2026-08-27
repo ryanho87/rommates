@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 import threading
 from contextlib import contextmanager
@@ -109,6 +110,14 @@ CREATE TABLE IF NOT EXISTS jobs (
     completed_at TEXT
 );
 
+CREATE TABLE IF NOT EXISTS job_issues (
+    id INTEGER PRIMARY KEY,
+    job_id INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+    detail TEXT NOT NULL,
+    UNIQUE(job_id, detail)
+);
+CREATE INDEX IF NOT EXISTS idx_job_issues_job ON job_issues(job_id, id);
+
 CREATE TABLE IF NOT EXISTS activity (
     id INTEGER PRIMARY KEY,
     action TEXT NOT NULL,
@@ -135,6 +144,22 @@ class Database:
             if "result_json" not in job_columns:
                 connection.execute("ALTER TABLE jobs ADD COLUMN result_json TEXT")
             connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(2)")
+            # Older scanners kept at most 50 issue strings inside result_json. Preserve
+            # those available details when upgrading; future scans write every issue
+            # directly to job_issues as it is discovered.
+            for row in connection.execute(
+                "SELECT id,result_json FROM jobs WHERE kind='scan' AND result_json IS NOT NULL"
+            ):
+                try:
+                    result = json.loads(row["result_json"])
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                skipped = result.get("skipped", []) if isinstance(result, dict) else []
+                connection.executemany(
+                    "INSERT OR IGNORE INTO job_issues(job_id,detail) VALUES(?,?)",
+                    ((row["id"], str(detail)) for detail in skipped),
+                )
+            connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(3)")
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:

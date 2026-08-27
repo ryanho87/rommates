@@ -57,6 +57,17 @@ job_cancellations_lock = threading.Lock()
 
 def job_payload(row) -> dict[str, object]:
     payload = dict(row)
+    result_json = payload.get("result_json")
+    try:
+        result = json.loads(result_json) if result_json else None
+    except (TypeError, json.JSONDecodeError):
+        result = None
+    captured = int(payload.get("issue_count") or 0)
+    reported = captured
+    if isinstance(result, dict):
+        reported = max(reported, int(result.get("skipped_count") or 0))
+    payload["issue_count"] = captured
+    payload["reported_issue_count"] = reported
     payload["cancellable"] = (
         payload["kind"] in CANCELLABLE_JOB_KINDS
         and payload["status"] in {"queued", "running", "cancelling"}
@@ -98,6 +109,17 @@ def run_job(
     cancellation: threading.Event,
     *args,
 ) -> None:
+    job_issues: list[str] = []
+
+    def persist_issues() -> None:
+        if not job_issues:
+            return
+        with db.write() as connection:
+            connection.executemany(
+                "INSERT OR IGNORE INTO job_issues(job_id,detail) VALUES(?,?)",
+                ((job_id, issue) for issue in job_issues),
+            )
+
     try:
         with db.write() as connection:
             connection.execute("UPDATE jobs SET status='running' WHERE id=?", (job_id,))
@@ -125,31 +147,39 @@ def run_job(
         check_cancelled()
         if kind == "scan":
             result = operation(
-                *args, progress_callback=report_progress, cancel_check=check_cancelled
+                *args,
+                progress_callback=report_progress,
+                cancel_check=check_cancelled,
+                issue_callback=job_issues.append,
             )
         elif kind == "device_apply":
             result = operation(*args, cancel_check=check_cancelled)
         else:
             result = operation(*args)
         check_cancelled()
+        persist_issues()
         with db.write() as connection:
             connection.execute(
                 "UPDATE jobs SET status='complete',progress=100,detail=?,result_json=?,completed_at=CURRENT_TIMESTAMP WHERE id=?",
                 (job_result_detail(kind, result, detail), json.dumps(result), job_id),
             )
     except JobCancelled as exc:
+        persist_issues()
         with db.write() as connection:
             connection.execute(
                 "UPDATE jobs SET status='cancelled',detail=?,completed_at=CURRENT_TIMESTAMP WHERE id=?",
                 (str(exc), job_id),
             )
     except Exception as exc:
+        persist_issues()
         with db.write() as connection:
             connection.execute(
                 "UPDATE jobs SET status='failed',detail=?,completed_at=CURRENT_TIMESTAMP WHERE id=?",
                 (str(exc), job_id),
             )
     finally:
+        # Also covers a failure raised while constructing the terminal job result.
+        persist_issues()
         with job_cancellations_lock:
             job_cancellations.pop(job_id, None)
 
@@ -546,7 +576,11 @@ def purge(trash_id: int):
 @app.get("/api/jobs/{job_id}")
 def job(job_id: int):
     with db.connect() as connection:
-        row = connection.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+        row = connection.execute(
+            "SELECT j.*,(SELECT COUNT(*) FROM job_issues i WHERE i.job_id=j.id) AS issue_count "
+            "FROM jobs j WHERE j.id=?",
+            (job_id,),
+        ).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Job was not found")
     result = job_payload(row)
@@ -558,8 +592,42 @@ def job(job_id: int):
 @app.get("/api/jobs")
 def jobs():
     with db.connect() as connection:
-        rows = connection.execute("SELECT * FROM jobs ORDER BY id DESC LIMIT 100").fetchall()
+        rows = connection.execute(
+            "SELECT j.*,(SELECT COUNT(*) FROM job_issues i WHERE i.job_id=j.id) AS issue_count "
+            "FROM jobs j ORDER BY j.id DESC LIMIT 100"
+        ).fetchall()
     return [job_payload(row) for row in rows]
+
+
+@app.get("/api/jobs/{job_id}/issues")
+def job_issues(
+    job_id: int,
+    limit: int = Query(250, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+):
+    with db.connect() as connection:
+        job_row = connection.execute(
+            "SELECT j.*,(SELECT COUNT(*) FROM job_issues i WHERE i.job_id=j.id) AS issue_count "
+            "FROM jobs j WHERE j.id=?",
+            (job_id,),
+        ).fetchone()
+        if not job_row:
+            raise HTTPException(status_code=404, detail="Job was not found")
+        rows = connection.execute(
+            "SELECT id,detail FROM job_issues WHERE job_id=? ORDER BY id LIMIT ? OFFSET ?",
+            (job_id, limit, offset),
+        ).fetchall()
+    payload = job_payload(job_row)
+    total = int(payload["issue_count"])
+    reported_total = int(payload["reported_issue_count"])
+    return {
+        "items": [dict(row) for row in rows],
+        "total": total,
+        "reported_total": reported_total,
+        "captured_all": total >= reported_total,
+        "limit": limit,
+        "offset": offset,
+    }
 
 
 @app.post("/api/jobs/{job_id}/cancel", status_code=202)

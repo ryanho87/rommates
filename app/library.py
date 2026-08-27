@@ -28,6 +28,7 @@ HASH_CACHE_BATCH_BYTES = 128 * 1024 * 1024
 
 ProgressCallback = Callable[[int, str], None]
 CancelCheck = Callable[[], None]
+IssueCallback = Callable[[str], None]
 
 
 class LibraryError(RuntimeError):
@@ -282,6 +283,7 @@ class LibraryService:
         skipped: list[str] | None = None,
         progress_callback: ProgressCallback | None = None,
         cancel_check: CancelCheck | None = None,
+        issue_callback: IssueCallback | None = None,
     ) -> list[GameCandidate]:
         root = self.settings.library_root.resolve()
         if cache is None:
@@ -294,6 +296,17 @@ class LibraryService:
             cache_updates = {}
         if skipped is None:
             skipped = []
+
+        def record_issue(path: Path, reason: object) -> None:
+            try:
+                relpath = path.relative_to(root).as_posix()
+            except ValueError:
+                relpath = path.name
+            detail = f"{relpath}: {reason}"
+            skipped.append(detail)
+            if issue_callback:
+                issue_callback(detail)
+
         candidates: list[GameCandidate] = []
         if not root.exists():
             return candidates
@@ -333,7 +346,7 @@ class LibraryService:
                 if path.suffix.lower() not in self.settings.extensions:
                     continue
                 if path.is_symlink():
-                    skipped.append(f"{path.name}: symbolic links are not indexed")
+                    record_issue(path, "symbolic links are not indexed")
                     continue
                 if path.resolve() in referenced or path in primaries:
                     continue
@@ -367,7 +380,7 @@ class LibraryService:
                         self._candidate(primary, platform, cache, cache_updates, paths, progress, cancel_check)
                     )
                 except (OSError, LibraryError) as exc:
-                    skipped.append(f"{primary.name}: {exc}")
+                    record_issue(primary, exc)
         finally:
             # Normal Python exceptions still preserve everything hashed so far. A hard
             # container stop can lose at most the current bounded batch.
@@ -427,6 +440,7 @@ class LibraryService:
         force_prune: bool = False,
         progress_callback: ProgressCallback | None = None,
         cancel_check: CancelCheck | None = None,
+        issue_callback: IssueCallback | None = None,
     ) -> dict[str, object]:
         with self._operation_lock:
             with self.db.connect() as connection:
@@ -441,7 +455,7 @@ class LibraryService:
             cache_updates: dict[str, tuple[int, int, str]] = {}
             skipped: list[str] = []
             candidates = self.discover_candidates(
-                cache, cache_updates, skipped, progress_callback, cancel_check
+                cache, cache_updates, skipped, progress_callback, cancel_check, issue_callback
             )
             if cancel_check:
                 cancel_check()

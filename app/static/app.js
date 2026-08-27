@@ -22,6 +22,8 @@ const state = {
   reportedJobs: new Set(),
   namingConfidence: "all",
   namingSelected: new Map(),
+  jobReportId: null,
+  jobIssueOffset: 0,
 };
 
 const view = document.querySelector("#view");
@@ -779,12 +781,82 @@ async function renderNaming() {
 }
 
 async function renderJobs() {
-  setHeading("Jobs", "Recent scans and filesystem activity.");
+  setHeading("Jobs", "Detailed reports for scans and filesystem activity.");
   const [jobs, activity] = await Promise.all([api("/api/jobs"), api("/api/activity")]);
-  const jobsHtml = jobs.length ? `<div class="table-wrap"><table><thead><tr><th>Job</th><th>Status</th><th>Detail</th><th>Started</th><th>Finished</th><th>Action</th></tr></thead><tbody>${jobs.map((job) => `<tr><td>${escapeHtml(job.kind)}</td><td><span class="badge ${job.status === "failed" ? "exact" : job.status === "complete" ? "unique" : job.status === "cancelled" ? "cancelled" : "possible"}">${escapeHtml(job.status)}${["running", "cancelling"].includes(job.status) ? ` · ${job.progress}%` : ""}</span></td><td class="name-cell">${escapeHtml(job.detail)}</td><td class="meta">${escapeHtml(job.created_at)}</td><td class="meta">${escapeHtml(job.completed_at || "In progress")}</td><td>${job.cancellable ? `<button class="button danger-subtle small" data-cancel-job="${job.id}" ${job.status === "cancelling" ? "disabled" : ""}>${job.status === "cancelling" ? "Stopping…" : "Stop"}</button>` : ""}</td></tr>`).join("")}</tbody></table></div>` : `<div class="empty-state"><div><h2>No jobs yet</h2><p>Library scans will appear here.</p></div></div>`;
+  if (state.jobReportId && !jobs.some((job) => job.id === state.jobReportId)) state.jobReportId = null;
+  let report = null;
+  let issues = null;
+  if (state.jobReportId) {
+    [report, issues] = await Promise.all([
+      api(`/api/jobs/${state.jobReportId}`),
+      api(`/api/jobs/${state.jobReportId}/issues?limit=250&offset=${state.jobIssueOffset}`),
+    ]);
+  }
+  const jobsHtml = jobs.length ? `<div class="table-wrap"><table><thead><tr><th>Job</th><th>Status</th><th>Detail</th><th>Started</th><th>Finished</th><th>Action</th></tr></thead><tbody>${jobs.map((job) => `<tr${state.jobReportId === job.id ? ` class="selected-row"` : ""}><td>${escapeHtml(job.kind)}</td><td><span class="badge ${job.status === "failed" ? "exact" : job.status === "complete" ? "unique" : job.status === "cancelled" ? "cancelled" : "possible"}">${escapeHtml(job.status)}${["running", "cancelling"].includes(job.status) ? ` · ${job.progress}%` : ""}</span></td><td class="name-cell">${escapeHtml(job.detail)}</td><td class="meta">${escapeHtml(job.created_at)}</td><td class="meta">${escapeHtml(job.completed_at || "In progress")}</td><td><div class="bulk-actions"><button class="button secondary small" data-job-report="${job.id}" aria-expanded="${state.jobReportId === job.id}">${state.jobReportId === job.id ? "Close" : "Report"}${job.reported_issue_count ? ` · ${job.reported_issue_count} issues` : ""}</button>${job.cancellable ? `<button class="button danger-subtle small" data-cancel-job="${job.id}" ${job.status === "cancelling" ? "disabled" : ""}>${job.status === "cancelling" ? "Stopping…" : "Stop"}</button>` : ""}</div></td></tr>`).join("")}</tbody></table></div>` : `<div class="empty-state"><div><h2>No jobs yet</h2><p>Library scans will appear here.</p></div></div>`;
+  const reportHtml = report ? renderJobReport(report, issues) : "";
   const activityHtml = activity.length ? `<div class="section-heading"><div><h2>Activity</h2><p>Rename, delete, restore, and deployment history.</p></div></div><div class="table-wrap"><table><thead><tr><th>Action</th><th>Detail</th><th>Time</th></tr></thead><tbody>${activity.map((item) => `<tr><td>${escapeHtml(item.action)}</td><td class="name-cell">${escapeHtml(item.detail)}</td><td class="meta">${escapeHtml(item.created_at)} UTC</td></tr>`).join("")}</tbody></table></div>` : "";
-  setViewHtml(jobsHtml + activityHtml);
+  setViewHtml(jobsHtml + reportHtml + activityHtml);
   view.querySelectorAll("[data-cancel-job]").forEach((button) => button.addEventListener("click", () => cancelJob(Number(button.dataset.cancelJob), button)));
+  view.querySelectorAll("[data-job-report]").forEach((button) => button.addEventListener("click", () => {
+    const jobId = Number(button.dataset.jobReport);
+    state.jobReportId = state.jobReportId === jobId ? null : jobId;
+    state.jobIssueOffset = 0;
+    renderJobs();
+  }));
+  view.querySelectorAll("[data-issue-page]").forEach((button) => button.addEventListener("click", () => {
+    state.jobIssueOffset = Math.max(0, state.jobIssueOffset + (button.dataset.issuePage === "next" ? 250 : -250));
+    renderJobs();
+  }));
+  view.querySelector("[data-copy-issues]")?.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(issues.items.map((item) => item.detail).join("\n"));
+      toast(`Copied ${issues.items.length} issue paths`);
+    } catch {
+      toast("The browser could not copy the issue list", "error");
+    }
+  });
+}
+
+function resultLabel(key) {
+  return key.replaceAll("_", " ").replace(/^./, (letter) => letter.toUpperCase());
+}
+
+function resultValue(value) {
+  if (Array.isArray(value)) return value.length ? value.join(", ") : "None";
+  if (typeof value === "object" && value !== null) return JSON.stringify(value);
+  if (typeof value === "number") return value.toLocaleString();
+  if (value === null || value === undefined || value === "") return "None";
+  return String(value);
+}
+
+function jobDuration(job) {
+  if (!job.completed_at) return "In progress";
+  const started = Date.parse(`${job.created_at}Z`);
+  const finished = Date.parse(`${job.completed_at}Z`);
+  if (!Number.isFinite(started) || !Number.isFinite(finished)) return "—";
+  const seconds = Math.max(0, Math.round((finished - started) / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes}m ${seconds % 60}s`;
+}
+
+function renderJobReport(job, issues) {
+  const resultEntries = job.result && typeof job.result === "object"
+    ? Object.entries(job.result).filter(([key]) => key !== "skipped" && key !== "skipped_count")
+    : [];
+  const results = resultEntries.length
+    ? `<dl class="report-grid">${resultEntries.map(([key, value]) => `<div><dt>${escapeHtml(resultLabel(key))}</dt><dd>${escapeHtml(resultValue(value))}</dd></div>`).join("")}</dl>`
+    : `<p class="report-empty">No structured result was recorded for this job.</p>`;
+  const captureWarning = issues && !issues.captured_all
+    ? `<p class="issue-warning" role="note">This older scan reported <strong>${issues.reported_total.toLocaleString()}</strong> unreadable files, but retained details for only <strong>${issues.total.toLocaleString()}</strong>. Run a new scan to capture the complete list; unchanged ROM hashes will be reused.</p>`
+    : "";
+  const issueRows = issues?.items.length
+    ? `<div class="table-wrap issue-table"><table><thead><tr><th>Unreadable file and reason</th></tr></thead><tbody>${issues.items.map((item) => `<tr><td><code class="issue-path">${escapeHtml(item.detail)}</code></td></tr>`).join("")}</tbody></table></div><div class="pager"><span>Showing ${(issues.offset + 1).toLocaleString()}–${Math.min(issues.offset + issues.items.length, issues.total).toLocaleString()} of ${issues.total.toLocaleString()} captured</span><div class="bulk-actions"><button class="button secondary small" data-copy-issues>Copy page</button><button class="button secondary small" data-issue-page="previous" ${issues.offset === 0 ? "disabled" : ""}>Previous</button><button class="button secondary small" data-issue-page="next" ${issues.offset + issues.limit >= issues.total ? "disabled" : ""}>Next</button></div></div>`
+    : `<p class="report-empty">No unreadable files were recorded for this job.</p>`;
+  const scanIssues = job.kind === "scan"
+    ? `<div class="report-section"><div class="report-section-head"><div><h3>Unreadable files</h3><p>${issues.reported_total ? `${issues.reported_total.toLocaleString()} reported by this scan.` : "Paths and reasons captured during scanning."}</p></div></div>${captureWarning}${issueRows}</div>`
+    : "";
+  return `<section class="job-report" aria-labelledby="job-report-title"><div class="section-heading report-heading"><div><h2 id="job-report-title">Job #${job.id} report</h2><p>${escapeHtml(job.detail)}</p></div><span class="badge ${job.status === "failed" ? "exact" : job.status === "complete" ? "unique" : job.status === "cancelled" ? "cancelled" : "possible"}">${escapeHtml(job.status)}</span></div><dl class="report-grid report-summary"><div><dt>Job type</dt><dd>${escapeHtml(job.kind)}</dd></div><div><dt>Started</dt><dd>${escapeHtml(job.created_at)} UTC</dd></div><div><dt>Finished</dt><dd>${escapeHtml(job.completed_at || "In progress")}${job.completed_at ? " UTC" : ""}</dd></div><div><dt>Duration</dt><dd>${escapeHtml(jobDuration(job))}</dd></div><div><dt>Progress</dt><dd>${job.progress}%</dd></div></dl><div class="report-section"><h3>Result</h3>${results}</div>${scanIssues}</section>`;
 }
 
 async function cancelJob(jobId, button = stopJobButton) {

@@ -17,6 +17,7 @@ class ApiIntegrationTests(unittest.TestCase):
     def setUpClass(cls):
         cls.temp = tempfile.TemporaryDirectory()
         root = Path(cls.temp.name)
+        cls.root = root
         (root / "roms/gba").mkdir(parents=True)
         (root / "devices/handheld/roms").mkdir(parents=True)
         (root / "roms/gba/Test Game.gba").write_bytes(b"test-rom")
@@ -74,9 +75,11 @@ class ApiIntegrationTests(unittest.TestCase):
     def test_running_scan_can_be_cancelled(self):
         started = threading.Event()
 
-        def slow_scan(*_, progress_callback=None, cancel_check=None, **__):
+        def slow_scan(*_, progress_callback=None, cancel_check=None, issue_callback=None, **__):
             if progress_callback:
                 progress_callback(10, "Hashing a test file")
+            if issue_callback:
+                issue_callback("gba/unreadable.gba: permission denied")
             started.set()
             while True:
                 cancel_check()
@@ -94,6 +97,37 @@ class ApiIntegrationTests(unittest.TestCase):
         self.assertEqual(job["status"], "cancelled")
         self.assertEqual(job["detail"], "Stopped by user")
         self.assertFalse(job["cancellable"])
+        issues = self.client.get(f"/api/jobs/{job_id}/issues", headers=self.headers).json()
+        self.assertEqual(issues["total"], 1)
+        self.assertEqual(issues["items"][0]["detail"], "gba/unreadable.gba: permission denied")
+
+    def test_scan_report_lists_every_unreadable_path(self):
+        outside = self.root / "outside.gba"
+        outside.write_bytes(b"outside")
+        links = [self.root / "roms/gba" / f"Broken {index}.gba" for index in range(55)]
+        for link in links:
+            link.symlink_to(outside)
+        try:
+            response = self.client.post("/api/scan", headers=self.headers)
+            job = self.wait_for_job(response.json()["job_id"])
+        finally:
+            for link in links:
+                link.unlink(missing_ok=True)
+
+        self.assertEqual(job["status"], "complete")
+        self.assertEqual(job["reported_issue_count"], 55)
+        self.assertEqual(job["issue_count"], 55)
+        issues = self.client.get(
+            f"/api/jobs/{job['id']}/issues?limit=20&offset=40", headers=self.headers
+        ).json()
+        self.assertTrue(issues["captured_all"])
+        self.assertEqual(issues["total"], 55)
+        self.assertEqual(len(issues["items"]), 15)
+        self.assertTrue(issues["items"][0]["detail"].startswith("gba/Broken "))
+
+        report = self.client.get(f"/api/jobs/{job['id']}", headers=self.headers).json()
+        self.assertEqual(report["result"]["games"], 1)
+        self.assertEqual(report["result"]["skipped_count"], 55)
 
     def test_naming_catalog_suggestions_apply_as_background_job(self):
         scan = self.client.post("/api/scan", headers=self.headers)

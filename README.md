@@ -19,6 +19,7 @@ The MVP supports:
 - Automatic cleanup of `._*` and `.DS_Store` inside device ROM folders during apply
 - Background jobs for scans, copies, renames, delete, restore, and purge operations
 - Safe stop controls for scans and device deployment jobs
+- Detailed job reports with timing, structured results, and paginated unreadable-file paths
 - Bearer-token protection for the private API
 - Browser/OS light and dark themes
 
@@ -105,6 +106,11 @@ Device apply jobs can be stopped from the header or Jobs screen. ROMmates checks
 cancellation between copy chunks, removes the current temporary partial file, and leaves
 previously completed copies recorded for the next apply. Short atomic operations such as
 rename, trash, restore, and purge are not interruptible once they begin.
+
+Open **Jobs → Report** to inspect a run's status, duration, result counts, and every
+unreadable file with its library-relative path and error reason. Scans created before
+this feature may expose only the first 50 paths retained by that older version; the
+report labels that limitation, and the next cached scan records the complete list.
 
 On the first run, existing files in a device directory are considered unmanaged and will not be deleted. Select matching games in the UI to bring them under management.
 
