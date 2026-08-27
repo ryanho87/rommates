@@ -22,6 +22,7 @@ LEGACY_COPY_SUFFIX = ".rommanager-copy"
 CUE_FILE_RE = re.compile(r'^\s*FILE\s+"([^"]+)"', re.IGNORECASE)
 TAG_RE = re.compile(r"\s*[\(\[].*?[\)\]]")
 NON_WORD_RE = re.compile(r"[^a-z0-9]+")
+PACK_NUMBER_RE = re.compile(r"^\s*(?:\[\d{1,4}\]|\d{1,4}[.)])\s*")
 HASH_CACHE_BATCH_FILES = 16
 HASH_CACHE_BATCH_BYTES = 128 * 1024 * 1024
 
@@ -101,9 +102,20 @@ class ScanProgress:
 
 
 def normalize_name(name: str) -> str:
-    stem = Path(name).stem.lower().replace("_", " ").replace(".", " ")
+    stem = Path(name).stem.lower().replace("_", " ")
+    stem = PACK_NUMBER_RE.sub("", stem)
+    stem = stem.replace(".", " ")
     stem = TAG_RE.sub(" ", stem)
     return NON_WORD_RE.sub(" ", stem).strip()
+
+
+def cleanup_name(name: str) -> str:
+    """Conservative filename cleanup that does not invent title capitalization."""
+    cleaned = PACK_NUMBER_RE.sub("", name.strip())
+    cleaned = cleaned.replace("_", " ")
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    cleaned = re.sub(r"\s+-\s+", " - ", cleaned)
+    return cleaned.strip().rstrip(".")
 
 
 def _inside(root: Path, candidate: Path) -> Path:
@@ -534,36 +546,49 @@ class LibraryService:
             output.append(line)
         return "".join(output)
 
-    def rename_bundle(self, game_id: int, requested_name: str) -> dict[str, str]:
+    def _rename_plan(self, game_id: int, requested_name: str):
+        game, files = self.game_bundle(game_id)
+        requested_name = requested_name.strip()
+        if not requested_name or requested_name in {".", ".."} or "/" in requested_name or "\\" in requested_name:
+            raise LibraryError("Enter a filename without folders or path separators")
+        root = self.settings.library_root.resolve()
+        primary = _inside(root, root / game["primary_relpath"])
+        extension = primary.suffix
+        new_stem = Path(requested_name).stem if Path(requested_name).suffix.lower() == extension.lower() else requested_name
+        new_stem = new_stem.strip().rstrip(".")
+        if not new_stem:
+            raise LibraryError("Enter a valid filename")
+        old_stem = primary.stem
+        paths = [_inside(root, root / item["relpath"]) for item in files]
+        mapping: dict[Path, Path] = {}
+        for old in paths:
+            if old == primary:
+                target_name = new_stem + old.suffix
+            elif old.stem.startswith(old_stem):
+                target_name = new_stem + old.stem[len(old_stem) :] + old.suffix
+            else:
+                target_name = old.name
+            mapping[old] = _inside(root, old.with_name(target_name))
+        targets = list(mapping.values())
+        if len(set(targets)) != len(targets):
+            raise LibraryError("The rename would give two bundle files the same name")
+        for old, target in mapping.items():
+            if target.exists() and target not in mapping:
+                raise LibraryError(f"A file named {target.name} already exists")
+        return game, files, root, primary, new_stem, paths, mapping
+
+    def preview_rename(self, game_id: int, requested_name: str) -> dict[str, object]:
+        game, _, root, _, new_stem, _, mapping = self._rename_plan(game_id, requested_name)
+        return {
+            "game_id": game_id,
+            "old_name": game["display_name"],
+            "new_name": new_stem,
+            "targets": [_rel(root, target) for target in mapping.values()],
+        }
+
+    def rename_bundle(self, game_id: int, requested_name: str, rescan: bool = True) -> dict[str, str]:
         with self._operation_lock:
-            game, files = self.game_bundle(game_id)
-            requested_name = requested_name.strip()
-            if not requested_name or requested_name in {".", ".."} or "/" in requested_name or "\\" in requested_name:
-                raise LibraryError("Enter a filename without folders or path separators")
-            root = self.settings.library_root.resolve()
-            primary = _inside(root, root / game["primary_relpath"])
-            extension = primary.suffix
-            new_stem = Path(requested_name).stem if Path(requested_name).suffix.lower() == extension.lower() else requested_name
-            new_stem = new_stem.strip().rstrip(".")
-            if not new_stem:
-                raise LibraryError("Enter a valid filename")
-            old_stem = primary.stem
-            paths = [_inside(root, root / item["relpath"]) for item in files]
-            mapping: dict[Path, Path] = {}
-            for old in paths:
-                if old == primary:
-                    target_name = new_stem + old.suffix
-                elif old.stem.startswith(old_stem):
-                    target_name = new_stem + old.stem[len(old_stem) :] + old.suffix
-                else:
-                    target_name = old.name
-                mapping[old] = _inside(root, old.with_name(target_name))
-            targets = list(mapping.values())
-            if len(set(targets)) != len(targets):
-                raise LibraryError("The rename would give two bundle files the same name")
-            for old, target in mapping.items():
-                if target.exists() and target not in mapping:
-                    raise LibraryError(f"A file named {target.name} already exists")
+            game, files, root, primary, new_stem, paths, mapping = self._rename_plan(game_id, requested_name)
 
             descriptor_original: dict[Path, str] = {}
             for old in paths:
@@ -608,10 +633,42 @@ class LibraryService:
                         "UPDATE game_files SET relpath=? WHERE game_id=? AND relpath=?",
                         (_rel(root, target), game_id, _rel(root, old)),
                     )
+                    connection.execute(
+                        "DELETE FROM file_cache WHERE relpath=? AND relpath<>?",
+                        (_rel(root, target), _rel(root, old)),
+                    )
+                    connection.execute(
+                        "UPDATE file_cache SET relpath=? WHERE relpath=?",
+                        (_rel(root, target), _rel(root, old)),
+                    )
                 connection.execute("DELETE FROM file_cache WHERE relpath NOT IN (SELECT relpath FROM game_files)")
-            self.scan()
+            if rescan:
+                self.scan()
             self.db.activity("rename", f"Renamed {game['display_name']} to {new_stem}")
             return {"old_name": game["display_name"], "new_name": new_stem}
+
+    def bulk_rename(self, renames: list[tuple[int, str]]) -> dict[str, object]:
+        if not renames:
+            raise LibraryError("Select at least one naming suggestion")
+        if len(renames) > 500:
+            raise LibraryError("Apply at most 500 naming suggestions at once")
+        with self._operation_lock:
+            # Validate every target before touching the filesystem. Reusing the same
+            # validation in rename_bundle keeps collision and bundle rules identical.
+            seen_ids: set[int] = set()
+            all_targets: list[Path] = []
+            for game_id, requested_name in renames:
+                if game_id in seen_ids:
+                    raise LibraryError("A game can only appear once in a rename batch")
+                seen_ids.add(game_id)
+                *_, mapping = self._rename_plan(game_id, requested_name)
+                all_targets.extend(mapping.values())
+            if len(set(all_targets)) != len(all_targets):
+                raise LibraryError("Two naming suggestions would create the same target file")
+            results = [self.rename_bundle(game_id, name, rescan=False) for game_id, name in renames]
+            self.scan()
+            self.db.activity("bulk_rename", f"Applied {len(results)} naming suggestions")
+            return {"renamed": len(results), "items": results}
 
     def delete_bundle(self, game_id: int) -> dict[str, object]:
         with self._operation_lock:

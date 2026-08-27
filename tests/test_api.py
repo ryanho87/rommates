@@ -70,6 +70,37 @@ class ApiIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 403)
 
+    def test_naming_catalog_suggestions_apply_as_background_job(self):
+        scan = self.client.post("/api/scan", headers=self.headers)
+        self.assertEqual(self.wait_for_job(scan.json()["job_id"])["status"], "complete")
+        imported = self.client.post(
+            "/api/naming/catalogs",
+            headers=self.headers,
+            json={
+                "source_name": "GBA.dat",
+                "platform": "gba",
+                "content": '<datafile><game name="Test"><rom name="Test Game (USA).gba" size="8"/></game></datafile>',
+            },
+        )
+        self.assertEqual(imported.status_code, 200)
+        suggestions = self.client.get("/api/naming/suggestions", headers=self.headers).json()
+        self.assertEqual(suggestions["total"], 1)
+        suggestion = suggestions["items"][0]
+        self.assertEqual(suggestion["confidence"], "strong")
+        applied = self.client.post(
+            "/api/naming/apply",
+            headers=self.headers,
+            json={"items": [{"game_id": suggestion["game_id"], "name": suggestion["suggested_name"]}]},
+        )
+        self.assertEqual(applied.status_code, 202)
+        self.assertEqual(self.wait_for_job(applied.json()["job_id"])["status"], "complete")
+        self.assertEqual(
+            self.client.delete(
+                f"/api/naming/catalogs/{imported.json()['catalog_id']}", headers=self.headers
+            ).status_code,
+            200,
+        )
+
     def test_scan_and_rename_complete_as_background_jobs(self):
         scan = self.client.post("/api/scan", headers=self.headers)
         self.assertEqual(scan.status_code, 202)

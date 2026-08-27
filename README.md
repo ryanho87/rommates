@@ -10,6 +10,8 @@ The MVP supports:
 - Normalized-filename possible duplicate review
 - Bundle-aware `.cue`/`.bin` and `.m3u` scanning
 - Safe bundle rename with `.cue` and `.m3u` reference rewriting
+- Reviewable naming suggestions from XML DAT catalogs and conservative filename cleanup
+- Confidence filters, collision checks, editable proposals, and bulk bundle renaming
 - Recoverable deletion, restoration, and explicit permanent deletion
 - Per-device desired game selections and previewed reconciliation
 - Per-game device assignment directly from the Library screen
@@ -131,6 +133,26 @@ named in the scan job detail instead of being dropped silently.
 - Permanent deletion is available only from the Trash screen.
 
 Keep normal filesystem backups. Recoverable trash protects against UI mistakes, not disk failure or manual filesystem changes.
+
+## Naming suggestions
+
+The Naming screen always offers conservative cleanup for obvious pack prefixes such as
+`03.` and underscore-separated words. It does not guess capitalization or remove region,
+language, revision, and disc metadata.
+
+Import a No-Intro, Redump, or other Logiqx-style XML DAT and assign it to the matching
+ROMmates platform for canonical suggestions. Suggestions have three confidence levels:
+
+- **Exact DAT match:** a DAT-provided SHA-256 matches an indexed content file.
+- **Strong name match:** the normalized current name uniquely matches one DAT entry for the platform and extension.
+- **Cleanup only:** only deterministic local formatting rules were applied.
+
+Many DAT files publish CRC, MD5, or SHA-1 but not SHA-256. Those catalogs still provide
+strong filename matches; ROMmates does not label them exact without a verifiable SHA-256.
+Suggested names remain editable. Colliding targets are disabled, and every batch is
+validated again before any file changes. Applying suggestions uses the same bundle-aware
+rename path as the Library screen, preserves device selections, updates descriptor
+references, and carries hash-cache records to the new paths.
 
 ## Configuration
 

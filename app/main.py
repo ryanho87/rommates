@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 from .config import Settings
 from .db import Database
 from .library import LibraryError, LibraryService
+from .naming import NamingService
 
 
 MINIMUM_TOKEN_LENGTH = 16
@@ -48,6 +49,7 @@ def migrate_legacy_storage() -> None:
 migrate_legacy_storage()
 db = Database(settings.database_path)
 library = LibraryService(settings, db)
+naming = NamingService(db, settings.library_root, library)
 
 
 def job_result_detail(kind: str, result: object, fallback: str) -> str:
@@ -62,6 +64,8 @@ def job_result_detail(kind: str, result: object, fallback: str) -> str:
         return summary
     if kind == "rename":
         return f"Renamed {result.get('old_name', 'game')} to {result.get('new_name', 'game')}"
+    if kind == "bulk_rename":
+        return f"Applied {result.get('renamed', 0)} naming suggestions"
     if kind == "device_apply":
         return (
             f"Copied {result.get('copied', 0)}, removed {result.get('removed', 0)}, "
@@ -170,6 +174,21 @@ class SelectionRequest(BaseModel):
 class BulkSelectionRequest(BaseModel):
     game_ids: list[int] = Field(max_length=1000)
     selected: bool
+
+
+class DatImportRequest(BaseModel):
+    source_name: str = Field(min_length=1, max_length=255)
+    platform: str = Field(min_length=1, max_length=100)
+    content: str
+
+
+class NamingRenameItem(BaseModel):
+    game_id: int
+    name: str = Field(min_length=1, max_length=255)
+
+
+class BulkRenameRequest(BaseModel):
+    items: list[NamingRenameItem] = Field(min_length=1, max_length=500)
 
 
 @app.middleware("http")
@@ -359,6 +378,40 @@ def game_detail(game_id: int):
 @app.patch("/api/games/{game_id}/rename", status_code=202)
 def rename_game(game_id: int, payload: RenameRequest):
     job_id = enqueue_job("rename", f"Renaming game {game_id}", library.rename_bundle, game_id, payload.name)
+    return {"job_id": job_id}
+
+
+@app.get("/api/naming/catalogs")
+def naming_catalogs():
+    return naming.catalogs()
+
+
+@app.post("/api/naming/catalogs")
+def import_naming_catalog(payload: DatImportRequest):
+    return naming.import_dat(payload.source_name, payload.platform, payload.content)
+
+
+@app.delete("/api/naming/catalogs/{catalog_id}")
+def delete_naming_catalog(catalog_id: int):
+    naming.delete_catalog(catalog_id)
+    return {"deleted": catalog_id}
+
+
+@app.get("/api/naming/suggestions")
+def naming_suggestions(
+    search: str = "",
+    platform: str = "",
+    confidence: str = Query("all", pattern="^(all|exact|strong|cleanup)$"),
+    limit: int = Query(200, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+):
+    return naming.suggestions(search, platform, confidence, limit, offset)
+
+
+@app.post("/api/naming/apply", status_code=202)
+def apply_naming_suggestions(payload: BulkRenameRequest):
+    renames = [(item.game_id, item.name) for item in payload.items]
+    job_id = enqueue_job("bulk_rename", f"Applying {len(renames)} naming suggestions", library.bulk_rename, renames)
     return {"job_id": job_id}
 
 

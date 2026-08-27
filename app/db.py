@@ -47,6 +47,27 @@ CREATE TABLE IF NOT EXISTS file_cache (
     sha256 TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS naming_catalogs (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    platform TEXT NOT NULL,
+    entry_count INTEGER NOT NULL DEFAULT 0,
+    imported_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS naming_entries (
+    id INTEGER PRIMARY KEY,
+    catalog_id INTEGER NOT NULL REFERENCES naming_catalogs(id) ON DELETE CASCADE,
+    canonical_name TEXT NOT NULL,
+    extension TEXT NOT NULL,
+    normalized_name TEXT NOT NULL,
+    size INTEGER,
+    sha256 TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_naming_entries_catalog ON naming_entries(catalog_id);
+CREATE INDEX IF NOT EXISTS idx_naming_entries_hash ON naming_entries(sha256);
+CREATE INDEX IF NOT EXISTS idx_naming_entries_name ON naming_entries(normalized_name);
+
 CREATE TABLE IF NOT EXISTS devices (
     id INTEGER PRIMARY KEY,
     name TEXT NOT NULL UNIQUE,

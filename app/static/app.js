@@ -20,6 +20,8 @@ const state = {
   // Job ids already surfaced to the user, so the poller and an awaited job do not
   // both report the same outcome.
   reportedJobs: new Set(),
+  namingConfidence: "all",
+  namingSelected: new Map(),
 };
 
 const view = document.querySelector("#view");
@@ -120,6 +122,7 @@ async function api(path, options = {}) {
 const JOB_LABELS = {
   scan: "Scanning changed files…",
   rename: "Renaming bundle…",
+  bulk_rename: "Applying naming suggestions…",
   delete: "Moving to trash…",
   device_apply: "Applying device changes…",
   restore: "Restoring from trash…",
@@ -652,6 +655,118 @@ async function renderTrash() {
   }));
 }
 
+function namingConfidenceLabel(value) {
+  return { exact: "Exact DAT match", strong: "Strong name match", cleanup: "Cleanup only" }[value] || value;
+}
+
+async function renderNaming() {
+  setHeading("Naming", "Review canonical filenames before changing bundles.");
+  const params = new URLSearchParams({
+    search: state.search,
+    platform: state.platform,
+    confidence: state.namingConfidence,
+    limit: state.limit,
+    offset: state.offset,
+  });
+  const [data, catalogs] = await Promise.all([api(`/api/naming/suggestions?${params}`), api("/api/naming/catalogs")]);
+  const platformChoices = state.platforms.map((item) => `<option value="${escapeHtml(item.platform)}">${escapeHtml(item.platform)}</option>`).join("");
+  const catalogList = catalogs.length
+    ? `<div class="catalog-list">${catalogs.map((catalog) => `<span class="catalog-chip"><span><strong>${escapeHtml(catalog.platform)}</strong> · ${escapeHtml(catalog.name)} · ${catalog.entry_count.toLocaleString()}</span><button class="icon-button compact" data-delete-catalog="${catalog.id}" aria-label="Remove ${escapeHtml(catalog.name)}">×</button></span>`).join("")}</div>`
+    : `<p class="meta">No DAT catalogs imported. Conservative filename cleanup is still available.</p>`;
+  const importer = `<details class="naming-import">
+    <summary>Import a DAT catalog</summary>
+    <div class="import-body">
+      <p>Use a No-Intro, Redump, or Logiqx XML DAT. Assign it to the matching ROMmates platform.</p>
+      <form class="import-form" id="dat-import-form">
+        <label class="field"><span>Platform</span><select name="platform" required><option value="">Choose platform</option>${platformChoices}</select></label>
+        <label class="field file-field"><span>DAT file</span><input class="input" name="dat" type="file" accept=".dat,.xml,text/xml,application/xml" required></label>
+        <button class="button" ${state.platforms.length ? "" : "disabled"}>Import catalog</button>
+      </form>
+      ${catalogList}
+    </div>
+  </details>`;
+  const toolbar = `<div class="toolbar naming-toolbar">
+    <label class="search-field"><span class="sr-only">Search suggestions</span><input id="search-input" type="search" value="${escapeHtml(state.search)}" placeholder="Search current or suggested names" autocomplete="off"></label>
+    <label><span class="sr-only">Platform</span><select id="platform-filter">${platformOptions()}</select></label>
+    <label><span class="sr-only">Confidence</span><select id="naming-confidence">
+      <option value="all" ${state.namingConfidence === "all" ? "selected" : ""}>All suggestions</option>
+      <option value="exact" ${state.namingConfidence === "exact" ? "selected" : ""}>Exact DAT matches</option>
+      <option value="strong" ${state.namingConfidence === "strong" ? "selected" : ""}>Strong name matches</option>
+      <option value="cleanup" ${state.namingConfidence === "cleanup" ? "selected" : ""}>Cleanup only</option>
+    </select></label>
+  </div>`;
+  let content;
+  if (!data.items.length) {
+    content = `<div class="empty-state naming-empty"><div><h2>No naming suggestions</h2><p>${state.search || state.platform || state.namingConfidence !== "all" ? "Try broader filters." : "Your current filenames do not need conservative cleanup. Import a DAT catalog to find canonical matches."}</p></div></div>`;
+  } else {
+    const end = Math.min(data.offset + data.items.length, data.total);
+    content = `<div class="table-wrap"><table><thead><tr><th class="checkbox-cell"><input type="checkbox" data-naming-select-all aria-label="Select visible safe suggestions"></th><th>Current filename</th><th>Suggested filename</th><th>Confidence</th><th>Source</th></tr></thead><tbody>${data.items.map((item) => {
+      const checked = state.namingSelected.has(item.game_id);
+      return `<tr class="${item.collision ? "collision-row" : ""}">
+        <td class="checkbox-cell"><input type="checkbox" data-naming-select="${item.game_id}" ${checked ? "checked" : ""} ${item.collision ? "disabled" : ""} aria-label="Select suggestion for ${escapeHtml(item.current_name)}"></td>
+        <td class="name-cell"><strong>${escapeHtml(item.current_name)}</strong><span class="path-line">${escapeHtml(item.primary_relpath)}</span></td>
+        <td class="suggestion-cell"><input class="input suggestion-input" data-suggestion-name="${item.game_id}" value="${escapeHtml(state.namingSelected.get(item.game_id)?.name || item.suggested_name)}" maxlength="255" ${item.collision ? "disabled" : ""}>${item.collision ? `<span class="collision-note">${escapeHtml(item.collision_detail || "A file with this name already exists")}</span>` : ""}</td>
+        <td><span class="badge naming-${item.confidence}">${escapeHtml(namingConfidenceLabel(item.confidence))}</span></td>
+        <td class="meta">${escapeHtml(item.source)}</td>
+      </tr>`;
+    }).join("")}</tbody></table></div><div class="pager"><span>Showing ${data.offset + 1}–${end} of ${data.total.toLocaleString()}</span><div class="bulk-actions"><button class="button secondary small" data-page="previous" ${data.offset === 0 ? "disabled" : ""}>Previous</button><button class="button secondary small" data-page="next" ${end >= data.total ? "disabled" : ""}>Next</button></div></div>`;
+  }
+  const selectedCount = state.namingSelected.size;
+  const bulk = selectedCount ? `<div class="bulk-bar"><div><strong>${selectedCount} selected</strong><span class="meta"> · bundle-aware rename</span></div><div class="bulk-actions"><button class="button secondary" data-clear-naming>Clear</button><button class="button" data-apply-naming>Review and apply</button></div></div>` : "";
+  setViewHtml(`${importer}${toolbar}${content}${bulk}`);
+
+  bindFilters(renderNaming);
+  view.querySelector("#naming-confidence")?.addEventListener("change", (event) => { state.namingConfidence = event.target.value; state.offset = 0; renderNaming(); });
+  view.querySelector("#dat-import-form")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const fields = new FormData(form);
+    const file = fields.get("dat");
+    const button = form.querySelector("button");
+    button.disabled = true;
+    button.textContent = "Importing…";
+    try {
+      const result = await api("/api/naming/catalogs", { method: "POST", body: JSON.stringify({ source_name: file.name, platform: fields.get("platform"), content: await file.text() }) });
+      toast(`Imported ${result.entries.toLocaleString()} names from ${result.name}`);
+      await renderNaming();
+    } catch (error) { toast(error.message, "error"); button.disabled = false; button.textContent = "Import catalog"; }
+  });
+  view.querySelectorAll("[data-delete-catalog]").forEach((button) => button.addEventListener("click", async () => {
+    try { await api(`/api/naming/catalogs/${button.dataset.deleteCatalog}`, { method: "DELETE" }); await renderNaming(); }
+    catch (error) { toast(error.message, "error"); }
+  }));
+  const byId = new Map(data.items.map((item) => [item.game_id, item]));
+  const selectSuggestion = (id, selected) => {
+    const item = byId.get(id);
+    const input = view.querySelector(`[data-suggestion-name="${id}"]`);
+    if (selected && item) state.namingSelected.set(id, { name: input?.value || item.suggested_name, current: item.current_name });
+    else state.namingSelected.delete(id);
+  };
+  view.querySelectorAll("[data-naming-select]").forEach((box) => box.addEventListener("change", () => { selectSuggestion(Number(box.dataset.namingSelect), box.checked); renderNaming(); }));
+  view.querySelectorAll("[data-suggestion-name]").forEach((input) => input.addEventListener("input", () => {
+    const id = Number(input.dataset.suggestionName);
+    if (state.namingSelected.has(id)) state.namingSelected.get(id).name = input.value;
+  }));
+  view.querySelector("[data-naming-select-all]")?.addEventListener("change", (event) => {
+    data.items.filter((item) => !item.collision).forEach((item) => selectSuggestion(item.game_id, event.target.checked));
+    renderNaming();
+  });
+  view.querySelector("[data-clear-naming]")?.addEventListener("click", () => { state.namingSelected.clear(); renderNaming(); });
+  view.querySelector("[data-apply-naming]")?.addEventListener("click", async () => {
+    const items = [...state.namingSelected.entries()].map(([game_id, item]) => ({ game_id, name: item.name }));
+    const preview = items.slice(0, 12).map((item) => `<li>${escapeHtml(state.namingSelected.get(item.game_id).current)} → <strong>${escapeHtml(item.name)}</strong></li>`).join("");
+    const confirmed = await confirmAction({ title: `Apply ${items.length} naming ${items.length === 1 ? "suggestion" : "suggestions"}?`, content: `<p class="warning-copy">ROMmates will rename complete bundles and update CUE and M3U references. Existing device selections stay attached.</p><ul class="confirm-list">${preview}${items.length > 12 ? `<li>and ${items.length - 12} more</li>` : ""}</ul>`, confirmLabel: "Apply renames", cancelLabel: "Keep reviewing", danger: false });
+    if (!confirmed) return;
+    try {
+      const result = await requestJob("/api/naming/apply", { method: "POST", body: JSON.stringify({ items }) }, "Naming changes queued");
+      state.namingSelected.clear();
+      toast(`Renamed ${result.renamed} ${result.renamed === 1 ? "bundle" : "bundles"}`);
+      await refreshStatus(); await loadReferenceData(); await renderNaming();
+    } catch (error) { toast(error.message, "error"); }
+  });
+  view.querySelectorAll("[data-page]").forEach((button) => button.addEventListener("click", () => { state.offset = Math.max(0, state.offset + (button.dataset.page === "next" ? state.limit : -state.limit)); renderNaming(); }));
+}
+
 async function renderJobs() {
   setHeading("Jobs", "Recent scans and filesystem activity.");
   const [jobs, activity] = await Promise.all([api("/api/jobs"), api("/api/activity")]);
@@ -740,7 +855,7 @@ async function offerPruneConfirmation(detail) {
 async function renderCurrentView() {
   view.setAttribute("aria-busy", "true");
   try {
-    const renderers = { library: renderLibrary, duplicates: renderDuplicates, devices: renderDevices, jobs: renderJobs, trash: renderTrash };
+    const renderers = { library: renderLibrary, duplicates: renderDuplicates, naming: renderNaming, devices: renderDevices, jobs: renderJobs, trash: renderTrash };
     await renderers[state.view]();
   } catch (error) {
     if (error.name === "AbortError") return;
@@ -787,6 +902,7 @@ document.querySelector("#navigation").addEventListener("click", (event) => {
   state.editingId = null;
   state.assigningId = null;
   state.assignmentDevices = [];
+  if (state.view !== "naming") state.namingSelected.clear();
   document.querySelectorAll(".nav-item").forEach((item) => item.classList.toggle("active", item === button));
   renderCurrentView();
 });
