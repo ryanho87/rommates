@@ -25,6 +25,12 @@ const state = {
   namingSelected: new Map(),
   jobReportId: null,
   jobIssueOffset: 0,
+  saveTab: "current",
+  saveSearch: "",
+  saveOffset: 0,
+  saveSnapshotId: null,
+  saveSnapshotOffset: 0,
+  saveSnapshotSearch: "",
 };
 
 const view = document.querySelector("#view");
@@ -98,13 +104,18 @@ function toast(message, type = "success") {
   setTimeout(() => node.remove(), 4500);
 }
 
-async function api(path, options = {}) {
+function storedAccessToken() {
   const legacyToken = localStorage.getItem("rom-manager-token");
   const token = localStorage.getItem("rommates-token") || legacyToken;
   if (legacyToken && !localStorage.getItem("rommates-token")) {
     localStorage.setItem("rommates-token", legacyToken);
     localStorage.removeItem("rom-manager-token");
   }
+  return token;
+}
+
+async function api(path, options = {}) {
+  const token = storedAccessToken();
   const response = await fetch(path, {
     ...options,
     headers: {
@@ -123,6 +134,26 @@ async function api(path, options = {}) {
   return body;
 }
 
+async function downloadApiFile(path, filename) {
+  const token = storedAccessToken();
+  const response = await fetch(path, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (!response.ok) {
+    let message = `Download failed (${response.status})`;
+    try { message = (await response.json()).detail || message; } catch { /* use status */ }
+    throw new Error(message);
+  }
+  const url = URL.createObjectURL(await response.blob());
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 const JOB_LABELS = {
   scan: "Scanning changed files…",
   rename: "Renaming bundle…",
@@ -131,6 +162,8 @@ const JOB_LABELS = {
   device_apply: "Applying device changes…",
   restore: "Restoring from trash…",
   purge: "Deleting permanently…",
+  save_snapshot: "Snapshotting saves…",
+  save_restore: "Restoring saves…",
 };
 
 const JOB_POLL_INTERVAL = 700;
@@ -169,6 +202,7 @@ async function refreshStatus() {
   document.querySelector("#nav-duplicates").textContent = state.status.duplicates.toLocaleString();
   document.querySelector("#nav-devices").textContent = state.status.devices.toLocaleString();
   document.querySelector("#nav-trash").textContent = state.status.trash.toLocaleString();
+  document.querySelector("#nav-saves").textContent = state.status.save_snapshots.toLocaleString();
   document.querySelector("#library-root").textContent = state.status.roots.library;
   const pill = document.querySelector("#job-pill");
   const job = state.status.job;
@@ -715,6 +749,223 @@ async function renderTrash() {
   }));
 }
 
+function saveTabs(overview) {
+  return `<div class="device-scope save-tabs" role="tablist" aria-label="Save management view">
+    <button class="scope-button ${state.saveTab === "current" ? "active" : ""}" data-save-tab="current" role="tab" aria-selected="${state.saveTab === "current"}">Current saves</button>
+    <button class="scope-button ${state.saveTab === "snapshots" ? "active" : ""}" data-save-tab="snapshots" role="tab" aria-selected="${state.saveTab === "snapshots"}">Snapshots <span>${overview.snapshot_count.toLocaleString()}</span></button>
+    <button class="scope-button ${state.saveTab === "settings" ? "active" : ""}" data-save-tab="settings" role="tab" aria-selected="${state.saveTab === "settings"}">Settings</button>
+  </div>`;
+}
+
+function saveHeader(overview) {
+  const settings = overview.settings;
+  const latest = overview.latest_snapshot;
+  return `<div class="save-strip">
+    <div class="save-source"><div><span class="badge ${settings.available ? "unique" : "exact"}">${settings.available ? "Source available" : "Source unavailable"}</span><strong>RetroArch cloud saves</strong></div><code title="${escapeHtml(settings.source_root)}">${escapeHtml(settings.source_root)}</code><span class="meta">${latest ? `Last snapshot ${escapeHtml(latest.created_at)} UTC` : "No snapshots yet"}</span></div>
+    <form class="snapshot-now" data-snapshot-form><label class="field"><span>Snapshot note (optional)</span><input class="input" name="note" maxlength="500" placeholder="Before a long trip, before testing a core…"></label><button class="button" ${settings.available ? "" : "disabled"}>Snapshot now</button></form>
+  </div>`;
+}
+
+function currentSavesHtml(data) {
+  const toolbar = `<div class="toolbar"><label class="search-field"><span class="sr-only">Search current saves</span><input id="save-search" type="search" value="${escapeHtml(state.saveSearch)}" placeholder="Search save paths" autocomplete="off"></label></div>`;
+  if (!data.available) {
+    return `${toolbar}<div class="empty-state save-empty"><div><h2>Save source is not mounted</h2><p>Mount the WebDAV backing directory at the configured save source path, then refresh ROMmates.</p></div></div>`;
+  }
+  if (!data.items.length) {
+    return `${toolbar}<div class="empty-state save-empty"><div><h2>${state.saveSearch ? "No saves match this search" : "No save files found"}</h2><p>${state.saveSearch ? "Try part of the filename or relative directory." : "RetroArch has not uploaded anything to this WebDAV directory yet."}</p></div></div>`;
+  }
+  const end = Math.min(data.offset + data.items.length, data.total);
+  return `${toolbar}<div class="table-wrap"><table><thead><tr><th>Save path</th><th>Size</th><th>Modified</th></tr></thead><tbody>${data.items.map((item) => `<tr><td class="name-cell"><code class="save-path">${escapeHtml(item.relpath)}</code></td><td class="meta">${formatBytes(item.size)}</td><td class="meta">${new Date(Number(item.mtime_ns) / 1e6).toLocaleString()}</td></tr>`).join("")}</tbody></table></div><div class="pager"><span>Showing ${data.offset + 1}–${end} of ${data.total.toLocaleString()}</span><div class="bulk-actions"><button class="button secondary small" data-save-page="previous" ${data.offset === 0 ? "disabled" : ""}>Previous</button><button class="button secondary small" data-save-page="next" ${end >= data.total ? "disabled" : ""}>Next</button></div></div>`;
+}
+
+function snapshotChangeSummary(snapshot) {
+  if (!snapshot.added_count && !snapshot.changed_count && !snapshot.removed_count) return "No content changes";
+  return `+${snapshot.added_count} · ~${snapshot.changed_count} · −${snapshot.removed_count}`;
+}
+
+function snapshotDetailHtml(detail, comparison) {
+  const snapshot = detail.snapshot;
+  const sourceAvailable = Boolean(comparison);
+  const end = Math.min(detail.offset + detail.files.length, detail.total);
+  const files = detail.files.length
+    ? `<div class="table-wrap snapshot-files"><table><thead><tr><th>Historical file</th><th>Size</th><th>Action</th></tr></thead><tbody>${detail.files.map((item) => `<tr><td class="name-cell"><code class="save-path">${escapeHtml(item.relpath)}</code></td><td class="meta">${formatBytes(item.size)}</td><td><button class="button secondary small" data-download-save="${escapeHtml(item.relpath)}">Download</button></td></tr>`).join("")}</tbody></table></div><div class="pager"><span>Showing ${detail.offset + 1}–${end} of ${detail.total.toLocaleString()}</span><div class="bulk-actions"><button class="button secondary small" data-snapshot-file-page="previous" ${detail.offset === 0 ? "disabled" : ""}>Previous</button><button class="button secondary small" data-snapshot-file-page="next" ${end >= detail.total ? "disabled" : ""}>Next</button></div></div>`
+    : `<p class="report-empty">This snapshot contains no files.</p>`;
+  const changes = comparison ? [
+    ...comparison.restore.map((path) => ["Restore missing", path]),
+    ...comparison.overwrite.map((path) => ["Overwrite current", path]),
+    ...comparison.delete.map((path) => ["Delete current", path]),
+  ] : [];
+  const changeReview = !sourceAvailable
+    ? `<p class="issue-warning" role="note">The live save source is unavailable. Historical files can still be inspected and downloaded, but comparison and restore are disabled.</p>`
+    : changes.length
+    ? `<details class="restore-changes"><summary>Review all ${changes.length.toLocaleString()} filesystem changes</summary><div class="table-wrap"><table><thead><tr><th>Action</th><th>Path</th></tr></thead><tbody>${changes.map(([action, path]) => `<tr><td>${escapeHtml(action)}</td><td><code class="save-path">${escapeHtml(path)}</code></td></tr>`).join("")}</tbody></table></div></details>`
+    : `<p class="report-empty">The live cloud state already matches this snapshot.</p>`;
+  const fileSearch = `<div class="toolbar snapshot-search"><label class="search-field"><span class="sr-only">Search snapshot files</span><input id="snapshot-search" type="search" value="${escapeHtml(state.saveSnapshotSearch)}" placeholder="Search files in this snapshot" autocomplete="off"></label></div>`;
+  return `<section class="snapshot-detail" aria-labelledby="snapshot-detail-title"><div class="section-heading report-heading"><div><h2 id="snapshot-detail-title">Snapshot #${snapshot.id}</h2><p>${escapeHtml(snapshot.created_at)} UTC · ${escapeHtml(snapshot.trigger)}${snapshot.note ? ` · ${escapeHtml(snapshot.note)}` : ""}</p></div><button class="button secondary small" data-close-snapshot>Close</button></div><dl class="report-grid report-summary"><div><dt>Files</dt><dd>${snapshot.file_count.toLocaleString()}</dd></div><div><dt>Logical size</dt><dd>${formatBytes(snapshot.logical_bytes)}</dd></div><div><dt>New storage</dt><dd>${formatBytes(snapshot.new_bytes)}</dd></div><div><dt>Restore missing</dt><dd>${sourceAvailable ? comparison.restore.length.toLocaleString() : "Unavailable"}</dd></div><div><dt>Overwrite</dt><dd>${sourceAvailable ? comparison.overwrite.length.toLocaleString() : "Unavailable"}</dd></div><div><dt>Delete current</dt><dd>${sourceAvailable ? comparison.delete.length.toLocaleString() : "Unavailable"}</dd></div></dl>${changeReview}<div class="restore-panel"><div><h3>Restore this complete cloud state</h3><p>ROMmates will first make a safety snapshot, then restore saves and RetroArch sync manifests together. If the live files changed after this comparison, the job will stop.</p><label class="restore-check"><input type="checkbox" data-retroarch-closed ${sourceAvailable ? "" : "disabled"}> <span>I closed RetroArch on every device and let the last sync finish.</span></label></div><button class="button danger" data-restore-snapshot ${sourceAvailable && changes.length ? "" : "disabled"}>Review restore</button></div><div class="section-heading snapshot-file-heading"><div><h3>Files in this snapshot</h3><p>Historical files can be downloaded without changing the live WebDAV directory.</p></div></div>${fileSearch}${files}</section>`;
+}
+
+function snapshotsHtml(data, detail, comparison) {
+  const table = data.items.length
+    ? `<div class="table-wrap"><table><thead><tr><th>Snapshot</th><th>Trigger</th><th>Changes</th><th>Files</th><th>Logical size</th><th>New storage</th><th>Actions</th></tr></thead><tbody>${data.items.map((item) => `<tr${state.saveSnapshotId === item.id ? ` class="selected-row"` : ""}><td class="nowrap"><strong>#${item.id}</strong><span class="path-line">${escapeHtml(item.created_at)} UTC</span></td><td>${escapeHtml(item.trigger)}${item.pinned ? ` <span class="badge naming-strong">Pinned</span>` : ""}</td><td class="meta">${snapshotChangeSummary(item)}</td><td class="meta">${item.file_count.toLocaleString()}</td><td class="meta">${formatBytes(item.logical_bytes)}</td><td class="meta">${formatBytes(item.new_bytes)}</td><td><div class="bulk-actions"><button class="button secondary small" data-open-snapshot="${item.id}">${state.saveSnapshotId === item.id ? "Refresh" : "Compare"}</button><button class="button secondary small" data-pin-snapshot="${item.id}" data-pinned="${item.pinned ? "true" : "false"}">${item.pinned ? "Unpin" : "Pin"}</button></div></td></tr>`).join("")}</tbody></table></div>`
+    : `<div class="empty-state save-empty"><div><h2>No save snapshots yet</h2><p>Create one manually now. Automatic snapshots begin after the source is mounted and scheduling is enabled.</p></div></div>`;
+  return `${table}${detail ? snapshotDetailHtml(detail, comparison) : ""}`;
+}
+
+function saveSettingsHtml(settings) {
+  return `<form class="save-settings" data-save-settings><div class="settings-section"><h2>Schedule</h2><p>Set the interval to 0 to disable scheduled snapshots while leaving manual snapshots available.</p><label class="device-choice"><input type="checkbox" name="enabled" ${settings.enabled ? "checked" : ""}><span>Enable automatic snapshots</span></label><label class="field"><span>Interval in minutes</span><input class="input" type="number" name="interval_minutes" min="0" max="10080" value="${settings.interval_minutes}"></label></div><div class="settings-section"><h2>Retention</h2><p>Pinned snapshots are always retained. Each older tier keeps one representative snapshot per period.</p><div class="retention-grid"><label class="field"><span>Recent snapshots</span><input class="input" type="number" name="retention_recent" min="1" max="1000" value="${settings.retention_recent}"></label><label class="field"><span>Daily copies</span><input class="input" type="number" name="retention_daily" min="0" max="3650" value="${settings.retention_daily}"></label><label class="field"><span>Weekly copies</span><input class="input" type="number" name="retention_weekly" min="0" max="520" value="${settings.retention_weekly}"></label><label class="field"><span>Monthly copies</span><input class="input" type="number" name="retention_monthly" min="0" max="240" value="${settings.retention_monthly}"></label></div></div><div class="settings-paths"><span>Live source <code>${escapeHtml(settings.source_root)}</code></span><span>Snapshot storage <code>${escapeHtml(settings.snapshots_root)}</code></span></div><button class="button">Save settings</button></form>`;
+}
+
+async function renderSaves() {
+  setHeading("Saves", "Snapshot and restore the complete RetroArch cloud state.");
+  const overview = await api("/api/saves");
+  let content = "";
+  let currentData = null;
+  let snapshotData = null;
+  let snapshotDetail = null;
+  let comparison = null;
+  if (state.saveTab === "current") {
+    const params = new URLSearchParams({ search: state.saveSearch, limit: 250, offset: state.saveOffset });
+    currentData = await api(`/api/saves/current?${params}`);
+    content = currentSavesHtml(currentData);
+  } else if (state.saveTab === "snapshots") {
+    snapshotData = await api("/api/saves/snapshots?limit=100");
+    if (state.saveSnapshotId && snapshotData.items.some((item) => item.id === state.saveSnapshotId)) {
+      const params = new URLSearchParams({ search: state.saveSnapshotSearch, limit: 250, offset: state.saveSnapshotOffset });
+      if (overview.settings.available) {
+        [snapshotDetail, comparison] = await Promise.all([
+          api(`/api/saves/snapshots/${state.saveSnapshotId}?${params}`),
+          api(`/api/saves/snapshots/${state.saveSnapshotId}/compare`),
+        ]);
+      } else {
+        snapshotDetail = await api(`/api/saves/snapshots/${state.saveSnapshotId}?${params}`);
+      }
+    } else {
+      state.saveSnapshotId = null;
+    }
+    content = snapshotsHtml(snapshotData, snapshotDetail, comparison);
+  } else {
+    content = saveSettingsHtml(overview.settings);
+  }
+  setViewHtml(`${saveHeader(overview)}${saveTabs(overview)}${content}`);
+  view.querySelectorAll("[data-save-tab]").forEach((button) => button.addEventListener("click", () => {
+    state.saveTab = button.dataset.saveTab;
+    state.saveOffset = 0;
+    renderSaves();
+  }));
+  view.querySelector("[data-snapshot-form]")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const button = event.currentTarget.querySelector("button");
+    button.disabled = true;
+    try {
+      const note = new FormData(event.currentTarget).get("note") || "";
+      const result = await requestJob(
+        "/api/saves/snapshots",
+        { method: "POST", body: JSON.stringify({ note }) },
+        "Save snapshot started",
+      );
+      toast(result.unchanged ? "Save files have not changed" : `Created save snapshot #${result.snapshot_id}`);
+      await refreshStatus();
+      await renderSaves();
+    } catch (error) { toast(error.message, "error"); button.disabled = false; }
+  });
+  const saveSearch = view.querySelector("#save-search");
+  let searchTimer;
+  saveSearch?.addEventListener("input", (event) => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => {
+      state.saveSearch = event.target.value;
+      state.saveOffset = 0;
+      renderSaves();
+    }, 220);
+  });
+  view.querySelectorAll("[data-save-page]").forEach((button) => button.addEventListener("click", () => {
+    state.saveOffset = Math.max(0, state.saveOffset + (button.dataset.savePage === "next" ? 250 : -250));
+    renderSaves();
+  }));
+  view.querySelectorAll("[data-open-snapshot]").forEach((button) => button.addEventListener("click", () => {
+    state.saveSnapshotId = Number(button.dataset.openSnapshot);
+    state.saveSnapshotOffset = 0;
+    renderSaves();
+  }));
+  view.querySelector("[data-close-snapshot]")?.addEventListener("click", () => {
+    state.saveSnapshotId = null;
+    renderSaves();
+  });
+  const snapshotSearch = view.querySelector("#snapshot-search");
+  let snapshotSearchTimer;
+  snapshotSearch?.addEventListener("input", (event) => {
+    clearTimeout(snapshotSearchTimer);
+    snapshotSearchTimer = setTimeout(() => {
+      state.saveSnapshotSearch = event.target.value;
+      state.saveSnapshotOffset = 0;
+      renderSaves();
+    }, 220);
+  });
+  view.querySelectorAll("[data-pin-snapshot]").forEach((button) => button.addEventListener("click", async () => {
+    try {
+      await api(`/api/saves/snapshots/${button.dataset.pinSnapshot}/pin`, {
+        method: "PUT",
+        body: JSON.stringify({ pinned: button.dataset.pinned !== "true" }),
+      });
+      await renderSaves();
+    } catch (error) { toast(error.message, "error"); }
+  }));
+  view.querySelectorAll("[data-snapshot-file-page]").forEach((button) => button.addEventListener("click", () => {
+    state.saveSnapshotOffset = Math.max(0, state.saveSnapshotOffset + (button.dataset.snapshotFilePage === "next" ? 250 : -250));
+    renderSaves();
+  }));
+  view.querySelectorAll("[data-download-save]").forEach((button) => button.addEventListener("click", async () => {
+    const relpath = button.dataset.downloadSave;
+    const encoded = relpath.split("/").map(encodeURIComponent).join("/");
+    try { await downloadApiFile(`/api/saves/snapshots/${state.saveSnapshotId}/files/${encoded}`, relpath.split("/").pop()); }
+    catch (error) { toast(error.message, "error"); }
+  }));
+  view.querySelector("[data-restore-snapshot]")?.addEventListener("click", async () => {
+    if (!comparison) return;
+    if (!view.querySelector("[data-retroarch-closed]")?.checked) {
+      toast("Confirm that RetroArch is closed on every device first", "error");
+      return;
+    }
+    const confirmed = await confirmAction({
+      title: `Restore save snapshot #${state.saveSnapshotId}?`,
+      content: `<p class="warning-copy">ROMmates will create a safety snapshot, then overwrite <strong>${comparison.overwrite.length}</strong>, restore <strong>${comparison.restore.length}</strong>, and remove <strong>${comparison.delete.length}</strong> current files. RetroArch sync manifests are restored with the saves.</p>`,
+      confirmLabel: "Restore complete snapshot",
+      cancelLabel: "Keep current saves",
+      danger: true,
+    });
+    if (!confirmed) return;
+    try {
+      const result = await requestJob(
+        `/api/saves/snapshots/${state.saveSnapshotId}/restore`,
+        { method: "POST", body: JSON.stringify({ expected_tree_hash: comparison.current_tree_hash, retroarch_closed: true }) },
+        "Save restore started",
+      );
+      toast(`Restored ${result.files} files; safety snapshot #${result.safety_snapshot_id} was created`);
+      state.saveSnapshotId = null;
+      await refreshStatus();
+      await renderSaves();
+    } catch (error) { toast(error.message, "error"); }
+  });
+  view.querySelector("[data-save-settings]")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const values = new FormData(form);
+    const payload = {
+      enabled: values.get("enabled") === "on",
+      interval_minutes: Number(values.get("interval_minutes")),
+      retention_recent: Number(values.get("retention_recent")),
+      retention_daily: Number(values.get("retention_daily")),
+      retention_weekly: Number(values.get("retention_weekly")),
+      retention_monthly: Number(values.get("retention_monthly")),
+    };
+    try {
+      const result = await api("/api/saves/settings", { method: "PUT", body: JSON.stringify(payload) });
+      toast(result.pruned ? `Settings saved; pruned ${result.pruned} expired snapshots` : "Save settings updated");
+      await renderSaves();
+    } catch (error) { toast(error.message, "error"); }
+  });
+}
+
 function namingConfidenceLabel(value) {
   return { exact: "Exact DAT match", strong: "Strong name match", cleanup: "Cleanup only" }[value] || value;
 }
@@ -1006,7 +1257,7 @@ async function offerPruneConfirmation(detail) {
 async function renderCurrentView() {
   view.setAttribute("aria-busy", "true");
   try {
-    const renderers = { library: renderLibrary, duplicates: renderDuplicates, naming: renderNaming, devices: renderDevices, jobs: renderJobs, trash: renderTrash };
+    const renderers = { library: renderLibrary, duplicates: renderDuplicates, naming: renderNaming, devices: renderDevices, saves: renderSaves, jobs: renderJobs, trash: renderTrash };
     await renderers[state.view]();
   } catch (error) {
     if (error.name === "AbortError") return;
@@ -1054,6 +1305,7 @@ document.querySelector("#navigation").addEventListener("click", (event) => {
   state.assigningId = null;
   state.assignmentDevices = [];
   if (state.view !== "naming") state.namingSelected.clear();
+  if (state.view !== "saves") state.saveSnapshotId = null;
   document.querySelectorAll(".nav-item").forEach((item) => item.classList.toggle("active", item === button));
   renderCurrentView();
 });

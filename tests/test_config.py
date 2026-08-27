@@ -16,12 +16,18 @@ class ConfigurationCompatibilityTests(unittest.TestCase):
                 "ROM_DATABASE_PATH": "/legacy/rommanager.db",
                 "ROMMATES_ACCESS_TOKEN": "new-token-123456",
                 "ROM_ACCESS_TOKEN": "legacy-token-123456",
+                "ROMMATES_SAVES_ROOT": "/srv/webdav/RetroArch",
+                "ROMMATES_SNAPSHOTS_ROOT": "/srv/rommates-snapshots",
+                "ROMMATES_SAVE_SNAPSHOT_INTERVAL_MINUTES": "90",
             },
             clear=True,
         ):
             settings = Settings.from_env()
         self.assertEqual(str(settings.database_path), "/new/rommates.db")
         self.assertEqual(settings.access_token, "new-token-123456")
+        self.assertEqual(str(settings.saves_root), "/srv/webdav/RetroArch")
+        self.assertEqual(str(settings.snapshots_root), "/srv/rommates-snapshots")
+        self.assertEqual(settings.save_snapshot_interval_minutes, 90)
 
     def test_legacy_rom_manager_environment_still_works(self):
         with patch.dict(

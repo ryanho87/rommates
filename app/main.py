@@ -16,10 +16,11 @@ from .config import Settings
 from .db import Database
 from .library import JobCancelled, LibraryError, LibraryService
 from .naming import NamingService
+from .saves import SaveSnapshotService
 
 
 MINIMUM_TOKEN_LENGTH = 16
-CANCELLABLE_JOB_KINDS = frozenset({"scan", "device_apply"})
+CANCELLABLE_JOB_KINDS = frozenset({"scan", "device_apply", "save_snapshot", "save_restore"})
 
 settings = Settings.from_env()
 
@@ -51,6 +52,7 @@ migrate_legacy_storage()
 db = Database(settings.database_path)
 library = LibraryService(settings, db)
 naming = NamingService(db, settings.library_root, library)
+saves = SaveSnapshotService(settings, db)
 job_cancellations: dict[int, threading.Event] = {}
 job_cancellations_lock = threading.Lock()
 
@@ -93,6 +95,19 @@ def job_result_detail(kind: str, result: object, fallback: str) -> str:
         return (
             f"Copied {result.get('copied', 0)}, removed {result.get('removed', 0)}, "
             f"left {result.get('unchanged', 0)} unchanged"
+        )
+    if kind == "save_snapshot":
+        if result.get("unchanged"):
+            return f"Save files unchanged; retained snapshot #{result.get('snapshot_id')}"
+        return (
+            f"Created save snapshot #{result.get('snapshot_id')}: "
+            f"{result.get('files', 0)} files, {result.get('added', 0)} added, "
+            f"{result.get('changed', 0)} changed, {result.get('removed', 0)} removed"
+        )
+    if kind == "save_restore":
+        return (
+            f"Restored save snapshot #{result.get('snapshot_id')}: {result.get('files', 0)} files; "
+            f"safety snapshot #{result.get('safety_snapshot_id')}"
         )
     if kind == "restore":
         return f"Restored {result.get('restored', 'trash item')}"
@@ -154,9 +169,15 @@ def run_job(
             )
         elif kind == "device_apply":
             result = operation(*args, cancel_check=check_cancelled)
+        elif kind in {"save_snapshot", "save_restore"}:
+            result = operation(
+                *args, progress_callback=report_progress, cancel_check=check_cancelled
+            )
         else:
             result = operation(*args)
-        check_cancelled()
+        # Cooperative operations check cancellation before their final commit. A
+        # stop request arriving after the operation returns must not relabel a
+        # successfully committed filesystem change as cancelled.
         persist_issues()
         with db.write() as connection:
             connection.execute(
@@ -203,6 +224,29 @@ def enqueue_job(kind: str, detail: str, operation, *args) -> int:
     return job_id
 
 
+def save_scheduler(stop: threading.Event) -> None:
+    while not stop.wait(30):
+        try:
+            if not saves.due_for_automatic_snapshot():
+                continue
+            with db.connect() as connection:
+                active = connection.execute(
+                    "SELECT 1 FROM jobs WHERE kind IN ('save_snapshot','save_restore') "
+                    "AND status IN ('queued','running','cancelling') LIMIT 1"
+                ).fetchone()
+            if not active:
+                enqueue_job(
+                    "save_snapshot",
+                    "Creating scheduled save snapshot",
+                    saves.create_snapshot,
+                    "automatic",
+                    "",
+                    False,
+                )
+        except Exception as exc:
+            db.activity("save_snapshot", f"Scheduled snapshot could not start: {exc}")
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     db.initialize()
@@ -220,9 +264,17 @@ async def lifespan(_: FastAPI):
             "if this instance is already protected by an authenticated reverse proxy."
         )
     library.prepare_roots()
+    saves.initialize()
+    scheduler_stop = threading.Event()
+    scheduler_thread = threading.Thread(target=save_scheduler, args=(scheduler_stop,), daemon=True)
+    scheduler_thread.start()
     if settings.scan_on_start:
         enqueue_job("scan", "Indexing library", library.scan)
-    yield
+    try:
+        yield
+    finally:
+        scheduler_stop.set()
+        scheduler_thread.join(timeout=2)
 
 
 app = FastAPI(
@@ -264,6 +316,28 @@ class NamingRenameItem(BaseModel):
 
 class BulkRenameRequest(BaseModel):
     items: list[NamingRenameItem] = Field(min_length=1, max_length=500)
+
+
+class SaveSnapshotRequest(BaseModel):
+    note: str = Field(default="", max_length=500)
+
+
+class SaveRestoreRequest(BaseModel):
+    expected_tree_hash: str = Field(min_length=64, max_length=64, pattern="^[a-f0-9]{64}$")
+    retroarch_closed: bool
+
+
+class SaveSettingsRequest(BaseModel):
+    enabled: bool
+    interval_minutes: int = Field(ge=0, le=10080)
+    retention_recent: int = Field(ge=1, le=1000)
+    retention_daily: int = Field(ge=0, le=3650)
+    retention_weekly: int = Field(ge=0, le=520)
+    retention_monthly: int = Field(ge=0, le=240)
+
+
+class SavePinRequest(BaseModel):
+    pinned: bool
 
 
 @app.middleware("http")
@@ -326,16 +400,22 @@ def status():
         current_job = connection.execute(
             "SELECT * FROM jobs ORDER BY id DESC LIMIT 1"
         ).fetchone()
+        save_snapshots = connection.execute(
+            "SELECT COUNT(*) AS count FROM save_snapshots"
+        ).fetchone()["count"]
     return {
         **dict(counts),
         "devices": devices,
         "trash": trash,
         "duplicates": duplicates,
+        "save_snapshots": save_snapshots,
         "job": job_payload(current_job) if current_job else None,
         "roots": {
             "library": str(settings.library_root),
             "devices": str(settings.devices_root),
             "trash": str(settings.trash_root),
+            "saves": str(settings.saves_root),
+            "snapshots": str(settings.snapshots_root),
         },
     }
 
@@ -642,6 +722,128 @@ def restore(trash_id: int):
 def purge(trash_id: int):
     job_id = enqueue_job("purge", f"Permanently deleting trash item {trash_id}", library.purge_trash, trash_id)
     return {"job_id": job_id}
+
+
+@app.get("/api/saves")
+def save_overview():
+    snapshots = saves.list_snapshots(limit=1)
+    return {
+        "settings": saves.settings_payload(),
+        "latest_snapshot": snapshots["items"][0] if snapshots["items"] else None,
+        "snapshot_count": snapshots["total"],
+    }
+
+
+@app.get("/api/saves/current")
+def current_saves(
+    search: str = "",
+    limit: int = Query(250, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+):
+    return saves.current_files(search, limit, offset)
+
+
+@app.get("/api/saves/settings")
+def save_settings():
+    return saves.settings_payload()
+
+
+@app.put("/api/saves/settings")
+def update_save_settings(payload: SaveSettingsRequest):
+    result = saves.update_settings(payload.model_dump())
+    pruned = saves.prune_retention()
+    return {**result, "pruned": pruned}
+
+
+@app.post("/api/saves/snapshots", status_code=202)
+def create_save_snapshot(payload: SaveSnapshotRequest):
+    with db.connect() as connection:
+        active = connection.execute(
+            "SELECT id FROM jobs WHERE kind IN ('save_snapshot','save_restore') "
+            "AND status IN ('queued','running','cancelling') ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    if active:
+        return {"job_id": active["id"], "already_running": True}
+    job_id = enqueue_job(
+        "save_snapshot",
+        "Creating save snapshot",
+        saves.create_snapshot,
+        "manual",
+        payload.note,
+        False,
+    )
+    return {"job_id": job_id, "already_running": False}
+
+
+@app.get("/api/saves/snapshots")
+def save_snapshots(
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+):
+    return saves.list_snapshots(limit, offset)
+
+
+@app.get("/api/saves/snapshots/{snapshot_id}")
+def save_snapshot_detail(
+    snapshot_id: int,
+    search: str = "",
+    limit: int = Query(250, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+):
+    return saves.snapshot_detail(snapshot_id, search, limit, offset)
+
+
+@app.get("/api/saves/snapshots/{snapshot_id}/compare")
+def compare_save_snapshot(snapshot_id: int):
+    return saves.compare(snapshot_id)
+
+
+@app.get("/api/saves/snapshots/{snapshot_id}/files/{relpath:path}")
+def download_save_snapshot_file(snapshot_id: int, relpath: str):
+    with db.connect() as connection:
+        row = connection.execute(
+            "SELECT sha256 FROM save_snapshot_files WHERE snapshot_id=? AND relpath=?",
+            (snapshot_id, relpath),
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Snapshot file was not found")
+    blob = saves._blob_path(row["sha256"])
+    if not blob.is_file():
+        raise HTTPException(status_code=409, detail="Snapshot file failed its storage check")
+    return FileResponse(blob, filename=Path(relpath).name, media_type="application/octet-stream")
+
+
+@app.put("/api/saves/snapshots/{snapshot_id}/pin")
+def pin_save_snapshot(snapshot_id: int, payload: SavePinRequest):
+    return saves.pin(snapshot_id, payload.pinned)
+
+
+@app.post("/api/saves/snapshots/{snapshot_id}/restore", status_code=202)
+def restore_save_snapshot(snapshot_id: int, payload: SaveRestoreRequest):
+    if not payload.retroarch_closed:
+        raise HTTPException(
+            status_code=400,
+            detail="Confirm that RetroArch is closed on every device before restoring",
+        )
+    with db.connect() as connection:
+        if not connection.execute(
+            "SELECT 1 FROM save_snapshots WHERE id=?", (snapshot_id,)
+        ).fetchone():
+            raise HTTPException(status_code=404, detail="Save snapshot was not found")
+        active = connection.execute(
+            "SELECT id FROM jobs WHERE kind IN ('save_snapshot','save_restore') "
+            "AND status IN ('queued','running','cancelling') ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    if active:
+        return {"job_id": active["id"], "already_running": True}
+    job_id = enqueue_job(
+        "save_restore",
+        f"Restoring save snapshot #{snapshot_id}",
+        saves.restore_snapshot,
+        snapshot_id,
+        payload.expected_tree_hash,
+    )
+    return {"job_id": job_id, "already_running": False}
 
 
 @app.get("/api/jobs/{job_id}")

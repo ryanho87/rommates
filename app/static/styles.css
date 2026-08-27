@@ -339,6 +339,38 @@ input[type="checkbox"] { width: 15px; height: 15px; margin: 0; accent-color: var
 .device-inventory-note strong { color: var(--text); }
 .device-empty-state { min-height: 280px; }
 
+.save-strip { display: flex; align-items: end; justify-content: space-between; gap: 20px; margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
+.save-source { display: grid; min-width: 0; gap: 4px; }
+.save-source > div { display: flex; align-items: center; gap: 8px; }
+.save-source code { max-width: min(52vw, 680px); overflow: hidden; color: var(--text-muted); font-size: 0.75rem; text-overflow: ellipsis; white-space: nowrap; }
+.snapshot-now { display: flex; align-items: end; gap: 8px; }
+.snapshot-now .field { width: min(360px, 35vw); }
+.save-tabs { margin-bottom: 12px; }
+.save-path { color: var(--text-muted); font-size: 0.75rem; }
+.save-empty { min-height: 280px; }
+.snapshot-detail { margin-top: 12px; padding: 0 12px 12px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface); }
+.snapshot-detail .report-grid { grid-template-columns: repeat(6, minmax(100px, 1fr)); }
+.restore-panel { display: flex; align-items: center; justify-content: space-between; gap: 24px; margin: 14px 0; padding: 12px; border: 1px solid color-mix(in oklch, var(--danger), var(--border) 72%); border-radius: var(--radius-md); background: var(--danger-soft); }
+.restore-panel h3 { margin: 0; font-size: 0.84rem; }
+.restore-panel p { max-width: 72ch; margin: 3px 0 9px; color: var(--text-muted); font-size: 0.76rem; }
+.restore-check { display: flex; align-items: start; gap: 7px; color: var(--text); font-size: 0.78rem; }
+.restore-check input { margin-top: 2px; }
+.snapshot-file-heading { margin-top: 16px; }
+.snapshot-files { max-height: 420px; }
+.restore-changes { margin: 12px 0; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface-raised); }
+.restore-changes summary { padding: 9px 11px; color: var(--text-muted); font-size: 0.76rem; font-weight: 600; cursor: pointer; }
+.restore-changes[open] summary { border-bottom: 1px solid var(--border); color: var(--text); }
+.restore-changes .table-wrap { max-height: 300px; border: 0; border-radius: 0 0 var(--radius-md) var(--radius-md); }
+.snapshot-search { margin-bottom: 8px; }
+.save-settings { max-width: 920px; }
+.settings-section { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(220px, 320px); gap: 10px 24px; padding: 16px 0; border-bottom: 1px solid var(--border); }
+.settings-section h2 { margin: 0; font-size: 0.9rem; }
+.settings-section > p { grid-column: 1; max-width: 58ch; margin: -4px 0 0; color: var(--text-muted); font-size: 0.76rem; }
+.settings-section > .field, .settings-section > .device-choice, .settings-section > .retention-grid { grid-column: 2; }
+.retention-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.settings-paths { display: grid; gap: 5px; margin: 14px 0; color: var(--text-muted); font-size: 0.75rem; }
+.settings-paths code { color: var(--text); }
+
 .section-heading { display: flex; align-items: end; justify-content: space-between; gap: 16px; margin: 20px 0 10px; }
 .section-heading h2 { margin: 0; font-size: 0.95rem; }
 .section-heading p { margin: 2px 0 0; color: var(--text-muted); font-size: 0.78rem; }
@@ -441,6 +473,12 @@ dialog form { padding: 18px; }
   .rename-grid { grid-template-columns: 1fr; align-items: stretch; }
   .import-form { grid-template-columns: 1fr; align-items: stretch; }
   .report-grid { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
+  .save-strip, .restore-panel { align-items: stretch; flex-direction: column; }
+  .snapshot-now { align-items: stretch; }
+  .snapshot-now .field { width: 100%; }
+  .snapshot-detail .report-grid { grid-template-columns: repeat(2, minmax(100px, 1fr)); }
+  .settings-section { grid-template-columns: 1fr; }
+  .settings-section > p, .settings-section > .field, .settings-section > .device-choice, .settings-section > .retention-grid { grid-column: 1; }
   .rename-arrow { display: none; }
 }
 

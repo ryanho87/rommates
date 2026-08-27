@@ -1,0 +1,196 @@
+from __future__ import annotations
+
+import tempfile
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
+from app.config import Settings
+from app.db import Database
+from app.library import LibraryError
+from app.saves import SaveSnapshotService
+
+
+class SaveSnapshotTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        root = Path(self.temp.name)
+        self.saves = root / "saves"
+        self.snapshots = root / "snapshots"
+        self.saves.mkdir()
+        settings = Settings(
+            library_root=root / "roms",
+            devices_root=root / "devices",
+            trash_root=root / "trash",
+            database_path=root / "rommates.db",
+            saves_root=self.saves,
+            snapshots_root=self.snapshots,
+            save_snapshot_quiet_seconds=0,
+            save_retention_recent=20,
+            save_retention_daily=0,
+            save_retention_weekly=0,
+            save_retention_monthly=0,
+        )
+        self.db = Database(settings.database_path)
+        self.db.initialize()
+        self.service = SaveSnapshotService(settings, self.db)
+        self.service.initialize()
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def write(self, relpath: str, content: bytes) -> Path:
+        path = self.saves / relpath
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+        return path
+
+    def test_snapshots_deduplicate_and_report_changes(self):
+        self.write("saves/Pokemon.srm", b"first")
+        first = self.service.create_snapshot()
+        self.assertFalse(first["unchanged"])
+        self.assertEqual(first["added"], 1)
+        self.assertEqual(first["new_bytes"], 5)
+
+        unchanged = self.service.create_snapshot()
+        self.assertTrue(unchanged["unchanged"])
+        self.assertEqual(self.service.list_snapshots()["total"], 1)
+
+        self.write("saves/Pokemon.srm", b"second")
+        self.write("states/Pokemon.state", b"state")
+        second = self.service.create_snapshot(note="After a boss")
+        self.assertEqual(second["changed"], 1)
+        self.assertEqual(second["added"], 1)
+        self.assertEqual(self.service.list_snapshots()["total"], 2)
+        detail = self.service.snapshot_detail(second["snapshot_id"])
+        self.assertEqual(detail["snapshot"]["note"], "After a boss")
+        self.assertEqual(detail["total"], 2)
+
+    def test_restore_creates_safety_snapshot_and_restores_complete_tree(self):
+        self.write("manifest.server", b"manifest-one")
+        self.write("saves/Game.srm", b"save-one")
+        original = self.service.create_snapshot()
+        self.write("manifest.server", b"manifest-two")
+        self.write("saves/Game.srm", b"save-two")
+        self.write("states/Game.state", b"new-state")
+        self.service.create_snapshot()
+
+        comparison = self.service.compare(original["snapshot_id"])
+        restored = self.service.restore_snapshot(
+            original["snapshot_id"], comparison["current_tree_hash"]
+        )
+        self.assertEqual((self.saves / "manifest.server").read_bytes(), b"manifest-one")
+        self.assertEqual((self.saves / "saves/Game.srm").read_bytes(), b"save-one")
+        self.assertFalse((self.saves / "states/Game.state").exists())
+        self.assertNotEqual(restored["safety_snapshot_id"], original["snapshot_id"])
+        safety = self.service.snapshot_detail(restored["safety_snapshot_id"])["snapshot"]
+        self.assertEqual(safety["trigger"], "pre_restore")
+
+    def test_restore_aborts_when_preview_is_stale(self):
+        self.write("saves/Game.srm", b"one")
+        snapshot = self.service.create_snapshot()
+        preview = self.service.compare(snapshot["snapshot_id"])
+        self.write("saves/Game.srm", b"changed-after-preview")
+        with self.assertRaisesRegex(LibraryError, "changed after the restore preview"):
+            self.service.restore_snapshot(snapshot["snapshot_id"], preview["current_tree_hash"])
+        self.assertEqual((self.saves / "saves/Game.srm").read_bytes(), b"changed-after-preview")
+
+    def test_restore_checks_live_filesystem_space_before_mutation(self):
+        self.write("save.srm", b"old-version")
+        snapshot = self.service.create_snapshot()
+        self.write("save.srm", b"current-version")
+        preview = self.service.compare(snapshot["snapshot_id"])
+        with patch("app.saves.shutil.disk_usage", return_value=SimpleNamespace(free=0)):
+            with self.assertRaisesRegex(LibraryError, "temporary bytes"):
+                self.service.restore_snapshot(snapshot["snapshot_id"], preview["current_tree_hash"])
+        self.assertEqual((self.saves / "save.srm").read_bytes(), b"current-version")
+
+    def test_retention_preserves_pinned_snapshot(self):
+        self.service.update_settings(
+            {
+                "retention_recent": 1,
+                "retention_daily": 0,
+                "retention_weekly": 0,
+                "retention_monthly": 0,
+            }
+        )
+        self.write("save.srm", b"one")
+        first = self.service.create_snapshot()
+        self.service.pin(first["snapshot_id"], True)
+        self.write("save.srm", b"two")
+        second = self.service.create_snapshot()
+        self.write("save.srm", b"three")
+        third = self.service.create_snapshot()
+        ids = {item["id"] for item in self.service.list_snapshots()["items"]}
+        self.assertEqual(ids, {first["snapshot_id"], third["snapshot_id"]})
+        self.assertNotIn(second["snapshot_id"], ids)
+
+    def test_schedule_can_be_disabled_in_ui_settings(self):
+        self.assertTrue(self.service.due_for_automatic_snapshot())
+        self.write("save.srm", b"one")
+        self.service.create_snapshot()
+        self.assertFalse(self.service.due_for_automatic_snapshot())
+        updated = self.service.update_settings(
+            {
+                "enabled": False,
+                "interval_minutes": 60,
+                "retention_recent": 24,
+                "retention_daily": 30,
+                "retention_weekly": 12,
+                "retention_monthly": 12,
+            }
+        )
+        self.assertFalse(updated["enabled"])
+        self.assertFalse(self.service.due_for_automatic_snapshot())
+
+    def test_cancelled_restore_rolls_back_live_files(self):
+        self.write("save.srm", b"one")
+        self.write("other.srm", b"other-one")
+        snapshot = self.service.create_snapshot()
+        self.write("save.srm", b"two")
+        self.write("other.srm", b"other-two")
+        preview = self.service.compare(snapshot["snapshot_id"])
+        phase = 0
+        apply_checks = 0
+
+        def report(progress, _detail):
+            nonlocal phase
+            phase = progress
+
+        def cancel_during_restore():
+            nonlocal apply_checks
+            if phase >= 66:
+                apply_checks += 1
+            # Allow one restored file to land, then force the transactional rollback.
+            if apply_checks >= 2:
+                from app.library import JobCancelled
+                raise JobCancelled("Stopped by user")
+
+        with self.assertRaisesRegex(Exception, "Stopped by user"):
+            self.service.restore_snapshot(
+                snapshot["snapshot_id"],
+                preview["current_tree_hash"],
+                progress_callback=report,
+                cancel_check=cancel_during_restore,
+            )
+        self.assertEqual((self.saves / "save.srm").read_bytes(), b"two")
+        self.assertEqual((self.saves / "other.srm").read_bytes(), b"other-two")
+
+    def test_pre_restore_retention_cannot_prune_target_snapshot(self):
+        self.write("save.srm", b"target")
+        target = self.service.create_snapshot()
+        self.write("save.srm", b"current")
+        self.service.create_snapshot()
+        with self.db.write() as connection:
+            connection.execute(
+                "UPDATE save_settings SET retention_recent=1,retention_daily=0,"
+                "retention_weekly=0,retention_monthly=0 WHERE id=1"
+            )
+        preview = self.service.compare(target["snapshot_id"])
+        self.service.restore_snapshot(target["snapshot_id"], preview["current_tree_hash"])
+        self.assertEqual((self.saves / "save.srm").read_bytes(), b"target")
+
+
+if __name__ == "__main__":
+    unittest.main()

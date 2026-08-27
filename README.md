@@ -21,6 +21,7 @@ The MVP supports:
 - Background jobs for scans, copies, renames, delete, restore, and purge operations
 - Safe stop controls for scans and device deployment jobs
 - Detailed job reports with timing, structured results, and paginated unreadable-file paths
+- Deduplicated RetroArch save snapshots with scheduling, retention, historical downloads, and guarded full-state restore
 - Bearer-token protection for the private API
 - Browser/OS light and dark themes
 
@@ -54,12 +55,12 @@ Every direct child of `devices` containing a `roms` directory is discovered as a
    openssl rand -hex 32
    ```
 
-   Put the generated value in `ROMMATES_ACCESS_TOKEN` and set `EMULATION_ROOT` to the absolute host directory containing `roms` and `devices`. ROMmates refuses to start when either value is missing.
+   Put the generated value in `ROMMATES_ACCESS_TOKEN` and set `EMULATION_ROOT` to the absolute host directory containing `roms` and `devices`. Set `RETROARCH_CLOUD_ROOT` to the host directory that backs RetroArch's WebDAV cloud storage. ROMmates refuses to start when the token or Emulation root is missing.
 
 3. Create the state and trash directories as the same Linux user that owns the ROM library:
 
    ```bash
-   mkdir -p data /srv/Emulation/.rommates-trash
+   mkdir -p data data/save-snapshots /srv/Emulation/.rommates-trash
    ```
 
 4. Set `PUID` and `PGID` in `.env` to the account that owns the Emulation directory. Find them with:
@@ -80,6 +81,34 @@ Every direct child of `devices` containing a `roms` directory is discovered as a
 The token protects the application from unauthenticated and cross-site API requests. It is still intended for a trusted private network. Bind `ROMMATES_BIND=127.0.0.1` when placing it behind a reverse proxy.
 
 The application refuses to start without a token, so a misconfigured launch fails loudly instead of exposing the API. If an authenticated reverse proxy already guards the app, set `ROMMATES_ALLOW_ANONYMOUS=true` to opt out deliberately.
+
+If `RETROARCH_CLOUD_ROOT` is not set, Compose mounts an empty local directory at
+`./data/retroarch-saves`. This keeps existing deployments compatible while the Saves UI
+explains that no cloud files have arrived. The account selected by `PUID` and `PGID` needs
+read/write access to both the WebDAV backing directory and `ROMMATES_DATA_ROOT`. Snapshot
+blobs are stored beneath that data root in `save-snapshots`.
+
+## RetroArch save snapshots
+
+ROMmates treats RetroArch's WebDAV directory as the live source and stores immutable,
+content-addressed versions under `/data/save-snapshots`. Unchanged files share a single SHA-256 blob,
+so frequent snapshots only consume space for changed save data.
+
+The **Saves** screen provides:
+
+- Searchable current WebDAV files
+- Manual snapshots with optional notes
+- Scheduled snapshots and tiered recent, daily, weekly, and monthly retention
+- Pinned snapshots that retention never removes
+- Complete change previews against the live save tree
+- Historical file downloads that do not alter WebDAV
+- Full-tree restore with a mandatory pre-restore safety snapshot
+
+Restores include RetroArch's server manifests, not only `.srm` and state files. Close
+RetroArch on every device and allow the final cloud sync to finish before restoring. The
+restore job verifies that live files still match the preview, stages and hashes every
+historical file, creates a safety snapshot, and rolls the live directory back if the job
+fails or is stopped during mutation.
 
 ## Syncthing ignores
 

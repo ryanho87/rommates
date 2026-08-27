@@ -35,6 +35,14 @@ def _float_env(name: str, legacy_name: str, default: float) -> float:
     return min(max(value, 0.0), 1.0)
 
 
+def _int_env(name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        value = int(os.getenv(name, str(default)).strip())
+    except ValueError:
+        return default
+    return min(max(value, minimum), maximum)
+
+
 @dataclass(frozen=True)
 class Settings:
     library_root: Path
@@ -52,6 +60,14 @@ class Settings:
     # explicit confirmation. Guards against an unmounted library root cascading
     # into every device selection.
     scan_prune_limit: float = 0.5
+    saves_root: Path = Path("/saves")
+    snapshots_root: Path = Path("/snapshots")
+    save_snapshot_interval_minutes: int = 360
+    save_snapshot_quiet_seconds: int = 2
+    save_retention_recent: int = 24
+    save_retention_daily: int = 30
+    save_retention_weekly: int = 12
+    save_retention_monthly: int = 12
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -76,4 +92,16 @@ class Settings:
             ),
             extensions=extensions,
             scan_prune_limit=_float_env("ROMMATES_SCAN_PRUNE_LIMIT", "ROM_SCAN_PRUNE_LIMIT", 0.5),
+            saves_root=Path(os.getenv("ROMMATES_SAVES_ROOT", "/saves")),
+            snapshots_root=Path(os.getenv("ROMMATES_SNAPSHOTS_ROOT", "/snapshots")),
+            save_snapshot_interval_minutes=_int_env(
+                "ROMMATES_SAVE_SNAPSHOT_INTERVAL_MINUTES", 360, 0, 10080
+            ),
+            save_snapshot_quiet_seconds=_int_env(
+                "ROMMATES_SAVE_SNAPSHOT_QUIET_SECONDS", 2, 0, 30
+            ),
+            save_retention_recent=_int_env("ROMMATES_SAVE_RETENTION_RECENT", 24, 1, 1000),
+            save_retention_daily=_int_env("ROMMATES_SAVE_RETENTION_DAILY", 30, 0, 3650),
+            save_retention_weekly=_int_env("ROMMATES_SAVE_RETENTION_WEEKLY", 12, 0, 520),
+            save_retention_monthly=_int_env("ROMMATES_SAVE_RETENTION_MONTHLY", 12, 0, 240),
         )

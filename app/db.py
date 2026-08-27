@@ -118,6 +118,44 @@ CREATE TABLE IF NOT EXISTS job_issues (
 );
 CREATE INDEX IF NOT EXISTS idx_job_issues_job ON job_issues(job_id, id);
 
+CREATE TABLE IF NOT EXISTS save_settings (
+    id INTEGER PRIMARY KEY CHECK(id=1),
+    enabled INTEGER NOT NULL DEFAULT 1,
+    interval_minutes INTEGER NOT NULL DEFAULT 360,
+    retention_recent INTEGER NOT NULL DEFAULT 24,
+    retention_daily INTEGER NOT NULL DEFAULT 30,
+    retention_weekly INTEGER NOT NULL DEFAULT 12,
+    retention_monthly INTEGER NOT NULL DEFAULT 12,
+    last_attempt_at TEXT,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS save_snapshots (
+    id INTEGER PRIMARY KEY,
+    trigger TEXT NOT NULL,
+    note TEXT NOT NULL DEFAULT '',
+    tree_hash TEXT NOT NULL,
+    file_count INTEGER NOT NULL,
+    logical_bytes INTEGER NOT NULL,
+    new_bytes INTEGER NOT NULL DEFAULT 0,
+    added_count INTEGER NOT NULL DEFAULT 0,
+    changed_count INTEGER NOT NULL DEFAULT 0,
+    removed_count INTEGER NOT NULL DEFAULT 0,
+    pinned INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_save_snapshots_created ON save_snapshots(id DESC);
+
+CREATE TABLE IF NOT EXISTS save_snapshot_files (
+    snapshot_id INTEGER NOT NULL REFERENCES save_snapshots(id) ON DELETE CASCADE,
+    relpath TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    mtime_ns INTEGER NOT NULL,
+    sha256 TEXT NOT NULL,
+    PRIMARY KEY(snapshot_id, relpath)
+);
+CREATE INDEX IF NOT EXISTS idx_save_snapshot_files_hash ON save_snapshot_files(sha256);
+
 CREATE TABLE IF NOT EXISTS activity (
     id INTEGER PRIMARY KEY,
     action TEXT NOT NULL,
@@ -160,6 +198,13 @@ class Database:
                     ((row["id"], str(detail)) for detail in skipped),
                 )
             connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(3)")
+            connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(4)")
+            save_setting_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(save_settings)")
+            }
+            if "last_attempt_at" not in save_setting_columns:
+                connection.execute("ALTER TABLE save_settings ADD COLUMN last_attempt_at TEXT")
+            connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(5)")
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:

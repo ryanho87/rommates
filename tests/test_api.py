@@ -29,12 +29,16 @@ class ApiIntegrationTests(unittest.TestCase):
                 "ROMMATES_DEVICES_ROOT": str(root / "devices"),
                 "ROMMATES_TRASH_ROOT": str(root / "trash"),
                 "ROMMATES_DATABASE_PATH": str(root / "data/rommates.db"),
+                "ROMMATES_SAVES_ROOT": str(root / "saves"),
+                "ROMMATES_SNAPSHOTS_ROOT": str(root / "snapshots"),
+                "ROMMATES_SAVE_SNAPSHOT_QUIET_SECONDS": "0",
                 "ROMMATES_SCAN_ON_START": "false",
                 "ROMMATES_REQUIRE_EXISTING_ROOTS": "true",
                 "ROMMATES_ACCESS_TOKEN": cls.token,
             },
         )
         cls.environment.start()
+        (root / "saves").mkdir()
         # Reload rather than import: app.main reads settings at module scope, so a
         # module already imported under different environment variables would be reused.
         cls.main = importlib.reload(importlib.import_module("app.main"))
@@ -145,6 +149,52 @@ class ApiIntegrationTests(unittest.TestCase):
         self.assertEqual(issues["total"], 1)
         self.assertEqual(issues["items"][0]["detail"], "gba/unreadable.gba: permission denied")
 
+    def test_save_snapshot_compare_download_and_restore(self):
+        save = self.root / "saves/saves/Test Game.srm"
+        manifest = self.root / "saves/manifest.server"
+        save.parent.mkdir(parents=True, exist_ok=True)
+        save.write_bytes(b"version-one")
+        manifest.write_bytes(b"manifest-one")
+        created = self.client.post(
+            "/api/saves/snapshots", headers=self.headers, json={"note": "Before testing"}
+        )
+        self.assertEqual(created.status_code, 202)
+        job = self.wait_for_job(created.json()["job_id"])
+        self.assertEqual(job["status"], "complete")
+        snapshot_id = job["result"]["snapshot_id"]
+
+        save.write_bytes(b"version-two")
+        extra = self.root / "saves/states/Test Game.state"
+        extra.parent.mkdir(parents=True)
+        extra.write_bytes(b"state")
+        comparison = self.client.get(
+            f"/api/saves/snapshots/{snapshot_id}/compare", headers=self.headers
+        ).json()
+        self.assertEqual(comparison["overwrite"], ["saves/Test Game.srm"])
+        self.assertEqual(comparison["delete"], ["states/Test Game.state"])
+
+        downloaded = self.client.get(
+            f"/api/saves/snapshots/{snapshot_id}/files/saves/Test%20Game.srm",
+            headers=self.headers,
+        )
+        self.assertEqual(downloaded.content, b"version-one")
+        restored = self.client.post(
+            f"/api/saves/snapshots/{snapshot_id}/restore",
+            headers=self.headers,
+            json={
+                "expected_tree_hash": comparison["current_tree_hash"],
+                "retroarch_closed": True,
+            },
+        )
+        restore_job = self.wait_for_job(restored.json()["job_id"])
+        self.assertEqual(restore_job["status"], "complete")
+        self.assertEqual(save.read_bytes(), b"version-one")
+        self.assertEqual(manifest.read_bytes(), b"manifest-one")
+        self.assertFalse(extra.exists())
+
+        overview = self.client.get("/api/saves", headers=self.headers).json()
+        self.assertGreaterEqual(overview["snapshot_count"], 2)
+
     def test_scan_report_lists_every_unreadable_path(self):
         outside = self.root / "outside.gba"
         outside.write_bytes(b"outside")
@@ -241,6 +291,9 @@ class StartupTokenTests(unittest.TestCase):
             "ROMMATES_DEVICES_ROOT": str(root / "devices"),
             "ROMMATES_TRASH_ROOT": str(root / "trash"),
             "ROMMATES_DATABASE_PATH": str(root / "data/rommates.db"),
+            "ROMMATES_SAVES_ROOT": str(root / "saves"),
+            "ROMMATES_SNAPSHOTS_ROOT": str(root / "snapshots"),
+            "ROMMATES_SAVE_SNAPSHOT_QUIET_SECONDS": "0",
             "ROMMATES_SCAN_ON_START": "false",
             "ROMMATES_REQUIRE_EXISTING_ROOTS": "false",
             "ROMMATES_ACCESS_TOKEN": "",
@@ -248,6 +301,7 @@ class StartupTokenTests(unittest.TestCase):
             **overrides,
         }
         with patch.dict(os.environ, environment):
+            (root / "saves").mkdir()
             main = importlib.reload(importlib.import_module("app.main"))
             return TestClient(main.app)
 
