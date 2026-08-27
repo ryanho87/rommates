@@ -62,6 +62,52 @@ class LibraryServiceTests(unittest.TestCase):
         self.assertEqual(game["extension"], ".cue")
         self.assertEqual({Path(item["relpath"]).suffix for item in files}, {".cue", ".bin"})
 
+    def test_scan_reports_byte_and_file_progress(self):
+        self.write("gba/One.gba", b"a" * (2 * 1024 * 1024))
+        self.write("gba/Two.gba", b"two")
+        updates: list[tuple[int, str]] = []
+
+        self.service.scan(progress_callback=lambda percent, detail: updates.append((percent, detail)))
+
+        self.assertEqual(updates[0], (0, "Discovering library files"))
+        self.assertTrue(any("Hashing" in detail and "of 2 files" in detail for _, detail in updates))
+        self.assertTrue(any(percent == 92 and "2 games" in detail for percent, detail in updates))
+        self.assertEqual(updates[-1], (99, "Finalizing scan"))
+
+    def test_interrupted_scan_preserves_completed_hash_batches(self):
+        self.write("gba/A.gba", b"first")
+        self.write("gba/B.gba", b"second")
+        original_hash = self.service._hash_file
+
+        def interrupt_on_second(path, *args, **kwargs):
+            if path.name == "B.gba":
+                raise RuntimeError("simulated interruption")
+            return original_hash(path, *args, **kwargs)
+
+        with (
+            patch("app.library.HASH_CACHE_BATCH_FILES", 1),
+            patch.object(self.service, "_hash_file", side_effect=interrupt_on_second),
+            self.assertRaisesRegex(RuntimeError, "simulated interruption"),
+        ):
+            self.service.scan()
+
+        with self.db.connect() as connection:
+            cached = connection.execute("SELECT relpath FROM file_cache ORDER BY relpath").fetchall()
+        self.assertEqual([row["relpath"] for row in cached], ["gba/A.gba"])
+
+        # The next scan reuses the durable hash instead of reading the first ROM again.
+        reused: list[str] = []
+        original_open = Path.open
+
+        def track_open(path, *args, **kwargs):
+            if path.suffix == ".gba":
+                reused.append(path.name)
+            return original_open(path, *args, **kwargs)
+
+        with patch("pathlib.Path.open", new=track_open):
+            self.service.scan()
+        self.assertEqual(reused, ["B.gba"])
+
     def test_rename_bundle_updates_cue_reference(self):
         self.write("psx/Old Name.bin", b"disc-data")
         self.write("psx/Old Name.cue", 'FILE "Old Name.bin" BINARY\n')

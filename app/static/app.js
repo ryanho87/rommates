@@ -163,7 +163,10 @@ async function refreshStatus() {
   const running = job && ["queued", "running"].includes(job.status);
   const scanning = running && job.kind === "scan";
   pill.classList.toggle("hidden", !running);
-  pill.textContent = running ? JOB_LABELS[job.kind] || "Working…" : "";
+  pill.textContent = running
+    ? scanning ? `${job.progress}% · ${job.detail}` : JOB_LABELS[job.kind] || "Working…"
+    : "";
+  pill.title = running ? job.detail : "";
   // Only a scan conflicts with starting another scan; other jobs leave the button usable.
   scanButton.disabled = scanning;
   scanButton.textContent = scanning ? "Scanning…" : "Scan library";
@@ -177,6 +180,7 @@ function scheduleStatusRefresh() {
       const wasRunning = state.status?.job && ["queued", "running"].includes(state.status.job.status);
       await refreshStatus();
       const isRunning = state.status?.job && ["queued", "running"].includes(state.status.job.status);
+      if (isRunning && state.view === "jobs") await renderJobs();
       if (wasRunning && !isRunning) {
         await reportJobOutcome(state.status.job);
         await loadReferenceData();
@@ -651,7 +655,7 @@ async function renderTrash() {
 async function renderJobs() {
   setHeading("Jobs", "Recent scans and filesystem activity.");
   const [jobs, activity] = await Promise.all([api("/api/jobs"), api("/api/activity")]);
-  const jobsHtml = jobs.length ? `<div class="table-wrap"><table><thead><tr><th>Job</th><th>Status</th><th>Detail</th><th>Started</th><th>Finished</th></tr></thead><tbody>${jobs.map((job) => `<tr><td>${escapeHtml(job.kind)}</td><td><span class="badge ${job.status === "failed" ? "exact" : job.status === "complete" ? "unique" : "possible"}">${escapeHtml(job.status)}</span></td><td class="name-cell">${escapeHtml(job.detail)}</td><td class="meta">${escapeHtml(job.created_at)}</td><td class="meta">${escapeHtml(job.completed_at || "In progress")}</td></tr>`).join("")}</tbody></table></div>` : `<div class="empty-state"><div><h2>No jobs yet</h2><p>Library scans will appear here.</p></div></div>`;
+  const jobsHtml = jobs.length ? `<div class="table-wrap"><table><thead><tr><th>Job</th><th>Status</th><th>Detail</th><th>Started</th><th>Finished</th></tr></thead><tbody>${jobs.map((job) => `<tr><td>${escapeHtml(job.kind)}</td><td><span class="badge ${job.status === "failed" ? "exact" : job.status === "complete" ? "unique" : "possible"}">${escapeHtml(job.status)}${job.status === "running" ? ` · ${job.progress}%` : ""}</span></td><td class="name-cell">${escapeHtml(job.detail)}</td><td class="meta">${escapeHtml(job.created_at)}</td><td class="meta">${escapeHtml(job.completed_at || "In progress")}</td></tr>`).join("")}</tbody></table></div>` : `<div class="empty-state"><div><h2>No jobs yet</h2><p>Library scans will appear here.</p></div></div>`;
   const activityHtml = activity.length ? `<div class="section-heading"><div><h2>Activity</h2><p>Rename, delete, restore, and deployment history.</p></div></div><div class="table-wrap"><table><thead><tr><th>Action</th><th>Detail</th><th>Time</th></tr></thead><tbody>${activity.map((item) => `<tr><td>${escapeHtml(item.action)}</td><td class="name-cell">${escapeHtml(item.detail)}</td><td class="meta">${escapeHtml(item.created_at)} UTC</td></tr>`).join("")}</tbody></table></div>` : "";
   setViewHtml(jobsHtml + activityHtml);
 }

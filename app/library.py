@@ -10,7 +10,7 @@ import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 
 from .config import Settings
 from .db import Database
@@ -22,6 +22,10 @@ LEGACY_COPY_SUFFIX = ".rommanager-copy"
 CUE_FILE_RE = re.compile(r'^\s*FILE\s+"([^"]+)"', re.IGNORECASE)
 TAG_RE = re.compile(r"\s*[\(\[].*?[\)\]]")
 NON_WORD_RE = re.compile(r"[^a-z0-9]+")
+HASH_CACHE_BATCH_FILES = 16
+HASH_CACHE_BATCH_BYTES = 128 * 1024 * 1024
+
+ProgressCallback = Callable[[int, str], None]
 
 
 class LibraryError(RuntimeError):
@@ -48,6 +52,52 @@ class GameCandidate:
     normalized_name: str
     mtime_ns: int
     files: tuple[FileRecord, ...]
+
+
+def _format_bytes(value: int) -> str:
+    size = float(value)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if size < 1024 or unit == "TB":
+            return f"{size:.0f} {unit}" if unit in {"B", "KB"} else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{value} B"
+
+
+@dataclass
+class ScanProgress:
+    total_files: int
+    total_bytes: int
+    callback: ProgressCallback | None
+    processed_files: int = 0
+    processed_bytes: int = 0
+    cached_files: int = 0
+
+    def _emit(self) -> None:
+        if not self.callback:
+            return
+        if self.total_bytes:
+            fraction = self.processed_bytes / self.total_bytes
+        elif self.total_files:
+            fraction = self.processed_files / self.total_files
+        else:
+            fraction = 1
+        percent = min(90, 1 + int(max(0, min(fraction, 1)) * 89))
+        detail = f"Hashing {self.processed_files:,} of {self.total_files:,} files"
+        if self.total_bytes:
+            detail += f" · {_format_bytes(self.processed_bytes)} of {_format_bytes(self.total_bytes)}"
+        if self.cached_files:
+            detail += f" · {self.cached_files:,} cached"
+        self.callback(percent, detail)
+
+    def advance(self, byte_count: int) -> None:
+        self.processed_bytes += byte_count
+        self._emit()
+
+    def finish_file(self, cached: bool = False) -> None:
+        self.processed_files += 1
+        if cached:
+            self.cached_files += 1
+        self._emit()
 
 
 def normalize_name(name: str) -> str:
@@ -96,18 +146,33 @@ class LibraryService:
         relpath: str,
         cache: dict[str, tuple[int, int, str]],
         cache_updates: dict[str, tuple[int, int, str]],
+        progress: ScanProgress | None = None,
     ) -> tuple[str, os.stat_result]:
         stat = path.stat()
         cached = cache.get(relpath)
         if cached and cached[0] == stat.st_size and cached[1] == stat.st_mtime_ns:
+            if progress:
+                progress.advance(stat.st_size)
+                progress.finish_file(cached=True)
             return cached[2], stat
 
         digest = hashlib.sha256()
         with path.open("rb") as handle:
             for chunk in iter(lambda: handle.read(1024 * 1024), b""):
                 digest.update(chunk)
+                if progress:
+                    progress.advance(len(chunk))
         value = digest.hexdigest()
         cache_updates[relpath] = (stat.st_size, stat.st_mtime_ns, value)
+        # Make a repeated reference within this scan a cache hit too.
+        cache[relpath] = (stat.st_size, stat.st_mtime_ns, value)
+        pending_bytes = sum(values[0] for values in cache_updates.values())
+        if len(cache_updates) >= HASH_CACHE_BATCH_FILES or pending_bytes >= HASH_CACHE_BATCH_BYTES:
+            # Checkpoint at file boundaries, including within a multi-disc bundle.
+            # A restart never needs to rehash an already-checkpointed large image.
+            self._persist_hash_cache(cache_updates)
+        if progress:
+            progress.finish_file()
         return value, stat
 
     def _descriptor_refs(self, descriptor: Path) -> list[Path]:
@@ -155,13 +220,15 @@ class LibraryService:
         platform: str,
         cache: dict[str, tuple[int, int, str]],
         cache_updates: dict[str, tuple[int, int, str]],
+        paths: tuple[Path, ...] | None = None,
+        progress: ScanProgress | None = None,
     ) -> GameCandidate:
         root = self.settings.library_root.resolve()
-        paths = self._bundle_paths(primary)
+        paths = paths if paths is not None else self._bundle_paths(primary)
         records: list[FileRecord] = []
         for path in paths:
             relpath = _rel(root, path)
-            sha256, stat = self._hash_file(path, relpath, cache, cache_updates)
+            sha256, stat = self._hash_file(path, relpath, cache, cache_updates, progress)
             kind = "descriptor" if path.suffix.lower() in {".cue", ".m3u"} else "content"
             records.append(FileRecord(relpath, stat.st_size, sha256, kind, stat.st_mtime_ns))
         if not records:
@@ -188,6 +255,7 @@ class LibraryService:
         cache: dict[str, tuple[int, int, str]] | None = None,
         cache_updates: dict[str, tuple[int, int, str]] | None = None,
         skipped: list[str] | None = None,
+        progress_callback: ProgressCallback | None = None,
     ) -> list[GameCandidate]:
         root = self.settings.library_root.resolve()
         if cache is None:
@@ -203,6 +271,9 @@ class LibraryService:
         candidates: list[GameCandidate] = []
         if not root.exists():
             return candidates
+        if progress_callback:
+            progress_callback(0, "Discovering library files")
+        work: list[tuple[Path, str, tuple[Path, ...]]] = []
         for platform_dir in sorted((item for item in root.iterdir() if item.is_dir()), key=lambda p: p.name.lower()):
             descriptors = sorted(
                 (
@@ -234,12 +305,45 @@ class LibraryService:
                 primaries.append(path)
 
             for primary in primaries:
+                work.append((primary, platform_dir.name, self._bundle_paths(primary)))
+
+        total_bytes = 0
+        total_files = 0
+        for _, _, paths in work:
+            for path in paths:
                 try:
-                    candidates.append(self._candidate(primary, platform_dir.name, cache, cache_updates))
+                    total_bytes += path.stat().st_size
+                    total_files += 1
+                except OSError:
+                    # Candidate construction records the useful per-file error.
+                    pass
+        progress = ScanProgress(total_files, total_bytes, progress_callback)
+        progress._emit()
+        try:
+            for primary, platform, paths in work:
+                try:
+                    candidates.append(self._candidate(primary, platform, cache, cache_updates, paths, progress))
                 except (OSError, LibraryError) as exc:
                     skipped.append(f"{primary.name}: {exc}")
-                    continue
+        finally:
+            # Normal Python exceptions still preserve everything hashed so far. A hard
+            # container stop can lose at most the current bounded batch.
+            self._persist_hash_cache(cache_updates)
         return candidates
+
+    def _persist_hash_cache(self, cache_updates: dict[str, tuple[int, int, str]]) -> None:
+        if not cache_updates:
+            return
+        with self.db.write() as connection:
+            connection.executemany(
+                "INSERT INTO file_cache(relpath,size,mtime_ns,sha256) VALUES(?,?,?,?) "
+                "ON CONFLICT(relpath) DO UPDATE SET size=excluded.size,mtime_ns=excluded.mtime_ns,sha256=excluded.sha256",
+                (
+                    (relpath, values[0], values[1], values[2])
+                    for relpath, values in cache_updates.items()
+                ),
+            )
+        cache_updates.clear()
 
     def _discover_devices(self, connection) -> list[str]:
         """Register device folders and drop ones whose directory is gone.
@@ -275,7 +379,11 @@ class LibraryService:
             connection.execute(f"DELETE FROM devices WHERE name IN ({placeholders})", stale)
         return stale
 
-    def scan(self, force_prune: bool = False) -> dict[str, object]:
+    def scan(
+        self,
+        force_prune: bool = False,
+        progress_callback: ProgressCallback | None = None,
+    ) -> dict[str, object]:
         with self._operation_lock:
             with self.db.connect() as connection:
                 cache = {
@@ -288,21 +396,14 @@ class LibraryService:
                 }
             cache_updates: dict[str, tuple[int, int, str]] = {}
             skipped: list[str] = []
-            candidates = self.discover_candidates(cache, cache_updates, skipped)
+            candidates = self.discover_candidates(cache, cache_updates, skipped, progress_callback)
             seen = {candidate.primary_relpath for candidate in candidates}
             # Check before writing anything: the guard aborts the whole scan.
             self._guard_prune(known_relpaths, seen, skipped, force_prune)
+            if progress_callback:
+                progress_callback(92, f"Updating catalog with {len(candidates):,} games")
             with self.db.write() as connection:
                 removed_devices = self._discover_devices(connection)
-                if cache_updates:
-                    connection.executemany(
-                        "INSERT INTO file_cache(relpath,size,mtime_ns,sha256) VALUES(?,?,?,?) "
-                        "ON CONFLICT(relpath) DO UPDATE SET size=excluded.size,mtime_ns=excluded.mtime_ns,sha256=excluded.sha256",
-                        (
-                            (relpath, values[0], values[1], values[2])
-                            for relpath, values in cache_updates.items()
-                        ),
-                    )
                 for candidate in candidates:
                     connection.execute(
                         "INSERT INTO games(platform,primary_relpath,display_name,extension,size,bundle_hash,normalized_name,mtime_ns) "
@@ -338,6 +439,8 @@ class LibraryService:
                 else:
                     connection.execute("DELETE FROM games")
                 connection.execute("DELETE FROM file_cache WHERE relpath NOT IN (SELECT relpath FROM game_files)")
+            if progress_callback:
+                progress_callback(99, "Finalizing scan")
             detail = f"Indexed {len(candidates)} games"
             if skipped:
                 detail += f", skipped {len(skipped)} unreadable files"

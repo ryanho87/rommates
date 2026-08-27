@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import secrets
 import threading
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -77,7 +78,27 @@ def run_job(job_id: int, kind: str, detail: str, operation, *args) -> None:
     try:
         with db.write() as connection:
             connection.execute("UPDATE jobs SET status='running' WHERE id=?", (job_id,))
-        result = operation(*args)
+        last_progress_update = 0.0
+
+        def report_progress(progress: int, progress_detail: str) -> None:
+            nonlocal last_progress_update
+            now = time.monotonic()
+            progress = max(0, min(int(progress), 99))
+            # Hashing reports every MiB so a huge image can show movement. Keep those
+            # callbacks cheap by committing UI state at most twice per second.
+            if progress not in {0, 99} and now - last_progress_update < 0.5:
+                return
+            with db.write() as connection:
+                connection.execute(
+                    "UPDATE jobs SET progress=?,detail=? WHERE id=?",
+                    (progress, progress_detail, job_id),
+                )
+            last_progress_update = now
+
+        if kind == "scan":
+            result = operation(*args, progress_callback=report_progress)
+        else:
+            result = operation(*args)
         with db.write() as connection:
             connection.execute(
                 "UPDATE jobs SET status='complete',progress=100,detail=?,result_json=?,completed_at=CURRENT_TIMESTAMP WHERE id=?",
