@@ -46,7 +46,7 @@ The MVP supports:
 - Deduplicated RetroArch save snapshots with scheduling, retention, historical downloads, and guarded full-state restore
 - Read-only RetroArch save-to-ROM matching, orphan detection, and rename impact warnings
 - Snapshot-backed deletion of confirmed orphan save groups
-- ScreenScraper matching with locally cached covers, screenshots, and logos
+- ScreenScraper matching with ratings, within-platform ranking, and locally cached artwork
 - Bearer-token protection for the private API
 - Browser/OS light and dark themes
 
@@ -157,6 +157,11 @@ Selections represent the desired managed set for a device. Applying changes:
 3. Leaves unrelated, unmanaged files alone.
 4. Removes Finder metadata and interrupted ROMmates temp files from the target device ROM tree.
 
+Missing system directories are created automatically. ROMmates translates unambiguous
+human-readable library folders to ES-DE's canonical, case-sensitive paths (for example,
+`Nintendo Game Boy` to `gb` and `PlayStation` to `psx`) and preserves every nested bundle
+path below them. Unknown or custom platform folders are preserved instead of guessed.
+
 Each copy is recorded as it lands, so an apply that fails or is interrupted partway leaves every file it already wrote under management. Re-running the apply finishes the job, and unselecting a game still removes what was copied.
 
 Device apply jobs can be stopped from the header or Jobs screen. ROMmates checks for
@@ -169,13 +174,26 @@ unreadable file with its library-relative path and error reason. Scans created b
 this feature may expose only the first 50 paths retained by that older version; the
 report labels that limitation, and the next cached scan records the complete list.
 
-## ScreenScraper artwork
+## ScreenScraper metadata and artwork
 
 ROMmates can match games with ScreenScraper and cache a cover, screenshot, and logo under
 `/data/media`. Artwork belongs to the logical game bundle, so multi-track discs and
 folder-based games receive one media set. Scrapes run as cancellable background jobs;
 single-file ROMs use CRC32, MD5, SHA-1, and size before falling back to an unambiguous
 exact-title match. Fingerprints and downloaded assets are reused by later jobs.
+
+Matched games also cache ScreenScraper's community score on its documented 0–20 scale
+and Staff Pick flag. Library and device views show the score and its rank among rated
+games on the same platform. Choose a platform, then use **Fetch missing ratings** to run
+a metadata-only job for every unrated game in that set; this does not download artwork.
+The sort control supports best or lowest rating, title, and file size. Unrated games
+always remain at the end of rating sorts.
+
+For platform-wide coverage, configure a RAWG API key and open **Top 100 coverage** after
+selecting a platform. ROMmates caches RAWG's highest Metacritic-ranked games, then marks
+each title as owned, a possible filename match, or missing. Possible matches are shown
+for review and never silently counted as owned. RAWG requires attribution, so every
+ranking panel includes active links back to RAWG and the individual game pages.
 
 ScreenScraper requires developer credentials issued for the application. Put these in
 the same `.env` file as `EMULATION_ROOT`, then recreate the container:
@@ -186,6 +204,7 @@ ROMMATES_SCREENSCRAPER_DEV_PASSWORD=your-developer-password
 ROMMATES_SCREENSCRAPER_SOFTNAME=ROMmates
 ROMMATES_SCREENSCRAPER_USER=your-optional-user-name
 ROMMATES_SCREENSCRAPER_PASSWORD=your-optional-user-password
+RAWG_API_KEY=your-rawg-api-key
 ```
 
 ROMmates downloads ScreenScraper's current system list and maps common folder names such
@@ -204,7 +223,7 @@ cached for 24 hours, while ROM fingerprints and artwork remain cached until thei
 changes or you explicitly refresh them. Limit, closure, and blocked-client responses stop
 the job with a specific error instead of being retried aggressively.
 
-Select games in Library and choose **Find missing artwork**, or use the artwork tile on
+Select games in Library and choose **Find ratings and artwork**, or use the artwork tile on
 one game. Clicking an existing cover performs an explicit refresh. Ambiguous name matches
 and unmapped platforms are skipped and listed in the job report rather than guessed.
 
@@ -303,6 +322,7 @@ Duplicate and ROM trash confirmations list matching save filenames that would be
 | `ROMMATES_SCAN_PRUNE_LIMIT` | `0.5` | Largest share of the catalog one scan may delete without confirmation |
 | `ROMMATES_EXTENSIONS` | built-in list | Optional comma-separated extension override |
 | `ROMMATES_FOLDER_BUNDLE_PLATFORMS` | `ps3` | Comma-separated platforms where each immediate child directory is one game bundle |
+| `ROMMATES_RAWG_API_KEY` / `RAWG_API_KEY` | empty | Optional RAWG key for cached per-platform Top 100 Metacritic coverage; the prefixed name takes precedence |
 
 ## Local development
 

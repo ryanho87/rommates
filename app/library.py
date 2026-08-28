@@ -7,6 +7,7 @@ import os
 import re
 import shlex
 import shutil
+import tempfile
 import threading
 import time
 from dataclasses import dataclass
@@ -16,6 +17,7 @@ from typing import Callable, Iterable
 
 from .config import Settings
 from .db import Database
+from .esde import esde_device_relpath
 
 
 COPY_SUFFIX = ".rommates-copy"
@@ -549,8 +551,18 @@ class LibraryService:
                     ).fetchone()["id"]
                     connection.execute("DELETE FROM game_files WHERE game_id=?", (game_id,))
                     connection.executemany(
-                        "INSERT INTO game_files(game_id,relpath,size,sha256,kind) VALUES(?,?,?,?,?)",
-                        ((game_id, item.relpath, item.size, item.sha256, item.kind) for item in candidate.files),
+                        "INSERT INTO game_files(game_id,relpath,device_relpath,size,sha256,kind) VALUES(?,?,?,?,?,?)",
+                        (
+                            (
+                                game_id,
+                                item.relpath,
+                                esde_device_relpath(candidate.platform, item.relpath),
+                                item.size,
+                                item.sha256,
+                                item.kind,
+                            )
+                            for item in candidate.files
+                        ),
                     )
                 if seen:
                     connection.execute("CREATE TEMP TABLE IF NOT EXISTS scan_seen(relpath TEXT PRIMARY KEY)")
@@ -623,11 +635,29 @@ class LibraryService:
         try:
             source.rename(target)
         except OSError as exc:
-            if exc.errno == errno.EXDEV:
-                raise LibraryError(
-                    "ROM library, device folders, and trash must be on the same mounted filesystem"
-                ) from exc
-            raise
+            if exc.errno != errno.EXDEV:
+                raise
+
+            # A library can contain nested mounts even when its roots share one
+            # Docker bind mount. Build the destination completely before removing
+            # the source so a failed copy never destroys the only good ROM copy.
+            descriptor, temporary_name = tempfile.mkstemp(
+                prefix=".rommates-move-", dir=target.parent
+            )
+            os.close(descriptor)
+            temporary = Path(temporary_name)
+            try:
+                shutil.copy2(source, temporary)
+                with temporary.open("rb") as handle:
+                    os.fsync(handle.fileno())
+                os.replace(temporary, target)
+                try:
+                    source.unlink()
+                except OSError:
+                    target.unlink(missing_ok=True)
+                    raise
+            finally:
+                temporary.unlink(missing_ok=True)
 
     @staticmethod
     def _remove_empty_tree(root: Path) -> None:
@@ -788,8 +818,13 @@ class LibraryService:
                 )
                 for old, target in mapping.items():
                     connection.execute(
-                        "UPDATE game_files SET relpath=? WHERE game_id=? AND relpath=?",
-                        (_rel(root, target), game_id, _rel(root, old)),
+                        "UPDATE game_files SET relpath=?,device_relpath=? WHERE game_id=? AND relpath=?",
+                        (
+                            _rel(root, target),
+                            esde_device_relpath(game["platform"], _rel(root, target)),
+                            game_id,
+                            _rel(root, old),
+                        ),
                     )
                     connection.execute(
                         "DELETE FROM file_cache WHERE relpath=? AND relpath<>?",
@@ -964,7 +999,7 @@ class LibraryService:
                 }
                 files_by_game: dict[int, list[str]] = {game_id: [] for game_id in all_ids}
                 for row in connection.execute(
-                    f"SELECT game_id,relpath FROM game_files WHERE game_id IN ({placeholders})",
+                    f"SELECT game_id,device_relpath AS relpath FROM game_files WHERE game_id IN ({placeholders})",
                     all_ids,
                 ):
                     files_by_game[row["game_id"]].append(row["relpath"])
@@ -1204,7 +1239,7 @@ class LibraryService:
                 if not device:
                     raise LibraryError("Device was not found")
                 selected = connection.execute(
-                    "SELECT g.id AS game_id,gf.relpath FROM device_selections ds "
+                    "SELECT g.id AS game_id,gf.relpath AS source_relpath,gf.device_relpath AS relpath FROM device_selections ds "
                     "JOIN games g ON g.id=ds.game_id JOIN game_files gf ON gf.game_id=g.id "
                     "WHERE ds.device_id=? ORDER BY gf.relpath",
                     (device_id,),
@@ -1217,16 +1252,23 @@ class LibraryService:
                 self.settings.devices_root / device["path"] / "roms",
             )
             device_root.mkdir(parents=True, exist_ok=True)
-            desired = {(row["game_id"], row["relpath"]) for row in selected}
+            desired = {(row["game_id"], row["relpath"]): row["source_relpath"] for row in selected}
             existing = {(row["game_id"], row["relpath"]) for row in deployed}
             copied = skipped = removed = metadata_removed = 0
             source_root = self.settings.library_root.resolve()
             copy_plan: list[tuple[int, str, Path, Path]] = []
             required_bytes = 0
-            for game_id, relpath in sorted(desired):
+            target_owners: dict[str, tuple[int, str]] = {}
+            for (game_id, relpath), source_relpath in sorted(desired.items()):
                 if cancel_check:
                     cancel_check()
-                source = _inside(source_root, source_root / relpath)
+                owner = target_owners.get(relpath)
+                if owner and owner != (game_id, source_relpath):
+                    raise LibraryError(
+                        f"Two selected ROM files resolve to the same ES-DE path: {relpath}"
+                    )
+                target_owners[relpath] = (game_id, source_relpath)
+                source = _inside(source_root, source_root / source_relpath)
                 target = _inside(device_root, device_root / relpath)
                 target.parent.mkdir(parents=True, exist_ok=True)
                 source_stat = source.stat()
@@ -1243,7 +1285,7 @@ class LibraryService:
                     f"Device needs {required_bytes} bytes but only {free_bytes} bytes are available"
                 )
             # Files already present and identical are still part of the managed set.
-            for game_id, relpath in sorted(desired - {(g, r) for g, r, _, _ in copy_plan}):
+            for game_id, relpath in sorted(set(desired) - {(g, r) for g, r, _, _ in copy_plan}):
                 if cancel_check:
                     cancel_check()
                 self._record_deployment(device_id, game_id, relpath)
@@ -1269,7 +1311,7 @@ class LibraryService:
                     raise
                 self._record_deployment(device_id, game_id, relpath)
                 copied += 1
-            for game_id, relpath in sorted(existing - desired):
+            for game_id, relpath in sorted(existing - set(desired)):
                 if cancel_check:
                     cancel_check()
                 target = _inside(device_root, device_root / relpath)

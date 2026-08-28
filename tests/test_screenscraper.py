@@ -66,7 +66,7 @@ class ScreenScraperTests(unittest.TestCase):
     def test_scrape_caches_hash_metadata_and_assets(self):
         systems = b'{"response":{"systemes":[]}}'
         game = (
-            b'{"response":{"jeu":{"id":"42","noms":[{"region":"us","text":"Test Game"}],'
+            b'{"response":{"jeu":{"id":"42","note":"17.5","topstaff":"1","noms":[{"region":"us","text":"Test Game"}],'
             b'"synopsis":[{"langue":"en","text":"A test."}],"medias":['
             b'{"type":"box-2D","region":"us","url":"https://media.example/cover.png"},'
             b'{"type":"ss","region":"wor","url":"https://media.example/screen.jpg"}]}}}'
@@ -97,6 +97,8 @@ class ScreenScraperTests(unittest.TestCase):
         self.assertEqual(result["downloaded"], 2)
         detail = service.detail(self.game_id)
         self.assertEqual(detail["metadata"]["match_method"], "hash")
+        self.assertEqual(detail["metadata"]["rating"], 17.5)
+        self.assertEqual(detail["metadata"]["top_staff"], 1)
         self.assertEqual({item["kind"] for item in detail["assets"]}, {"cover", "screenshot"})
         with self.db.connect() as connection:
             fingerprint = connection.execute(
@@ -121,6 +123,36 @@ class ScreenScraperTests(unittest.TestCase):
         with self.assertRaisesRegex(LibraryError, "daily request quota"):
             service._before_request()
         self.assertEqual(service.status()["quota"]["max_threads"], 2)
+
+    def test_rating_scrape_caches_metadata_without_downloading_media(self):
+        systems = b'{"response":{"systemes":[]}}'
+        game = (
+            b'{"response":{"jeu":{"id":"42","note":"16","noms":'
+            b'[{"region":"us","text":"Test Game"}],"medias":['
+            b'{"type":"box-2D","region":"us","url":"https://media.example/cover.png"}]}}}'
+        )
+
+        def open_url(request, timeout=0):
+            if "systemesListe.php" in request.full_url:
+                return _Response(systems)
+            if "jeuInfos.php" in request.full_url:
+                return _Response(game)
+            raise AssertionError(f"Metadata-only scrape downloaded media: {request.full_url}")
+
+        service = ScreenScraperService(self.settings, self.db)
+        with patch("urllib.request.urlopen", side_effect=open_url):
+            result = service.scrape(
+                [self.game_id],
+                download_media=False,
+                progress_callback=lambda *_: None,
+                cancel_check=lambda: None,
+            )
+
+        self.assertEqual(result["matched"], 1)
+        self.assertEqual(result["downloaded"], 0)
+        detail = service.detail(self.game_id)
+        self.assertEqual(detail["metadata"]["rating"], 16)
+        self.assertEqual(detail["assets"], [])
 
     def test_unmatched_quota_only_blocks_match_requests(self):
         service = ScreenScraperService(self.settings, self.db)

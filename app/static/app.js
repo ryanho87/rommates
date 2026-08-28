@@ -6,6 +6,8 @@ const state = {
   search: "",
   platform: "",
   duplicate: "all",
+  sort: "name_asc",
+  rankingOpen: false,
   offset: 0,
   limit: 100,
   // id -> {display_name, platform}. A map rather than a set so the bulk bar and the
@@ -467,6 +469,7 @@ async function getGames(deviceId = null, deviceScope = "all") {
     search: state.search,
     platform: state.platform,
     duplicate: state.duplicate,
+    sort: state.sort,
     limit: state.offset ? INFINITE_CHUNK_SIZE : state.limit,
     offset: state.offset,
   });
@@ -479,6 +482,16 @@ function libraryToolbar(includeDuplicate = true) {
   const duplicateOptions = state.view === "duplicates"
     ? `<option value="exact" ${state.duplicate === "exact" ? "selected" : ""}>Exact content</option><option value="possible" ${state.duplicate === "possible" ? "selected" : ""}>Similar filenames</option>`
     : `<option value="all" ${state.duplicate === "all" ? "selected" : ""}>All statuses</option><option value="exact" ${state.duplicate === "exact" ? "selected" : ""}>Exact duplicates</option><option value="possible" ${state.duplicate === "possible" ? "selected" : ""}>Possible duplicates</option><option value="unique" ${state.duplicate === "unique" ? "selected" : ""}>Unique</option>`;
+  const selectedPlatform = state.platforms.find((item) => item.platform === state.platform);
+  const missingRatings = selectedPlatform
+    ? Math.max(0, Number(selectedPlatform.count) - Number(selectedPlatform.rated_count || 0))
+    : 0;
+  const ratingAction = state.view !== "duplicates"
+    ? `<button class="button secondary" type="button" data-fetch-ratings ${!selectedPlatform || missingRatings === 0 ? "disabled" : ""}>${selectedPlatform ? missingRatings ? `Fetch ${missingRatings.toLocaleString()} missing ratings` : "Ratings complete" : "Choose a platform for ratings"}</button>`
+    : "";
+  const rankingAction = state.view === "library"
+    ? `<button class="button secondary ${state.rankingOpen ? "active" : ""}" type="button" data-toggle-ranking ${selectedPlatform ? "" : "disabled"}>Top 100 coverage</button>`
+    : "";
   return `
     <div class="toolbar">
       <label class="search-field">
@@ -490,6 +503,16 @@ function libraryToolbar(includeDuplicate = true) {
         <select id="platform-filter">${platformOptions()}</select>
       </label>
       ${includeDuplicate ? `<label><span class="sr-only">Duplicate status</span><select id="duplicate-filter">${duplicateOptions}</select></label>` : ""}
+      ${state.view !== "duplicates" ? `<label><span class="sr-only">Sort games</span><select id="sort-filter">
+        <option value="name_asc" ${state.sort === "name_asc" ? "selected" : ""}>Title A–Z</option>
+        <option value="name_desc" ${state.sort === "name_desc" ? "selected" : ""}>Title Z–A</option>
+        <option value="rating_desc" ${state.sort === "rating_desc" ? "selected" : ""}>Best rated</option>
+        <option value="rating_asc" ${state.sort === "rating_asc" ? "selected" : ""}>Lowest rated</option>
+        <option value="size_desc" ${state.sort === "size_desc" ? "selected" : ""}>Largest size</option>
+        <option value="size_asc" ${state.sort === "size_asc" ? "selected" : ""}>Smallest size</option>
+      </select></label>` : ""}
+      ${ratingAction}
+      ${rankingAction}
     </div>`;
 }
 
@@ -513,6 +536,84 @@ function bindFilters(callback) {
     state.offset = 0;
     callback();
   });
+  document.querySelector("#sort-filter")?.addEventListener("change", (event) => {
+    state.sort = event.target.value;
+    state.offset = 0;
+    callback();
+  });
+  document.querySelector("[data-fetch-ratings]")?.addEventListener("click", fetchMissingRatings);
+  document.querySelector("[data-toggle-ranking]")?.addEventListener("click", () => {
+    state.rankingOpen = !state.rankingOpen;
+    callback();
+  });
+}
+
+async function fetchMissingRatings() {
+  const platform = state.platforms.find((item) => item.platform === state.platform);
+  if (!platform) return;
+  const missing = Math.max(0, Number(platform.count) - Number(platform.rated_count || 0));
+  if (!missing) return;
+  const confirmed = await confirmAction({
+    title: `Fetch ratings for ${missing.toLocaleString()} ${platform.platform} games?`,
+    content: `<p>ROMmates will match unrated games through ScreenScraper and cache their community score. This sends up to one metadata request per game, uses no artwork bandwidth, and remains subject to your ScreenScraper quota.</p>`,
+    confirmLabel: "Fetch missing ratings",
+    cancelLabel: "Not now",
+    danger: false,
+  });
+  if (!confirmed) return;
+  try {
+    const result = await requestJob(
+      "/api/ratings/scrape",
+      { method: "POST", body: JSON.stringify({ platform: platform.platform, search: "" }) },
+      `Rating job queued for ${platform.platform}`,
+    );
+    toast(`Matched ${result.matched || 0} ratings; ${result.skipped || 0} games skipped`);
+    await refreshStatus();
+    await loadReferenceData();
+    await renderCurrentView();
+  } catch (error) {
+    toast(error.message, "error");
+  }
+}
+
+function rankingPanel(data) {
+  if (!data) return "";
+  if (!data.configured) {
+    return `<section class="ranking-panel"><div class="ranking-head"><div><h2>Top 100 coverage</h2><p>Add <code>ROMMATES_RAWG_API_KEY</code> to load a platform-wide Metacritic list.</p></div></div><p class="ranking-attribution">Rankings require a free personal API key from <a href="https://rawg.io/apidocs" target="_blank" rel="noopener noreferrer">RAWG</a>.</p></section>`;
+  }
+  const counts = data.counts || { owned: 0, possible: 0, missing: 0 };
+  const rows = (data.items || []).map((item) => {
+    const stateLabel = item.status === "owned" ? "Owned" : item.status === "possible" ? "Review match" : "Missing";
+    const match = item.match ? `<span class="ranking-match" title="${escapeHtml(item.match.primary_relpath)}">${escapeHtml(item.match.display_name)}</span>` : "";
+    return `<tr><td class="ranking-number">#${item.rank}</td><td class="name-cell"><a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.title)}</a>${item.released ? `<span class="path-line">${escapeHtml(item.released)}</span>` : ""}</td><td class="meta">${item.score ?? "N/A"}</td><td><span class="badge ranking-${item.status}">${stateLabel}</span>${match}</td></tr>`;
+  }).join("");
+  const body = rows
+    ? `<div class="ranking-table"><table><thead><tr><th>Rank</th><th>Game</th><th>Metacritic</th><th>Library match</th></tr></thead><tbody>${rows}</tbody></table></div>`
+    : `<div class="ranking-empty"><strong>No ranking cached</strong><span>Fetch RAWG's Metacritic list for this platform.</span></div>`;
+  return `<section class="ranking-panel"><div class="ranking-head"><div><h2>Top 100 coverage</h2><p><strong>${counts.owned}</strong> owned, <strong>${counts.possible}</strong> need review, <strong>${counts.missing}</strong> missing.</p></div><button class="button secondary small" data-refresh-ranking>${rows ? "Refresh list" : "Fetch top 100"}</button></div>${body}<p class="ranking-attribution">Metacritic ranking data provided by <a href="https://rawg.io" target="_blank" rel="noopener noreferrer">RAWG</a>. Possible matches never count as owned until filenames match.</p></section>`;
+}
+
+async function refreshRanking() {
+  if (!state.platform) return;
+  try {
+    await requestJob(
+      `/api/rankings/${encodeURIComponent(state.platform)}/refresh`,
+      { method: "POST" },
+      `Fetching ${state.platform} top 100 from RAWG`,
+    );
+    await renderLibrary();
+  } catch (error) {
+    toast(error.message, "error");
+  }
+}
+
+function gameRating(game) {
+  if (game.rating === null || game.rating === undefined) {
+    return '<span class="rating-empty">Not rated</span>';
+  }
+  const score = Number(game.rating);
+  const rank = game.platform_rank ? `#${Number(game.platform_rank).toLocaleString()} on ${escapeHtml(game.platform)}` : "";
+  return `<span class="rating-summary" title="ScreenScraper community rating"><strong>${score.toLocaleString(undefined, { maximumFractionDigits: 1 })}<small>/20</small></strong>${rank ? `<span>${rank}</span>` : ""}${game.top_staff ? '<span class="staff-pick">Staff pick</span>' : ""}</span>`;
 }
 
 function gameRows(items, deviceMode = false) {
@@ -520,7 +621,7 @@ function gameRows(items, deviceMode = false) {
     const checked = deviceMode ? game.selected : state.selectedRows.has(game.id);
     const editor = state.editingId === game.id ? `
       <tr class="inline-editor">
-        <td colspan="9">
+        <td colspan="${deviceMode ? 8 : 10}">
           <form class="rename-grid" data-rename-form="${game.id}">
             <div class="field"><label>Current bundle name</label><div class="current-name">${escapeHtml(game.display_name)}${escapeHtml(game.extension)}</div></div>
             <span class="rename-arrow" aria-hidden="true">→</span>
@@ -531,7 +632,7 @@ function gameRows(items, deviceMode = false) {
       </tr>` : "";
     const assignment = !deviceMode && state.assigningId === game.id ? `
       <tr class="inline-editor">
-        <td colspan="9">
+        <td colspan="${deviceMode ? 8 : 10}">
           <div class="assignment-panel">
             <div class="assignment-head">
               <div><h3>Include “${escapeHtml(game.display_name)}” on devices</h3><p>Selections update immediately. Apply each device when you are ready to copy or remove files.</p></div>
@@ -548,6 +649,7 @@ function gameRows(items, deviceMode = false) {
         <td class="artwork-cell">${artworkThumb(game, !deviceMode)}</td>
         <td class="name-cell" title="${escapeHtml(game.primary_relpath)}"><strong>${escapeHtml(game.display_name)}</strong><span class="path-line">${escapeHtml(game.primary_relpath)}</span></td>
         <td>${escapeHtml(game.platform)}</td>
+        <td class="rating-cell">${gameRating(game)}</td>
         ${deviceMode ? "" : `<td>${duplicateLabel(game.duplicate_status)}</td>`}
         <td class="meta">${formatBytes(game.size)}</td>
         <td class="meta optional-column">${game.file_count} ${game.file_count === 1 ? "file" : "files"}</td>
@@ -583,7 +685,7 @@ function gamesTable(data, deviceMode = false) {
       <table>
         <thead><tr>
           <th class="checkbox-cell"><input type="checkbox" aria-label="Select visible ROMs" data-select-all></th>
-          <th class="artwork-cell">Art</th><th>Filename</th><th>Platform</th>${deviceMode ? "" : "<th>Duplicate status</th>"}<th>Size</th><th class="optional-column">Bundle</th><th class="optional-column">${deviceMode ? "Target state" : "Devices"}</th>${deviceMode ? "" : "<th>Actions</th>"}
+          <th class="artwork-cell">Art</th><th>Filename</th><th>Platform</th><th>Rating</th>${deviceMode ? "" : "<th>Duplicate status</th>"}<th>Size</th><th class="optional-column">Bundle</th><th class="optional-column">${deviceMode ? "Target state" : "Devices"}</th>${deviceMode ? "" : "<th>Actions</th>"}
         </tr></thead>
         <tbody>${gameRows(data.items, deviceMode)}</tbody>
       </table>
@@ -602,12 +704,12 @@ function artworkThumb(game, interactive = true) {
 
 function artworkPanel(game) {
   const detail = state.artworkDetail;
-  if (!detail) return `<tr class="inline-editor"><td colspan="9"><div class="artwork-panel"><p class="meta">Loading artwork…</p></div></td></tr>`;
+  if (!detail) return `<tr class="inline-editor"><td colspan="10"><div class="artwork-panel"><p class="meta">Loading artwork…</p></div></td></tr>`;
   const metadata = detail.metadata;
   const cards = detail.assets.length
     ? detail.assets.map((asset) => `<figure class="asset-card"><img data-artwork-src="${asset.id}" alt="${escapeHtml(asset.kind)} for ${escapeHtml(game.display_name)}"><figcaption>${escapeHtml(asset.kind)} <span>${formatBytes(asset.size)}</span></figcaption></figure>`).join("")
     : '<div class="artwork-empty"><strong>No artwork cached</strong><p>Match this game with ScreenScraper to add a cover, screenshot, and logo.</p></div>';
-  return `<tr class="inline-editor"><td colspan="9"><div class="artwork-panel">
+  return `<tr class="inline-editor"><td colspan="10"><div class="artwork-panel">
     <div class="assignment-head"><div><h3>${escapeHtml(metadata?.title || game.display_name)}</h3><p>${metadata ? `Matched by ${escapeHtml(metadata.match_method)} · ScreenScraper game ${escapeHtml(metadata.source_game_id)}` : "No ScreenScraper match yet"}</p></div><div class="bulk-actions"><button class="button secondary small" data-refresh-artwork="${game.id}" data-name="${escapeHtml(game.display_name)}">${detail.assets.length ? "Refresh artwork" : "Find artwork"}</button><button class="button secondary small" data-close-artwork>Close</button></div></div>
     ${metadata?.description ? `<p class="artwork-description">${escapeHtml(metadata.description)}</p>` : ""}
     <div class="asset-grid">${cards}</div>
@@ -655,7 +757,7 @@ function bulkBarHtml() {
   const hint = offScreen
     ? `<span class="meta"> · ${offScreen} not shown by the current filters</span>`
     : `<span class="meta"> for library cleanup</span>`;
-  return `<div class="bulk-bar"><div><strong>${count} selected</strong>${hint}</div><div class="bulk-actions"><button class="button secondary" data-clear-selection>Clear selection</button><button class="button secondary" data-scrape-selected>Find missing artwork</button><button class="button danger" data-delete-selected>Move ${count} to trash</button></div></div>`;
+  return `<div class="bulk-bar"><div><strong>${count} selected</strong>${hint}</div><div class="bulk-actions"><button class="button secondary" data-clear-selection>Clear selection</button><button class="button secondary" data-scrape-selected>Find ratings and artwork</button><button class="button danger" data-delete-selected>Move ${count} to trash</button></div></div>`;
 }
 
 // Row selection is client-side state, so refresh just this strip instead of refetching
@@ -783,13 +885,17 @@ async function renderLibrary() {
   const renderVersion = beginPageRender();
   setHeading("Library", "Browse, rename, and clean the canonical collection.");
   const response = await getGames();
+  const ranking = state.rankingOpen && state.platform
+    ? await api(`/api/rankings/${encodeURIComponent(state.platform)}`)
+    : null;
   if (!pageRenderIsCurrent(renderVersion, "library")) return;
-  const key = `library\u001f${state.search}\u001f${state.platform}\u001f${state.duplicate}`;
+  const key = `library\u001f${state.search}\u001f${state.platform}\u001f${state.duplicate}\u001f${state.sort}`;
   const data = mergeInfinitePage(key, response);
-  setViewHtml(`${libraryToolbar(true)}${gamesTable(data)}<div id="bulk-bar-slot"></div>`);
+  setViewHtml(`${libraryToolbar(true)}${rankingPanel(ranking)}${gamesTable(data)}<div id="bulk-bar-slot"></div>`);
   renderBulkBar();
   syncSelectAll();
   bindFilters(renderLibrary);
+  view.querySelector("[data-refresh-ranking]")?.addEventListener("click", refreshRanking);
   bindGameEvents(data, false);
   bindInfiniteScroll(data, renderLibrary);
   loadArtworkImages();
@@ -1247,7 +1353,7 @@ async function renderDevices() {
     navigationApi(`/api/devices/${device.id}/preview`),
   ]);
   if (!pageRenderIsCurrent(renderVersion, "devices")) return;
-  const key = `devices\u001f${device.id}\u001f${state.deviceScope}\u001f${state.search}\u001f${state.platform}`;
+  const key = `devices\u001f${device.id}\u001f${state.deviceScope}\u001f${state.search}\u001f${state.platform}\u001f${state.sort}`;
   const data = mergeInfinitePage(key, response);
   const inventory = data.device_inventory;
   const noFilters = !state.search && !state.platform;

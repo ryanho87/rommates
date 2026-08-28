@@ -101,6 +101,55 @@ class ApiIntegrationTests(unittest.TestCase):
         self.assertGreaterEqual(len(dashboard["recent_jobs"]), 1)
         self.assertNotIn("result_json", dashboard["recent_jobs"][0])
 
+    def test_library_sorts_by_screenscraper_rating_and_reports_platform_rank(self):
+        paths = [
+            self.root / "roms/gba/Rating High.gba",
+            self.root / "roms/gba/Rating Low.gba",
+            self.root / "roms/gba/Rating Unknown.gba",
+        ]
+        for index, path in enumerate(paths):
+            path.write_bytes(f"rating-{index}".encode())
+        try:
+            scan = self.client.post("/api/scan?confirm_prune=true", headers=self.headers)
+            self.assertEqual(self.wait_for_job(scan.json()["job_id"])["status"], "complete")
+            games = self.client.get(
+                "/api/games?platform=gba&search=Rating%20&limit=100", headers=self.headers
+            ).json()["items"]
+            ids = {game["display_name"]: game["id"] for game in games}
+            with self.main.db.write() as connection:
+                for name, rating, staff in (
+                    ("Rating High", 19.0, 1),
+                    ("Rating Low", 8.0, 0),
+                ):
+                    connection.execute(
+                        "INSERT INTO game_metadata(game_id,source,source_game_id,source_system_id,match_method,rating,top_staff) "
+                        "VALUES(?,'screenscraper',?,12,'hash',?,?)",
+                        (ids[name], str(ids[name]), rating, staff),
+                    )
+
+            response = self.client.get(
+                "/api/games?platform=gba&search=Rating%20&sort=rating_desc&limit=100",
+                headers=self.headers,
+            )
+            self.assertEqual(response.status_code, 200)
+            items = response.json()["items"]
+            self.assertEqual(
+                [item["display_name"] for item in items],
+                ["Rating High", "Rating Low", "Rating Unknown"],
+            )
+            self.assertEqual(items[0]["rating"], 19.0)
+            self.assertEqual(items[0]["platform_rank"], 1)
+            self.assertEqual(items[0]["top_staff"], 1)
+            self.assertIsNone(items[-1]["rating"])
+            platforms = self.client.get("/api/platforms", headers=self.headers).json()
+            gba = next(item for item in platforms if item["platform"] == "gba")
+            self.assertGreaterEqual(gba["rated_count"], 2)
+        finally:
+            for path in paths:
+                path.unlink(missing_ok=True)
+            scan = self.client.post("/api/scan?confirm_prune=true", headers=self.headers)
+            self.assertEqual(self.wait_for_job(scan.json()["job_id"])["status"], "complete")
+
     def test_cross_site_mutation_is_rejected(self):
         response = self.client.post(
             "/api/scan",
@@ -301,6 +350,33 @@ class ApiIntegrationTests(unittest.TestCase):
         issues = self.client.get(f"/api/jobs/{job_id}/issues", headers=self.headers).json()
         self.assertEqual(issues["total"], 1)
         self.assertEqual(issues["items"][0]["detail"], "gba/unreadable.gba: permission denied")
+
+    def test_duplicate_atomic_jobs_stay_queued_and_coalesce(self):
+        calls = {"count": 0}
+
+        def operation():
+            calls["count"] += 1
+            return {"done": True}
+
+        self.assertTrue(self.main.library_job_lock.acquire(timeout=1))
+        try:
+            first = self.main.enqueue_job(
+                "delete", "Synthetic queued deletion", operation, coalesce=True
+            )
+            second = self.main.enqueue_job(
+                "delete", "Synthetic queued deletion", operation, coalesce=True
+            )
+            self.assertEqual(first, second)
+            queued = self.client.get(f"/api/jobs/{first}", headers=self.headers).json()
+            self.assertEqual(queued["status"], "queued")
+            self.assertTrue(queued["cancellable"])
+
+            response = self.client.post(f"/api/jobs/{first}/cancel", headers=self.headers)
+            self.assertEqual(response.status_code, 202)
+            self.assertEqual(self.wait_for_job(first)["status"], "cancelled")
+            self.assertEqual(calls["count"], 0)
+        finally:
+            self.main.library_job_lock.release()
 
     def test_save_snapshot_compare_download_and_restore(self):
         save = self.root / "saves/saves/Test Game.srm"

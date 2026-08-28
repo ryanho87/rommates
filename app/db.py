@@ -35,6 +35,7 @@ CREATE INDEX IF NOT EXISTS idx_games_normalized ON games(normalized_name);
 CREATE TABLE IF NOT EXISTS game_files (
     game_id INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
     relpath TEXT NOT NULL,
+    device_relpath TEXT NOT NULL DEFAULT '',
     size INTEGER NOT NULL,
     sha256 TEXT NOT NULL,
     kind TEXT NOT NULL,
@@ -69,6 +70,8 @@ CREATE TABLE IF NOT EXISTS game_metadata (
     developer TEXT NOT NULL DEFAULT '',
     publisher TEXT NOT NULL DEFAULT '',
     players TEXT NOT NULL DEFAULT '',
+    rating REAL,
+    top_staff INTEGER NOT NULL DEFAULT 0,
     raw_json TEXT NOT NULL DEFAULT '{}',
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -87,6 +90,23 @@ CREATE TABLE IF NOT EXISTS game_assets (
     UNIQUE(game_id, kind)
 );
 CREATE INDEX IF NOT EXISTS idx_game_assets_game ON game_assets(game_id);
+
+CREATE TABLE IF NOT EXISTS platform_rankings (
+    platform TEXT NOT NULL,
+    rank INTEGER NOT NULL,
+    source TEXT NOT NULL,
+    source_game_id TEXT NOT NULL,
+    slug TEXT NOT NULL,
+    title TEXT NOT NULL,
+    score REAL,
+    rating REAL,
+    ratings_count INTEGER NOT NULL DEFAULT 0,
+    released TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY(platform, rank),
+    UNIQUE(platform, source, source_game_id)
+);
+CREATE INDEX IF NOT EXISTS idx_platform_rankings_platform ON platform_rankings(platform, rank);
 
 CREATE TABLE IF NOT EXISTS naming_catalogs (
     id INTEGER PRIMARY KEY,
@@ -246,6 +266,69 @@ class Database:
                 connection.execute("ALTER TABLE save_settings ADD COLUMN last_attempt_at TEXT")
             connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(5)")
             connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(6)")
+            game_file_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(game_files)")
+            }
+            if "device_relpath" not in game_file_columns:
+                connection.execute(
+                    "ALTER TABLE game_files ADD COLUMN device_relpath TEXT NOT NULL DEFAULT ''"
+                )
+            # Populate both upgraded databases and any rows created by an older
+            # application process before this migration completed.
+            from .esde import esde_device_relpath
+
+            rows = connection.execute(
+                "SELECT gf.rowid,g.platform,gf.relpath FROM game_files gf "
+                "JOIN games g ON g.id=gf.game_id WHERE gf.device_relpath=''"
+            ).fetchall()
+            connection.executemany(
+                "UPDATE game_files SET device_relpath=? WHERE rowid=?",
+                (
+                    (esde_device_relpath(row["platform"], row["relpath"]), row["rowid"])
+                    for row in rows
+                ),
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_game_files_device_relpath ON game_files(device_relpath)"
+            )
+            connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(7)")
+            metadata_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(game_metadata)")
+            }
+            if "rating" not in metadata_columns:
+                connection.execute("ALTER TABLE game_metadata ADD COLUMN rating REAL")
+            if "top_staff" not in metadata_columns:
+                connection.execute(
+                    "ALTER TABLE game_metadata ADD COLUMN top_staff INTEGER NOT NULL DEFAULT 0"
+                )
+            from .ratings import screenscraper_rating, screenscraper_top_staff
+
+            metadata_rows = connection.execute(
+                "SELECT game_id,raw_json FROM game_metadata WHERE source='screenscraper' AND rating IS NULL"
+            ).fetchall()
+            backfill: list[tuple[float | None, int, int]] = []
+            for row in metadata_rows:
+                try:
+                    raw = json.loads(row["raw_json"] or "{}")
+                except (TypeError, json.JSONDecodeError):
+                    raw = {}
+                if not isinstance(raw, dict):
+                    raw = {}
+                backfill.append(
+                    (
+                        screenscraper_rating(raw),
+                        int(screenscraper_top_staff(raw)),
+                        row["game_id"],
+                    )
+                )
+            connection.executemany(
+                "UPDATE game_metadata SET rating=?,top_staff=? WHERE game_id=?", backfill
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_game_metadata_rating ON game_metadata(rating)"
+            )
+            connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(8)")
+            connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(9)")
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:

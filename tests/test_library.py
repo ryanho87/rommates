@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import shutil
 import tempfile
 import threading
@@ -173,6 +174,17 @@ class LibraryServiceTests(unittest.TestCase):
         self.assertTrue((self.roms / "ps3/Restore Folder.ps3/PS3_GAME/PARAM.SFO").is_file())
         self.assertTrue((self.roms / "ps3/Restore Folder.ps3/PS3_GAME/USRDIR/game.bin").is_file())
 
+    def test_trash_move_safely_falls_back_across_filesystems(self):
+        source = self.write("gba/Cross Mount.gba", b"complete-rom-data")
+        target = self.trash / "batch/gba/Cross Mount.gba"
+
+        with patch.object(Path, "rename", side_effect=OSError(errno.EXDEV, "cross-device link")):
+            self.service._atomic_move(source, target)
+
+        self.assertFalse(source.exists())
+        self.assertEqual(target.read_bytes(), b"complete-rom-data")
+        self.assertEqual(list(target.parent.glob(".rommates-move-*")), [])
+
     def test_scan_reports_byte_and_file_progress(self):
         self.write("gba/One.gba", b"a" * (2 * 1024 * 1024))
         self.write("gba/Two.gba", b"two")
@@ -307,6 +319,45 @@ class LibraryServiceTests(unittest.TestCase):
         self.assertEqual(self.service.set_selections(device_id, [game_ids[0]], False), 1)
         with self.db.connect() as connection:
             self.assertEqual(connection.execute("SELECT COUNT(*) AS count FROM device_selections").fetchone()["count"], 1)
+
+    def test_apply_creates_missing_esde_system_folder_for_known_alias(self):
+        self.write("Nintendo Game Boy/Tetris.gb", b"blocks")
+        device_roms = self.devices / "handheld" / "roms"
+        device_roms.mkdir(parents=True)
+        self.service.scan()
+        with self.db.connect() as connection:
+            device_id = connection.execute("SELECT id FROM devices").fetchone()["id"]
+            game_id = connection.execute("SELECT id FROM games").fetchone()["id"]
+            device_relpath = connection.execute(
+                "SELECT device_relpath FROM game_files WHERE game_id=?", (game_id,)
+            ).fetchone()["device_relpath"]
+        self.assertEqual(device_relpath, "gb/Tetris.gb")
+        self.service.set_selection(device_id, game_id, True)
+
+        result = self.service.apply_device(device_id)
+
+        self.assertEqual(result["copied"], 1)
+        self.assertTrue((device_roms / "gb/Tetris.gb").is_file())
+        self.assertFalse((device_roms / "Nintendo Game Boy").exists())
+        with self.db.connect() as connection:
+            deployed = connection.execute(
+                "SELECT relpath FROM deployments WHERE device_id=?", (device_id,)
+            ).fetchone()["relpath"]
+        self.assertEqual(deployed, "gb/Tetris.gb")
+
+    def test_apply_preserves_unknown_custom_platform_folder(self):
+        self.write("gba-top100/Metroid.gba", b"samus")
+        device_roms = self.devices / "handheld" / "roms"
+        device_roms.mkdir(parents=True)
+        self.service.scan()
+        with self.db.connect() as connection:
+            device_id = connection.execute("SELECT id FROM devices").fetchone()["id"]
+            game_id = connection.execute("SELECT id FROM games").fetchone()["id"]
+        self.service.set_selection(device_id, game_id, True)
+
+        self.service.apply_device(device_id)
+
+        self.assertTrue((device_roms / "gba-top100/Metroid.gba").is_file())
 
     def test_delete_and_restore_also_restores_managed_device_copy(self):
         self.write("gba/Portable.gba", b"portable")

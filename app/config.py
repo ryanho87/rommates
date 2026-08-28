@@ -79,6 +79,7 @@ class Settings:
     screenscraper_user: str = ""
     screenscraper_password: str = ""
     screenscraper_system_map: dict[str, int] | None = None
+    rawg_api_key: str = ""
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -143,6 +144,9 @@ class Settings:
             screenscraper_softname=os.getenv(
                 "ROMMATES_SCREENSCRAPER_SOFTNAME", "ROMmates"
             ).strip() or "ROMmates",
+            rawg_api_key=(
+                os.getenv("ROMMATES_RAWG_API_KEY") or os.getenv("RAWG_API_KEY", "")
+            ).strip(),
             screenscraper_user=os.getenv("ROMMATES_SCREENSCRAPER_USER", "").strip(),
             screenscraper_password=os.getenv(
                 "ROMMATES_SCREENSCRAPER_PASSWORD", ""

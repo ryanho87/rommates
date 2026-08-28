@@ -18,6 +18,7 @@ from typing import Callable
 from .config import Settings
 from .db import Database
 from .library import JobCancelled, LibraryError
+from .ratings import screenscraper_rating, screenscraper_top_staff
 
 
 API_ROOT = "https://api.screenscraper.fr/api2"
@@ -438,18 +439,38 @@ class ScreenScraperService:
             old.unlink(missing_ok=True)
         return True
 
-    def scrape(self, game_ids: list[int], missing_only: bool = True, *, progress_callback, cancel_check) -> dict[str, object]:
+    def scrape(
+        self,
+        game_ids: list[int],
+        missing_only: bool = True,
+        download_media: bool = True,
+        *,
+        progress_callback,
+        cancel_check,
+    ) -> dict[str, object]:
         while not self._scrape_lock.acquire(timeout=0.25):
             cancel_check()
             progress_callback(0, "Waiting for the active ScreenScraper job")
         try:
             return self._scrape_locked(
-                game_ids, missing_only, progress_callback=progress_callback, cancel_check=cancel_check
+                game_ids,
+                missing_only,
+                download_media,
+                progress_callback=progress_callback,
+                cancel_check=cancel_check,
             )
         finally:
             self._scrape_lock.release()
 
-    def _scrape_locked(self, game_ids: list[int], missing_only: bool = True, *, progress_callback, cancel_check) -> dict[str, object]:
+    def _scrape_locked(
+        self,
+        game_ids: list[int],
+        missing_only: bool = True,
+        download_media: bool = True,
+        *,
+        progress_callback,
+        cancel_check,
+    ) -> dict[str, object]:
         if not self.configured:
             raise LibraryError("ScreenScraper is not configured. Add its developer credentials to Compose.")
         self.settings.media_root.mkdir(parents=True, exist_ok=True)
@@ -462,12 +483,16 @@ class ScreenScraperService:
                 row = connection.execute("SELECT * FROM games WHERE id=?", (game_id,)).fetchone()
                 files = connection.execute("SELECT * FROM game_files WHERE game_id=? ORDER BY relpath", (game_id,)).fetchall()
                 existing = connection.execute("SELECT COUNT(*) AS count FROM game_assets WHERE game_id=?", (game_id,)).fetchone()["count"]
+                metadata = connection.execute(
+                    "SELECT rating FROM game_metadata WHERE game_id=?", (game_id,)
+                ).fetchone()
             if not row:
                 skipped += 1
                 issues.append(f"Game {game_id}: no longer exists")
                 continue
             game = dict(row)
-            if missing_only and existing >= len(ASSET_CHOICES):
+            has_rating = metadata is not None and metadata["rating"] is not None
+            if missing_only and has_rating and (not download_media or existing >= len(ASSET_CHOICES)):
                 skipped += 1
                 continue
             progress_callback(int(index * 100 / max(len(game_ids), 1)), f"Scraping {index + 1} of {len(game_ids)} · {game['display_name']}")
@@ -500,24 +525,35 @@ class ScreenScraperService:
             matched += 1
             title = _localized(node.get("noms") or node.get("nom"))
             description = _localized(node.get("synopsis"))
+            rating = screenscraper_rating(node)
+            top_staff = int(screenscraper_top_staff(node))
             with self.db.write() as connection:
                 connection.execute(
-                    "INSERT INTO game_metadata(game_id,source,source_game_id,source_system_id,match_method,title,description,raw_json) "
-                    "VALUES(?,'screenscraper',?,?,?,?,?,?) ON CONFLICT(game_id) DO UPDATE SET "
+                    "INSERT INTO game_metadata(game_id,source,source_game_id,source_system_id,match_method,title,description,rating,top_staff,raw_json) "
+                    "VALUES(?,'screenscraper',?,?,?,?,?,?,?,?) ON CONFLICT(game_id) DO UPDATE SET "
                     "source_game_id=excluded.source_game_id,source_system_id=excluded.source_system_id,"
                     "match_method=excluded.match_method,title=excluded.title,description=excluded.description,"
+                    "rating=excluded.rating,top_staff=excluded.top_staff,"
                     "raw_json=excluded.raw_json,updated_at=CURRENT_TIMESTAMP",
-                    (game_id, source_game_id, system_id, method, title, description, json.dumps(node, ensure_ascii=False)),
+                    (
+                        game_id, source_game_id, system_id, method, title, description,
+                        rating, top_staff, json.dumps(node, ensure_ascii=False),
+                    ),
                 )
-            medias = self._media(node)
-            for kind, choices in ASSET_CHOICES.items():
-                candidates = [media for choice in choices for media in medias if str(media.get("type")) == choice]
-                candidates.sort(key=lambda item: (str(item.get("region") or "") not in {"us", "wor", "eu", "ss"},))
-                if candidates and self._download_asset(
-                    game_id, kind, candidates[0], not missing_only, cancel_check
-                ):
-                    downloaded += 1
-        self.db.activity("artwork", f"Matched {matched} games and downloaded {downloaded} visual assets")
+            if download_media:
+                medias = self._media(node)
+                for kind, choices in ASSET_CHOICES.items():
+                    candidates = [media for choice in choices for media in medias if str(media.get("type")) == choice]
+                    candidates.sort(key=lambda item: (str(item.get("region") or "") not in {"us", "wor", "eu", "ss"},))
+                    if candidates and self._download_asset(
+                        game_id, kind, candidates[0], not missing_only, cancel_check
+                    ):
+                        downloaded += 1
+        action = "artwork" if download_media else "ratings"
+        detail = f"Matched {matched} games"
+        if download_media:
+            detail += f" and downloaded {downloaded} visual assets"
+        self.db.activity(action, detail)
         return {"requested": len(game_ids), "matched": matched, "downloaded": downloaded, "skipped": skipped, "issues": issues}
 
     def detail(self, game_id: int) -> dict[str, object]:

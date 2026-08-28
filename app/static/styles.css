@@ -238,6 +238,31 @@ tbody tr:hover > td { background: color-mix(in oklch, var(--accent-soft), var(--
 td.name-cell { width: 100%; max-width: 540px; overflow: hidden; text-overflow: ellipsis; }
 td.meta, .meta { color: var(--text-muted); }
 .path-line { display: block; max-width: 420px; overflow: hidden; color: var(--text-faint); font-size: 0.7rem; text-overflow: ellipsis; }
+.rating-cell { min-width: 104px; }
+.rating-summary { display: grid; width: max-content; line-height: 1.05; }
+.rating-summary strong { color: var(--text); font-size: 0.78rem; font-weight: 650; }
+.rating-summary strong small { margin-left: 2px; color: var(--text-faint); font-size: 0.62rem; font-weight: 520; }
+.rating-summary > span { margin-top: 2px; color: var(--text-faint); font-size: 0.62rem; }
+.rating-summary .staff-pick { color: var(--accent); font-weight: 620; }
+.rating-empty { color: var(--text-faint); font-size: 0.7rem; }
+.ranking-panel { margin-bottom: 12px; overflow: hidden; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface); }
+.ranking-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 11px 12px; border-bottom: 1px solid var(--border); background: var(--surface-raised); }
+.ranking-head h2 { margin: 0; font-size: 0.85rem; }
+.ranking-head p { margin: 3px 0 0; color: var(--text-muted); font-size: 0.72rem; }
+.ranking-table { max-height: 420px; overflow: auto; }
+.ranking-table th { top: 0; }
+.ranking-table td.name-cell { max-width: 520px; }
+.ranking-table a { color: var(--text); font-weight: 620; text-decoration: none; }
+.ranking-table a:hover { color: var(--accent); text-decoration: underline; }
+.ranking-number { width: 62px; color: var(--text-faint); font-weight: 650; }
+.badge.ranking-owned { background: var(--success-soft); color: var(--success); }
+.badge.ranking-possible { background: var(--warning-soft); color: var(--warning); }
+.badge.ranking-missing { background: var(--danger-soft); color: var(--danger); }
+.ranking-match { display: block; max-width: 260px; margin-top: 2px; overflow: hidden; color: var(--text-faint); font-size: 0.64rem; text-overflow: ellipsis; }
+.ranking-attribution { margin: 0; padding: 8px 12px; color: var(--text-faint); font-size: 0.68rem; }
+.ranking-attribution a { color: var(--accent); }
+.ranking-empty { display: grid; min-height: 110px; place-content: center; gap: 3px; color: var(--text-muted); text-align: center; }
+.ranking-empty strong { color: var(--text); font-size: 0.78rem; }
 .checkbox-cell { width: 36px; text-align: center; }
 input[type="checkbox"] { width: 15px; height: 15px; margin: 0; accent-color: var(--accent); }
 

@@ -4,7 +4,7 @@ import json
 import secrets
 import threading
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query, Request
@@ -16,12 +16,13 @@ from .config import Settings
 from .db import Database
 from .library import JobCancelled, LibraryError, LibraryService
 from .naming import NamingService
+from .rankings import RankingService
 from .saves import SaveSnapshotService
 from .screenscraper import ScreenScraperService
 
 
 MINIMUM_TOKEN_LENGTH = 16
-CANCELLABLE_JOB_KINDS = frozenset({"scan", "device_apply", "save_snapshot", "save_restore", "save_delete", "artwork_scrape"})
+CANCELLABLE_JOB_KINDS = frozenset({"scan", "device_apply", "save_snapshot", "save_restore", "save_delete", "artwork_scrape", "rating_scrape", "ranking_refresh"})
 
 settings = Settings.from_env()
 
@@ -55,8 +56,33 @@ library = LibraryService(settings, db)
 saves = SaveSnapshotService(settings, db)
 naming = NamingService(db, settings.library_root, library, saves)
 screenscraper = ScreenScraperService(settings, db)
+ranking_service = RankingService(settings, db)
 job_cancellations: dict[int, threading.Event] = {}
 job_cancellations_lock = threading.Lock()
+library_job_lock = threading.Lock()
+LIBRARY_JOB_KINDS = frozenset(
+    {"scan", "rename", "bulk_rename", "delete", "bulk_delete", "device_apply", "restore", "purge"}
+)
+
+
+@contextmanager
+def job_execution_slot(kind: str, cancellation: threading.Event):
+    """Serialize catalog/filesystem jobs while leaving their status queued."""
+    if kind not in LIBRARY_JOB_KINDS:
+        yield
+        return
+    acquired = False
+    try:
+        while not acquired:
+            if cancellation.is_set():
+                raise JobCancelled("Stopped before the job started")
+            acquired = library_job_lock.acquire(timeout=0.25)
+        if cancellation.is_set():
+            raise JobCancelled("Stopped before the job started")
+        yield
+    finally:
+        if acquired:
+            library_job_lock.release()
 
 
 def job_payload(row) -> dict[str, object]:
@@ -72,9 +98,9 @@ def job_payload(row) -> dict[str, object]:
         reported = max(reported, int(result.get("skipped_count") or 0))
     payload["issue_count"] = captured
     payload["reported_issue_count"] = reported
-    payload["cancellable"] = (
+    payload["cancellable"] = payload["status"] == "queued" or (
         payload["kind"] in CANCELLABLE_JOB_KINDS
-        and payload["status"] in {"queued", "running", "cancelling"}
+        and payload["status"] in {"running", "cancelling"}
     )
     return payload
 
@@ -126,6 +152,13 @@ def job_result_detail(kind: str, result: object, fallback: str) -> str:
             f"Matched {result.get('matched', 0)} games and downloaded "
             f"{result.get('downloaded', 0)} visual assets; skipped {result.get('skipped', 0)}"
         )
+    if kind == "rating_scrape":
+        return (
+            f"Matched ratings for {result.get('matched', 0)} games; "
+            f"{result.get('skipped', 0)} skipped"
+        )
+    if kind == "ranking_refresh":
+        return f"Cached RAWG's top {result.get('games', 0)} games for {result.get('platform', 'platform')}"
     if kind == "restore":
         return f"Restored {result.get('restored', 'trash item')}"
     if kind == "purge":
@@ -153,8 +186,6 @@ def run_job(
             )
 
     try:
-        with db.write() as connection:
-            connection.execute("UPDATE jobs SET status='running' WHERE id=?", (job_id,))
         last_progress_update = 0.0
 
         def check_cancelled() -> None:
@@ -176,33 +207,36 @@ def run_job(
                 )
             last_progress_update = now
 
-        check_cancelled()
-        if kind == "scan":
-            result = operation(
-                *args,
-                progress_callback=report_progress,
-                cancel_check=check_cancelled,
-                issue_callback=job_issues.append,
-            )
-        elif kind == "device_apply":
-            result = operation(*args, cancel_check=check_cancelled)
-        elif kind in {"save_snapshot", "save_restore", "artwork_scrape"}:
-            result = operation(
-                *args, progress_callback=report_progress, cancel_check=check_cancelled
-            )
-        else:
-            result = operation(*args)
-        if kind == "artwork_scrape" and isinstance(result, dict):
-            job_issues.extend(str(issue) for issue in result.get("issues", []))
-        # Cooperative operations check cancellation before their final commit. A
-        # stop request arriving after the operation returns must not relabel a
-        # successfully committed filesystem change as cancelled.
-        persist_issues()
-        with db.write() as connection:
-            connection.execute(
-                "UPDATE jobs SET status='complete',progress=100,detail=?,result_json=?,completed_at=CURRENT_TIMESTAMP WHERE id=?",
-                (job_result_detail(kind, result, detail), json.dumps(result), job_id),
-            )
+        with job_execution_slot(kind, cancellation):
+            check_cancelled()
+            with db.write() as connection:
+                connection.execute("UPDATE jobs SET status='running' WHERE id=?", (job_id,))
+            if kind == "scan":
+                result = operation(
+                    *args,
+                    progress_callback=report_progress,
+                    cancel_check=check_cancelled,
+                    issue_callback=job_issues.append,
+                )
+            elif kind == "device_apply":
+                result = operation(*args, cancel_check=check_cancelled)
+            elif kind in {"save_snapshot", "save_restore", "artwork_scrape", "rating_scrape", "ranking_refresh"}:
+                result = operation(
+                    *args, progress_callback=report_progress, cancel_check=check_cancelled
+                )
+            else:
+                result = operation(*args)
+            if kind == "artwork_scrape" and isinstance(result, dict):
+                job_issues.extend(str(issue) for issue in result.get("issues", []))
+            # Cooperative operations check cancellation before their final commit. A
+            # stop request arriving after the operation returns must not relabel a
+            # successfully committed filesystem change as cancelled.
+            persist_issues()
+            with db.write() as connection:
+                connection.execute(
+                    "UPDATE jobs SET status='complete',progress=100,detail=?,result_json=?,completed_at=CURRENT_TIMESTAMP WHERE id=?",
+                    (job_result_detail(kind, result, detail), json.dumps(result), job_id),
+                )
     except JobCancelled as exc:
         persist_issues()
         with db.write() as connection:
@@ -224,8 +258,16 @@ def run_job(
             job_cancellations.pop(job_id, None)
 
 
-def enqueue_job(kind: str, detail: str, operation, *args) -> int:
+def enqueue_job(kind: str, detail: str, operation, *args, coalesce: bool = False) -> int:
     with db.write() as connection:
+        if coalesce:
+            active = connection.execute(
+                "SELECT id FROM jobs WHERE kind=? AND detail=? "
+                "AND status IN ('queued','running','cancelling') ORDER BY id LIMIT 1",
+                (kind, detail),
+            ).fetchone()
+            if active:
+                return active["id"]
         connection.execute(
             "INSERT INTO jobs(kind,status,detail) VALUES(?,'queued',?)",
             (kind, detail),
@@ -382,6 +424,11 @@ class ArtworkScrapeRequest(BaseModel):
     missing_only: bool = True
 
 
+class RatingScrapeRequest(BaseModel):
+    platform: str = Field(min_length=1, max_length=100)
+    search: str = Field(default="", max_length=255)
+
+
 @app.middleware("http")
 async def protect_private_api(request: Request, call_next):
     if request.url.path.startswith("/api/") and request.url.path != "/api/health":
@@ -462,6 +509,7 @@ def status():
             "media": str(settings.media_root),
         },
         "screenscraper": screenscraper.status(),
+        "rawg": {"configured": ranking_service.configured},
     }
 
 
@@ -498,7 +546,7 @@ def dashboard():
             "(SELECT COUNT(DISTINCT game_id) FROM deployments dp WHERE dp.device_id=d.id) AS deployed_games,"
             "(SELECT COUNT(*) FROM device_selections ds JOIN game_files gf ON gf.game_id=ds.game_id "
             " WHERE ds.device_id=d.id AND NOT EXISTS(SELECT 1 FROM deployments dp WHERE dp.device_id=d.id "
-            " AND dp.game_id=ds.game_id AND dp.relpath=gf.relpath)) AS additions,"
+            " AND dp.game_id=ds.game_id AND dp.relpath=gf.device_relpath)) AS additions,"
             "(SELECT COUNT(*) FROM deployments dp WHERE dp.device_id=d.id AND NOT EXISTS("
             " SELECT 1 FROM device_selections ds WHERE ds.device_id=dp.device_id AND ds.game_id=dp.game_id)) AS removals "
             "FROM devices d ORDER BY d.name COLLATE NOCASE"
@@ -577,7 +625,9 @@ def start_scan(confirm_prune: bool = False):
 def platforms():
     with db.connect() as connection:
         rows = connection.execute(
-            "SELECT platform,COUNT(*) AS count FROM games GROUP BY platform ORDER BY platform COLLATE NOCASE"
+            "SELECT g.platform,COUNT(*) AS count,COUNT(gm.rating) AS rated_count "
+            "FROM games g LEFT JOIN game_metadata gm ON gm.game_id=g.id "
+            "GROUP BY g.platform ORDER BY g.platform COLLATE NOCASE"
         ).fetchall()
     return [dict(row) for row in rows]
 
@@ -589,6 +639,9 @@ def games(
     duplicate: str = Query("all", pattern="^(all|exact|possible|unique)$"),
     device_id: int | None = None,
     device_scope: str = Query("all", pattern="^(all|on_device|changes)$"),
+    sort: str = Query(
+        "name_asc", pattern="^(name_asc|name_desc|rating_desc|rating_asc|size_desc|size_asc)$"
+    ),
     limit: int = Query(200, ge=1, le=1000),
     offset: int = Query(0, ge=0),
 ):
@@ -619,7 +672,7 @@ def games(
     if device_id is not None:
         selected_expr = "EXISTS(SELECT 1 FROM device_selected ds WHERE ds.game_id=g.id)"
         present_expr = (
-            "EXISTS(SELECT 1 FROM game_files dgf JOIN device_present df ON df.relpath=dgf.relpath "
+            "EXISTS(SELECT 1 FROM game_files dgf JOIN device_present df ON df.relpath=dgf.device_relpath "
             "WHERE dgf.game_id=g.id)"
         )
         managed_expr = "EXISTS(SELECT 1 FROM device_managed dm WHERE dm.game_id=g.id)"
@@ -636,6 +689,18 @@ def games(
     else:
         params_for_select = []
     where_sql = " AND ".join(where)
+    order_sql = {
+        "name_asc": "g.display_name COLLATE NOCASE ASC,g.platform ASC,g.id ASC",
+        "name_desc": "g.display_name COLLATE NOCASE DESC,g.platform ASC,g.id ASC",
+        "rating_desc": "gm.rating IS NULL ASC,gm.rating DESC,g.display_name COLLATE NOCASE ASC,g.id ASC",
+        "rating_asc": "gm.rating IS NULL ASC,gm.rating ASC,g.display_name COLLATE NOCASE ASC,g.id ASC",
+        "size_desc": "g.size DESC,g.display_name COLLATE NOCASE ASC,g.id ASC",
+        "size_asc": "g.size ASC,g.display_name COLLATE NOCASE ASC,g.id ASC",
+    }[sort]
+    platform_rank_expr = (
+        "CASE WHEN gm.rating IS NULL THEN NULL ELSE 1+(SELECT COUNT(*) FROM game_metadata rm "
+        "JOIN games rg ON rg.id=rm.game_id WHERE rg.platform=g.platform AND rm.rating>gm.rating) END"
+    )
     actual_devices: list[dict[str, object]] = []
     page_files: dict[int, list[str]] = {}
     with db.connect() as connection:
@@ -662,9 +727,11 @@ def games(
             f"(SELECT COUNT(*) FROM device_selections ds WHERE ds.game_id=g.id) AS device_count,"
             f"(SELECT id FROM game_assets ga WHERE ga.game_id=g.id AND ga.kind='cover' LIMIT 1) AS cover_asset_id,"
             f"(SELECT COUNT(*) FROM game_assets ga WHERE ga.game_id=g.id) AS artwork_count,"
+            f"gm.rating AS rating,gm.top_staff AS top_staff,({platform_rank_expr}) AS platform_rank,"
             f"({selected_expr}) AS selected,({present_expr}) AS on_device,"
-            f"({managed_expr}) AS managed,({synced_expr}) AS synced FROM games g WHERE {where_sql} "
-            "ORDER BY g.display_name COLLATE NOCASE,g.platform LIMIT ? OFFSET ?",
+            f"({managed_expr}) AS managed,({synced_expr}) AS synced FROM games g "
+            f"LEFT JOIN game_metadata gm ON gm.game_id=g.id WHERE {where_sql} "
+            f"ORDER BY {order_sql} LIMIT ? OFFSET ?",
             params_for_select + params + [limit, offset],
         ).fetchall()
         items = [dict(row) for row in rows]
@@ -714,7 +781,7 @@ def games(
                 )]
                 page_files = {game_id: [] for game_id in game_ids}
                 for row in connection.execute(
-                    f"SELECT game_id,relpath FROM game_files WHERE game_id IN ({placeholders})",
+                    f"SELECT game_id,device_relpath AS relpath FROM game_files WHERE game_id IN ({placeholders})",
                     game_ids,
                 ):
                     page_files[row["game_id"]].append(row["relpath"])
@@ -728,7 +795,7 @@ def games(
             ).fetchone()["count"]
             unmatched_files = connection.execute(
                 "SELECT COUNT(*) AS count FROM device_present df WHERE NOT EXISTS("
-                "SELECT 1 FROM game_files gf WHERE gf.relpath=df.relpath)"
+                "SELECT 1 FROM game_files gf WHERE gf.device_relpath=df.relpath)"
             ).fetchone()["count"]
             device_inventory = {
                 "present_games": present_games,
@@ -844,7 +911,7 @@ def duplicate_groups(
             "SELECT id,name FROM devices ORDER BY name COLLATE NOCASE"
         )]
         file_rows = connection.execute(
-            f"SELECT game_id,relpath FROM game_files WHERE game_id IN ({game_placeholders})",
+            f"SELECT game_id,device_relpath AS relpath FROM game_files WHERE game_id IN ({game_placeholders})",
             game_ids,
         ).fetchall()
     devices_by_game: dict[int, list[str]] = {game_id: [] for game_id in game_ids}
@@ -991,6 +1058,75 @@ def scrape_artwork(payload: ArtworkScrapeRequest):
     return {"job_id": job_id, "already_running": False}
 
 
+@app.post("/api/ratings/scrape", status_code=202)
+def scrape_ratings(payload: RatingScrapeRequest):
+    if not screenscraper.configured:
+        raise HTTPException(
+            status_code=400,
+            detail="ScreenScraper developer credentials are not configured",
+        )
+    where = ["g.platform=?", "gm.rating IS NULL"]
+    params: list[object] = [payload.platform]
+    if payload.search.strip():
+        escaped = payload.search.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        where.append("(g.display_name LIKE ? ESCAPE '\\' OR g.primary_relpath LIKE ? ESCAPE '\\')")
+        params.extend([f"%{escaped}%", f"%{escaped}%"])
+    with db.connect() as connection:
+        game_ids = [
+            row["id"] for row in connection.execute(
+                "SELECT g.id FROM games g LEFT JOIN game_metadata gm ON gm.game_id=g.id WHERE "
+                + " AND ".join(where)
+                + " ORDER BY g.display_name COLLATE NOCASE LIMIT 5000",
+                params,
+            )
+        ]
+        active = connection.execute(
+            "SELECT id FROM jobs WHERE kind IN ('rating_scrape','artwork_scrape') "
+            "AND status IN ('queued','running','cancelling') ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    if active:
+        return {"job_id": active["id"], "already_running": True}
+    job_id = enqueue_job(
+        "rating_scrape",
+        f"Fetching ScreenScraper ratings for {len(game_ids)} {payload.platform} games",
+        screenscraper.scrape,
+        game_ids,
+        True,
+        False,
+    )
+    return {"job_id": job_id, "already_running": False, "requested": len(game_ids)}
+
+
+@app.get("/api/rankings/{platform}")
+def platform_ranking(platform: str):
+    with db.connect() as connection:
+        if not connection.execute("SELECT 1 FROM games WHERE platform=?", (platform,)).fetchone():
+            raise HTTPException(status_code=404, detail="Platform was not found")
+    return ranking_service.coverage(platform)
+
+
+@app.post("/api/rankings/{platform}/refresh", status_code=202)
+def refresh_platform_ranking(platform: str):
+    if not ranking_service.configured:
+        raise HTTPException(status_code=400, detail="RAWG API key is not configured")
+    with db.connect() as connection:
+        if not connection.execute("SELECT 1 FROM games WHERE platform=?", (platform,)).fetchone():
+            raise HTTPException(status_code=404, detail="Platform was not found")
+        active = connection.execute(
+            "SELECT id FROM jobs WHERE kind='ranking_refresh' AND status IN ('queued','running','cancelling') "
+            "ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    if active:
+        return {"job_id": active["id"], "already_running": True}
+    job_id = enqueue_job(
+        "ranking_refresh",
+        f"Refreshing RAWG top 100 for {platform}",
+        ranking_service.refresh,
+        platform,
+    )
+    return {"job_id": job_id, "already_running": False}
+
+
 @app.patch("/api/games/{game_id}/rename", status_code=202)
 def rename_game(game_id: int, payload: RenameRequest):
     job_id = enqueue_job("rename", f"Renaming game {game_id}", library.rename_bundle, game_id, payload.name)
@@ -1034,7 +1170,9 @@ def apply_naming_suggestions(payload: BulkRenameRequest):
 
 @app.delete("/api/games/{game_id}", status_code=202)
 def delete_game(game_id: int):
-    job_id = enqueue_job("delete", f"Moving game {game_id} to trash", library.delete_bundle, game_id)
+    job_id = enqueue_job(
+        "delete", f"Moving game {game_id} to trash", library.delete_bundle, game_id, coalesce=True
+    )
     return {"job_id": job_id}
 
 
@@ -1069,13 +1207,13 @@ def device_preview(device_id: int):
             raise HTTPException(status_code=404, detail="Device was not found")
         desired = connection.execute(
             "SELECT COUNT(DISTINCT game_id) AS games,COUNT(*) AS files FROM "
-            "(SELECT ds.game_id,gf.relpath FROM device_selections ds JOIN game_files gf ON gf.game_id=ds.game_id WHERE ds.device_id=?)",
+            "(SELECT ds.game_id,gf.device_relpath FROM device_selections ds JOIN game_files gf ON gf.game_id=ds.game_id WHERE ds.device_id=?)",
             (device_id,),
         ).fetchone()
         additions = connection.execute(
             "SELECT COUNT(*) AS count FROM device_selections ds JOIN game_files gf ON gf.game_id=ds.game_id "
             "WHERE ds.device_id=? AND NOT EXISTS(SELECT 1 FROM deployments dp WHERE dp.device_id=ds.device_id "
-            "AND dp.game_id=ds.game_id AND dp.relpath=gf.relpath)", (device_id,)
+            "AND dp.game_id=ds.game_id AND dp.relpath=gf.device_relpath)", (device_id,)
         ).fetchone()["count"]
         removals = connection.execute(
             "SELECT COUNT(*) AS count FROM deployments dp WHERE dp.device_id=? "
@@ -1329,7 +1467,7 @@ def cancel_job(job_id: int):
         raise HTTPException(status_code=404, detail="Job was not found")
     if row["status"] in {"complete", "failed", "cancelled"}:
         return {"job_id": job_id, "status": row["status"], "already_finished": True}
-    if row["kind"] not in CANCELLABLE_JOB_KINDS:
+    if row["status"] != "queued" and row["kind"] not in CANCELLABLE_JOB_KINDS:
         raise HTTPException(
             status_code=409,
             detail="This filesystem operation is too short or atomic to stop safely",
