@@ -93,6 +93,11 @@ def job_result_detail(kind: str, result: object, fallback: str) -> str:
         return f"Renamed {result.get('old_name', 'game')} to {result.get('new_name', 'game')}"
     if kind == "bulk_rename":
         return f"Applied {result.get('renamed', 0)} naming suggestions"
+    if kind == "bulk_delete":
+        return (
+            f"Kept one copy in {result.get('groups', 0)} duplicate groups and moved "
+            f"{result.get('trashed', 0)} bundles to trash"
+        )
     if kind == "device_apply":
         return (
             f"Copied {result.get('copied', 0)}, removed {result.get('removed', 0)}, "
@@ -330,6 +335,16 @@ class NamingRenameItem(BaseModel):
 
 class BulkRenameRequest(BaseModel):
     items: list[NamingRenameItem] = Field(min_length=1, max_length=500)
+
+
+class DuplicateKeeperDecision(BaseModel):
+    kind: str = Field(pattern="^(exact|possible)$")
+    group_key: str = Field(min_length=1, max_length=1000)
+    keeper_id: int = Field(gt=0)
+
+
+class BulkDuplicateTrashRequest(BaseModel):
+    items: list[DuplicateKeeperDecision] = Field(min_length=1, max_length=500)
 
 
 class SaveSnapshotRequest(BaseModel):
@@ -849,6 +864,35 @@ def duplicate_groups(
             }
         )
     return {"items": groups, "total": total, "limit": limit, "offset": offset}
+
+
+@app.post("/api/duplicates/trash", status_code=202)
+def trash_duplicate_groups(payload: BulkDuplicateTrashRequest):
+    decisions = [item.model_dump() for item in payload.items]
+    removals = 0
+    with db.connect() as connection:
+        for item in decisions:
+            if item["kind"] == "exact":
+                count = connection.execute(
+                    "SELECT COUNT(*) AS count FROM games WHERE bundle_hash=?",
+                    (item["group_key"],),
+                ).fetchone()["count"]
+            else:
+                if "\x1f" not in item["group_key"]:
+                    raise HTTPException(status_code=400, detail="Invalid duplicate group")
+                platform, normalized_name = item["group_key"].split("\x1f", 1)
+                count = connection.execute(
+                    "SELECT COUNT(*) AS count FROM games WHERE platform=? AND normalized_name=?",
+                    (platform, normalized_name),
+                ).fetchone()["count"]
+            removals += max(count - 1, 0)
+    job_id = enqueue_job(
+        "bulk_delete",
+        f"Moving {removals} non-keeper duplicate bundles to trash",
+        library.bulk_delete_duplicates,
+        decisions,
+    )
+    return {"job_id": job_id}
 
 
 @app.get("/api/games/{game_id}")

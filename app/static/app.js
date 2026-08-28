@@ -11,8 +11,8 @@ const state = {
   // id -> {display_name, platform}. A map rather than a set so the bulk bar and the
   // confirmation dialog can name selections that current filters have scrolled away.
   selectedRows: new Map(),
-  // Duplicate group key -> game id chosen as the copy to keep. A keeper must be
-  // explicitly chosen before any group cleanup action is enabled.
+  // kind + group key -> reviewed group and chosen keeper. Decisions persist across
+  // duplicate pages so hundreds of groups can be committed in one recoverable job.
   duplicateKeepers: new Map(),
   editingId: null,
   assigningId: null,
@@ -169,6 +169,7 @@ const JOB_LABELS = {
   scan: "Scanning changed files…",
   rename: "Renaming bundle…",
   bulk_rename: "Applying naming suggestions…",
+  bulk_delete: "Moving duplicate bundles to trash…",
   delete: "Moving to trash…",
   device_apply: "Applying device changes…",
   restore: "Restoring from trash…",
@@ -640,14 +641,34 @@ async function renderDuplicates() {
   const content = data.items.length
     ? `<div class="duplicate-groups">${data.items.map((group, index) => duplicateGroupHtml(group, index)).join("")}</div>${duplicatePager(data)}`
     : `<div class="empty-state duplicate-empty"><div><h2>No ${possible ? "possible" : "exact"} duplicate groups found</h2><p>${state.search || state.platform ? "Try a different title or platform." : possible ? "No same-platform filenames need manual comparison." : "Every indexed bundle has unique content."}</p></div></div>`;
-  setViewHtml(`${libraryToolbar(true)}<div class="section-heading duplicate-heading"><div><h2>${possible ? "Possible duplicate groups" : "Exact duplicate groups"}</h2><p>${possible ? "Names normalize to the same title. Inspect paths and sizes before choosing what to keep." : "Every section contains bundles with the same content hash. Choose one keeper before cleaning up the rest."}</p></div><span class="meta">${data.total.toLocaleString()} ${data.total === 1 ? "group" : "groups"}</span></div>${content}`);
+  setViewHtml(`${libraryToolbar(true)}<div class="section-heading duplicate-heading"><div><h2>${possible ? "Possible duplicate groups" : "Exact duplicate groups"}</h2><p>${possible ? "Names normalize to the same title. Inspect paths and sizes before choosing what to keep." : "Every section contains complete bundles with the same content hash. Choose keepers, then move every reviewed non-keeper to Trash in one job."}</p></div><span class="meta">${data.total.toLocaleString()} ${data.total === 1 ? "group" : "groups"}</span></div>${duplicateBatchBarHtml(data)}${content}`);
   bindFilters(renderDuplicates);
-  bindDuplicateGroups(data.items);
+  bindDuplicateGroups(data);
+}
+
+function duplicateReviewKey(group) {
+  return `${group.kind}\u001f${group.key}`;
+}
+
+function duplicateReviews(kind = state.duplicate) {
+  return [...state.duplicateKeepers.values()].filter((review) => review.kind === kind);
+}
+
+function duplicateBatchBarHtml(data) {
+  const reviews = duplicateReviews();
+  const removals = reviews.reduce((total, review) => total + review.group.items.length - 1, 0);
+  const suggestions = data.items.filter((group) =>
+    group.recommended_keeper_id && !group.device_conflict && !state.duplicateKeepers.has(duplicateReviewKey(group))
+  ).length;
+  return `<div class="duplicate-batch-bar" aria-label="Duplicate review progress">
+    <div><strong id="duplicate-reviewed-count">${reviews.length.toLocaleString()} groups reviewed</strong><span id="duplicate-removal-count">${removals.toLocaleString()} non-keepers ready for Trash · ${data.total.toLocaleString()} groups match the current filters</span></div>
+    <div class="bulk-actions"><button class="button secondary small" data-use-duplicate-suggestions ${suggestions ? "" : "disabled"}>Use ${suggestions.toLocaleString()} safe ${suggestions === 1 ? "suggestion" : "suggestions"} on this page</button><button class="button danger small" data-clean-duplicate-batch ${removals ? "" : "disabled"}>Trash ${removals.toLocaleString()} reviewed non-keepers</button></div>
+  </div>`;
 }
 
 function duplicateGroupHtml(group, index) {
-  const keeper = state.duplicateKeepers.get(group.key);
-  const removeCount = group.items.length - 1;
+  const review = state.duplicateKeepers.get(duplicateReviewKey(group));
+  const keeper = review?.keeperId;
   const exact = group.kind === "exact";
   const signature = exact ? `Hash ${group.key.slice(0, 10)}` : "Filename match";
   const rows = group.items.map((game) => {
@@ -659,7 +680,7 @@ function duplicateGroupHtml(group, index) {
       ? `${present.length ? `<span class="device-presence"><strong>On device:</strong> ${escapeHtml(present.join(", "))}</span>` : ""}${selected.length ? `<span class="device-selection"><strong>Selected:</strong> ${escapeHtml(selected.join(", "))}</span>` : ""}`
       : '<span class="device-empty">Not on a device</span>';
     return `<tr class="${checked ? "keeper-row" : ""} ${suggested ? "suggested-keeper-row" : ""}" data-duplicate-row="${game.id}">
-      <td class="keeper-cell"><label class="keeper-choice"><input type="radio" name="keeper-${index}" value="${game.id}" data-duplicate-keeper="${index}" ${checked ? "checked" : ""}><span>Keep</span></label>${suggested ? '<span class="badge naming-exact keeper-suggestion">Suggested</span>' : ""}</td>
+      <td class="keeper-cell"><label class="keeper-choice"><input type="radio" name="keeper-${index}" value="${game.id}" data-duplicate-keeper="${index}" ${checked ? "checked" : ""} ${group.device_conflict ? "disabled" : ""}><span>Keep</span></label>${suggested ? '<span class="badge naming-exact keeper-suggestion">Suggested</span>' : ""}</td>
       <td class="name-cell" title="${escapeHtml(game.primary_relpath)}"><strong>${escapeHtml(game.display_name)}</strong><span class="path-line">${escapeHtml(game.primary_relpath)}</span></td>
       <td>${escapeHtml(game.platform)}</td>
       <td class="meta">${formatBytes(game.size)}</td>
@@ -676,7 +697,7 @@ function duplicateGroupHtml(group, index) {
   return `<section class="duplicate-group" data-duplicate-group="${index}">
     <div class="duplicate-group-head">
       <div><div class="duplicate-group-title"><strong>${group.copies} ${exact ? "identical" : "similarly named"} ${group.copies === 1 ? "copy" : "copies"}</strong><span class="badge ${exact ? "exact" : "possible"}">${signature}</span></div><p>${exact ? `${formatBytes(group.bytes)} across this set. Only one copy is needed.` : "Content differs. Confirm the correct edition, region, or revision before removing anything."}</p>${deviceGuidance}</div>
-      <button class="button danger-subtle small" data-clean-duplicate="${index}" ${keeper && !group.device_conflict ? "" : "disabled"}>${group.device_conflict ? "Resolve device usage first" : `Trash ${removeCount} other ${removeCount === 1 ? "copy" : "copies"}`}</button>
+      <span class="badge ${keeper ? "unique" : group.device_conflict ? "possible" : "neutral"}" data-duplicate-review-state>${keeper ? "Keeper selected" : group.device_conflict ? "Resolve device usage" : "Choose a keeper"}</span>
     </div>
     <div class="duplicate-table-wrap"><table><thead><tr><th>Decision</th><th>Filename and path</th><th>Platform</th><th>Size</th><th class="optional-column">Bundle</th><th class="optional-column">Devices</th><th>Save impact</th></tr></thead><tbody>${rows}</tbody></table></div>
   </section>`;
@@ -687,27 +708,70 @@ function duplicatePager(data) {
   return `<div class="pager"><span>Showing groups ${data.offset + 1}–${end} of ${data.total.toLocaleString()}</span><div class="bulk-actions"><button class="button secondary small" data-duplicate-page="previous" ${data.offset === 0 ? "disabled" : ""}>Previous</button><button class="button secondary small" data-duplicate-page="next" ${end >= data.total ? "disabled" : ""}>Next</button></div></div>`;
 }
 
-function bindDuplicateGroups(groups) {
+function updateDuplicateReviewUi(data) {
+  const reviews = duplicateReviews();
+  const removals = reviews.reduce((total, review) => total + review.group.items.length - 1, 0);
+  const suggestions = data.items.filter((group) =>
+    group.recommended_keeper_id && !group.device_conflict && !state.duplicateKeepers.has(duplicateReviewKey(group))
+  ).length;
+  const reviewed = view.querySelector("#duplicate-reviewed-count");
+  const removal = view.querySelector("#duplicate-removal-count");
+  const batch = view.querySelector("[data-clean-duplicate-batch]");
+  const suggest = view.querySelector("[data-use-duplicate-suggestions]");
+  if (reviewed) reviewed.textContent = `${reviews.length.toLocaleString()} groups reviewed`;
+  if (removal) removal.textContent = `${removals.toLocaleString()} non-keepers ready for Trash · ${data.total.toLocaleString()} groups match the current filters`;
+  if (batch) {
+    batch.disabled = removals === 0;
+    batch.textContent = `Trash ${removals.toLocaleString()} reviewed non-keepers`;
+  }
+  if (suggest) {
+    suggest.disabled = suggestions === 0;
+    suggest.textContent = `Use ${suggestions.toLocaleString()} safe ${suggestions === 1 ? "suggestion" : "suggestions"} on this page`;
+  }
+}
+
+function markDuplicateKeeper(group, index, keeperId) {
+  const keeper = group.items.find((game) => game.id === keeperId);
+  if (!keeper || group.device_conflict) return;
+  state.duplicateKeepers.set(duplicateReviewKey(group), { kind: group.kind, key: group.key, keeperId, keeper, group });
+  const section = view.querySelector(`[data-duplicate-group="${index}"]`);
+  section?.querySelectorAll("[data-duplicate-row]").forEach((row) => row.classList.toggle("keeper-row", Number(row.dataset.duplicateRow) === keeperId));
+  const radio = section?.querySelector(`[data-duplicate-keeper][value="${keeperId}"]`);
+  if (radio) radio.checked = true;
+  const status = section?.querySelector("[data-duplicate-review-state]");
+  if (status) {
+    status.className = "badge unique";
+    status.textContent = "Keeper selected";
+  }
+}
+
+function bindDuplicateGroups(data) {
+  const groups = data.items;
   view.querySelectorAll("[data-duplicate-keeper]").forEach((radio) => radio.addEventListener("change", () => {
     const index = Number(radio.dataset.duplicateKeeper);
     const group = groups[index];
-    state.duplicateKeepers.set(group.key, Number(radio.value));
-    const section = view.querySelector(`[data-duplicate-group="${index}"]`);
-    section.querySelectorAll("[data-duplicate-row]").forEach((row) => row.classList.toggle("keeper-row", Number(row.dataset.duplicateRow) === Number(radio.value)));
-    section.querySelector("[data-clean-duplicate]").disabled = group.device_conflict;
+    markDuplicateKeeper(group, index, Number(radio.value));
+    updateDuplicateReviewUi(data);
   }));
-  view.querySelectorAll("[data-clean-duplicate]").forEach((button) => button.addEventListener("click", () => cleanDuplicateGroup(groups[Number(button.dataset.cleanDuplicate)])));
+  view.querySelector("[data-use-duplicate-suggestions]")?.addEventListener("click", () => {
+    groups.forEach((group, index) => {
+      if (group.recommended_keeper_id && !group.device_conflict && !state.duplicateKeepers.has(duplicateReviewKey(group))) {
+        markDuplicateKeeper(group, index, group.recommended_keeper_id);
+      }
+    });
+    updateDuplicateReviewUi(data);
+  });
+  view.querySelector("[data-clean-duplicate-batch]")?.addEventListener("click", () => cleanDuplicateBatch());
   view.querySelectorAll("[data-duplicate-page]").forEach((button) => button.addEventListener("click", () => {
     state.offset = Math.max(0, state.offset + (button.dataset.duplicatePage === "next" ? 30 : -30));
     renderDuplicates();
   }));
 }
 
-async function cleanDuplicateGroup(group) {
-  const keeperId = state.duplicateKeepers.get(group.key);
-  const keeper = group.items.find((game) => game.id === keeperId);
-  if (!keeper) return;
-  const removals = group.items.filter((game) => game.id !== keeperId);
+async function cleanDuplicateBatch() {
+  const reviews = duplicateReviews();
+  if (!reviews.length) return;
+  const removals = reviews.flatMap((review) => review.group.items.filter((game) => game.id !== review.keeperId));
   const affectedDevices = [...new Set(removals.flatMap((game) => [
     ...(game.present_devices || []),
     ...(game.selected_devices || []),
@@ -716,26 +780,27 @@ async function cleanDuplicateGroup(group) {
   const saveImpactWarning = saveAffected.length
     ? `<p class="issue-warning"><strong>${saveAffected.length} ${saveAffected.length === 1 ? "copy has" : "copies have"} matching RetroArch save data.</strong> Removing these ROM filenames can orphan the saves below. ROMmates will not delete or rename the save files.</p><ul class="confirm-list">${saveAffected.flatMap((game) => (game.save_impact.paths || []).slice(0, 5).map((path) => `<li><code>${escapeHtml(path)}</code> matched ${escapeHtml(game.primary_relpath)}</li>`)).join("")}</ul>`
     : "";
+  const shown = reviews.slice(0, 40);
+  const reviewList = shown.map((review) => `<li><strong>${escapeHtml(review.group.label)}</strong>: keep <code>${escapeHtml(review.keeper.primary_relpath)}</code>, trash ${review.group.items.length - 1}</li>`).join("");
   const confirmed = await confirmAction({
-    title: `Keep “${keeper.display_name}” and trash ${removals.length} ${removals.length === 1 ? "copy" : "copies"}?`,
-    content: `<p class="warning-copy">Keeping <strong>${escapeHtml(keeper.primary_relpath)}</strong>. The following recoverable bundles will move to Trash, including their companion files and managed device copies.</p><ul class="confirm-list">${removals.map((game) => `<li>${escapeHtml(game.primary_relpath)} (${formatBytes(game.size)})</li>`).join("")}</ul>${saveImpactWarning}${affectedDevices.length ? `<p class="issue-warning"><strong>Device impact:</strong> A removed copy is present or selected on ${escapeHtml(affectedDevices.join(", "))}. Keeping the suggested copy avoids this warning.</p>` : ""}${group.kind === "possible" ? '<p class="issue-warning"><strong>Content is not identical.</strong> These files only have similar names.</p>' : ""}`,
-    confirmLabel: `Trash ${removals.length} ${removals.length === 1 ? "copy" : "copies"}`,
+    title: `Trash ${removals.length} non-keepers from ${reviews.length} reviewed ${reviews.length === 1 ? "group" : "groups"}?`,
+    content: `<p class="warning-copy">Every non-keeper bundle below moves to recoverable Trash with its companion files and managed device copies.</p><ul class="confirm-list">${reviewList}${reviews.length > shown.length ? `<li>And ${(reviews.length - shown.length).toLocaleString()} more reviewed groups</li>` : ""}</ul>${saveImpactWarning}${affectedDevices.length ? `<p class="issue-warning"><strong>Device impact:</strong> A removed copy is present or selected on ${escapeHtml(affectedDevices.join(", "))}. Review those device assignments after cleanup.</p>` : ""}${state.duplicate === "possible" ? '<p class="issue-warning"><strong>Content is not identical.</strong> These bundles only have similar names.</p>' : ""}`,
+    confirmLabel: `Trash ${removals.length} non-keepers`,
     cancelLabel: "Review again",
     danger: true,
   });
   if (!confirmed) return;
-  let completed = 0;
-  for (const game of removals) {
-    try {
-      await requestJob(`/api/games/${game.id}`, { method: "DELETE" }, `Moving duplicate ${completed + 1} of ${removals.length}`);
-      completed += 1;
-    } catch (error) {
-      toast(`Stopped after ${completed}: ${error.message}`, "error");
-      break;
-    }
+  try {
+    const result = await requestJob("/api/duplicates/trash", {
+      method: "POST",
+      body: JSON.stringify({ items: reviews.map((review) => ({ kind: review.kind, group_key: review.key, keeper_id: review.keeperId })) }),
+    }, `Moving ${removals.length} reviewed non-keepers to Trash`);
+    for (const review of reviews) state.duplicateKeepers.delete(duplicateReviewKey(review.group));
+    toast(`Kept one copy in ${result.groups} groups; moved ${result.trashed} bundles to Trash`);
+  } catch (error) {
+    toast(error.message, "error");
+    return;
   }
-  state.duplicateKeepers.delete(group.key);
-  toast(`Kept ${keeper.display_name}; moved ${completed} ${completed === 1 ? "copy" : "copies"} to trash`);
   await refreshStatus();
   await loadReferenceData();
   await renderDuplicates();

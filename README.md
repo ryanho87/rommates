@@ -27,12 +27,13 @@ The MVP supports:
 - Compact filtering by platform and duplicate status
 - SHA-256 exact duplicate detection
 - Normalized-filename possible duplicate review
-- Bundle-aware `.cue`, `.gdi`, and `.m3u` descriptor scanning
+- Bundle-aware `.cue`, `.gdi`, and `.m3u` descriptor scanning, including unquoted GDI track filenames with spaces
 - Complete folder bundles for directory-based platforms such as PS3
 - Safe bundle rename with descriptor reference rewriting
 - Reviewable naming suggestions from XML DAT catalogs and conservative filename cleanup
 - Confidence filters, collision checks, editable proposals, and bulk bundle renaming
 - Recoverable deletion, restoration, and explicit permanent deletion
+- Cross-page duplicate keeper review with one confirmed batch move to recoverable Trash
 - Per-device desired game selections and previewed reconciliation
 - Actual device-directory inventory with On device, Pending changes, and Browse library views
 - Per-game device assignment directly from the Library screen

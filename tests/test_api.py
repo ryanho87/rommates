@@ -122,6 +122,7 @@ class ApiIntegrationTests(unittest.TestCase):
         try:
             scan = self.client.post("/api/scan?confirm_prune=true", headers=self.headers)
             self.assertEqual(self.wait_for_job(scan.json()["job_id"])["status"], "complete")
+
             device_first.parent.mkdir(parents=True, exist_ok=True)
             device_first.write_bytes(b"same-rom-content")
             response = self.client.get(
@@ -170,6 +171,53 @@ class ApiIntegrationTests(unittest.TestCase):
             device_second.unlink(missing_ok=True)
             scan = self.client.post("/api/scan?confirm_prune=true", headers=self.headers)
             self.assertEqual(self.wait_for_job(scan.json()["job_id"])["status"], "complete")
+
+    def test_reviewed_duplicate_groups_are_trashed_in_one_job(self):
+        paths = [
+            self.root / "roms/gba/Alpha Keeper.gba",
+            self.root / "roms/gba/Alpha Copy.gba",
+            self.root / "roms/gba/Beta Keeper.gba",
+            self.root / "roms/gba/Beta Copy.gba",
+        ]
+        paths[0].write_bytes(b"alpha")
+        paths[1].write_bytes(b"alpha")
+        paths[2].write_bytes(b"beta")
+        paths[3].write_bytes(b"beta")
+        scan = self.client.post("/api/scan?confirm_prune=true", headers=self.headers)
+        self.assertEqual(self.wait_for_job(scan.json()["job_id"])["status"], "complete")
+        groups = self.client.get("/api/duplicates?kind=exact", headers=self.headers).json()["items"]
+        reviewed = []
+        for expected in ({"Alpha Keeper", "Alpha Copy"}, {"Beta Keeper", "Beta Copy"}):
+            group = next(
+                item for item in groups
+                if {game["display_name"] for game in item["items"]} == expected
+            )
+            keeper = next(game for game in group["items"] if game["display_name"].endswith("Keeper"))
+            reviewed.append({"kind": "exact", "group_key": group["key"], "keeper_id": keeper["id"]})
+
+        response = self.client.post(
+            "/api/duplicates/trash",
+            headers=self.headers,
+            json={"items": reviewed},
+        )
+
+        self.assertEqual(response.status_code, 202)
+        job = self.wait_for_job(response.json()["job_id"])
+        self.assertEqual(job["status"], "complete")
+        self.assertEqual(job["result"]["groups"], 2)
+        self.assertEqual(job["result"]["trashed"], 2)
+        names = {
+            item["display_name"]
+            for item in self.client.get("/api/games?limit=200", headers=self.headers).json()["items"]
+        }
+        self.assertIn("Alpha Keeper", names)
+        self.assertIn("Beta Keeper", names)
+        self.assertNotIn("Alpha Copy", names)
+        self.assertNotIn("Beta Copy", names)
+        for path in paths:
+            path.unlink(missing_ok=True)
+        scan = self.client.post("/api/scan?confirm_prune=true", headers=self.headers)
+        self.assertEqual(self.wait_for_job(scan.json()["job_id"])["status"], "complete")
 
     def test_device_view_uses_actual_files_and_reports_selection_state(self):
         scan = self.client.post("/api/scan", headers=self.headers)

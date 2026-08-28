@@ -85,6 +85,33 @@ class LibraryServiceTests(unittest.TestCase):
             {"Alienfront Online (USA).gdi", "track01.bin", "track02.raw", "track03.bin"},
         )
 
+    def test_gdi_unquoted_filenames_with_spaces_do_not_become_track_games(self):
+        for title, unique in (("Rez (Europe)", b"rez"), ("Rayman 2 (Europe)", b"rayman")):
+            self.write(f"dreamcast/{title}/{title} (Track 1).bin", unique + b"-one")
+            self.write(f"dreamcast/{title}/{title} (Track 2).bin", b"shared-audio-track")
+            self.write(f"dreamcast/{title}/{title} (Track 3).bin", unique + b"-three")
+            self.write(
+                f"dreamcast/{title}/{title}.gdi",
+                "3\n"
+                f"1 0 4 2352 {title} (Track 1).bin 0\n"
+                f"2 45000 0 2352 {title} (Track 2).bin 0\n"
+                f"3 45150 4 2352 {title} (Track 3).bin 0\n",
+            )
+
+        result = self.service.scan()
+
+        self.assertEqual(result["games"], 2)
+        with self.db.connect() as connection:
+            games = connection.execute(
+                "SELECT id,display_name,extension,bundle_hash FROM games ORDER BY display_name"
+            ).fetchall()
+        self.assertEqual({game["display_name"] for game in games}, {"Rez (Europe)", "Rayman 2 (Europe)"})
+        self.assertTrue(all(game["extension"] == ".gdi" for game in games))
+        self.assertEqual(len({game["bundle_hash"] for game in games}), 2)
+        for game in games:
+            _, files = self.service.game_bundle(game["id"])
+            self.assertEqual(len(files), 4)
+
     def test_ps3_directory_trees_are_complete_folder_bundles(self):
         for release in ("BLES01756", "BLUS31059"):
             base = f"ps3/Zone of the Enders HD Collection [{release}].ps3/PS3_GAME"

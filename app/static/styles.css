@@ -460,6 +460,20 @@ input[type="checkbox"] { width: 15px; height: 15px; margin: 0; accent-color: var
 .section-heading p { margin: 2px 0 0; color: var(--text-muted); font-size: 0.78rem; }
 
 .duplicate-heading { align-items: center; }
+.duplicate-batch-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 12px;
+  padding: 10px 11px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface-raised);
+}
+.duplicate-batch-bar > div:first-child { display: grid; gap: 2px; }
+.duplicate-batch-bar strong { font-size: 0.8rem; }
+.duplicate-batch-bar span { color: var(--text-muted); font-size: 0.72rem; }
 .duplicate-groups { display: grid; gap: 14px; }
 .duplicate-group {
   overflow: hidden;
@@ -486,6 +500,7 @@ input[type="checkbox"] { width: 15px; height: 15px; margin: 0; accent-color: var
 .keeper-cell { width: 92px; }
 .keeper-choice { display: inline-flex; align-items: center; gap: 6px; color: var(--text-muted); font-size: 0.74rem; cursor: pointer; }
 .keeper-choice input { width: 15px; height: 15px; margin: 0; accent-color: var(--accent); }
+.keeper-choice:has(input:disabled) { color: var(--text-faint); cursor: not-allowed; }
 .keeper-row > td { background: var(--success-soft); }
 .keeper-row .keeper-choice { color: var(--success); font-weight: 650; }
 .suggested-keeper-row:not(.keeper-row) > td { background: color-mix(in oklch, var(--success-soft), var(--surface) 58%); }
@@ -623,6 +638,8 @@ dialog form { padding: 18px; }
   .rename-arrow { display: none; }
   .duplicate-group-head { align-items: stretch; flex-direction: column; }
   .duplicate-group-head .button { align-self: flex-start; }
+  .duplicate-batch-bar { align-items: stretch; flex-direction: column; }
+  .duplicate-batch-bar .bulk-actions { flex-wrap: wrap; }
   .overview-strip { grid-template-columns: repeat(2, 1fr); }
   .overview-strip > div { border-bottom: 1px solid var(--border); }
   .overview-strip > div:nth-child(even) { border-right: 0; }

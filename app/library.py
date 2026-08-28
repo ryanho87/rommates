@@ -219,14 +219,17 @@ class LibraryService:
                     refs.append(descriptor.parent / value.replace("\\", "/"))
         elif descriptor.suffix.lower() == ".gdi":
             # GDI track rows are: track lba type sector-size filename offset.
-            # shlex handles both quoted filenames and the common unquoted form.
+            # shlex handles quoted filenames. Real-world dumps also commonly leave
+            # filenames containing spaces unquoted, so everything between the four
+            # numeric fields and the final offset belongs to the filename.
             for line in lines[1:]:
                 try:
                     fields = shlex.split(line, posix=True)
                 except ValueError:
                     continue
                 if len(fields) >= 6:
-                    refs.append(descriptor.parent / fields[4].replace("\\", "/"))
+                    filename = " ".join(fields[4:-1])
+                    refs.append(descriptor.parent / filename.replace("\\", "/"))
         return refs
 
     def _bundle_paths(self, primary: Path, cancel_check: CancelCheck | None = None) -> tuple[Path, ...]:
@@ -894,6 +897,110 @@ class LibraryService:
                 raise
             self.db.activity("delete", f"Moved {game['display_name']} to trash")
             return {"trash_id": trash_id, "files": len(files), "devices_affected": len(set(selections))}
+
+    def bulk_delete_duplicates(self, decisions: list[dict[str, object]]) -> dict[str, object]:
+        if not decisions:
+            raise LibraryError("Choose at least one duplicate keeper")
+        if len(decisions) > 500:
+            raise LibraryError("Review at most 500 duplicate groups at once")
+        with self._operation_lock:
+            kinds = {str(item.get("kind") or "") for item in decisions}
+            if len(kinds) != 1 or not kinds.issubset({"exact", "possible"}):
+                raise LibraryError("A duplicate cleanup batch must use one duplicate type")
+            plans: list[dict[str, object]] = []
+            seen_keys: set[str] = set()
+            planned_removals: set[int] = set()
+            with self.db.connect() as connection:
+                for decision in decisions:
+                    kind = str(decision["kind"])
+                    key = str(decision.get("group_key") or "")
+                    keeper_id = int(decision.get("keeper_id") or 0)
+                    if not key or key in seen_keys:
+                        raise LibraryError("Each duplicate group can only appear once")
+                    seen_keys.add(key)
+                    if kind == "exact":
+                        members = [dict(row) for row in connection.execute(
+                            "SELECT id,display_name,primary_relpath FROM games WHERE bundle_hash=? ORDER BY id",
+                            (key,),
+                        )]
+                    else:
+                        if "\x1f" not in key:
+                            raise LibraryError("A similarly named duplicate group is invalid")
+                        platform, normalized_name = key.split("\x1f", 1)
+                        members = [dict(row) for row in connection.execute(
+                            "SELECT id,display_name,primary_relpath FROM games "
+                            "WHERE platform=? AND normalized_name=? ORDER BY id",
+                            (platform, normalized_name),
+                        )]
+                        if len({row["id"] for row in members}) > 1:
+                            distinct_hashes = connection.execute(
+                                "SELECT COUNT(DISTINCT bundle_hash) AS count FROM games "
+                                "WHERE platform=? AND normalized_name=?",
+                                (platform, normalized_name),
+                            ).fetchone()["count"]
+                            if distinct_hashes < 2:
+                                members = []
+                    member_ids = {member["id"] for member in members}
+                    if len(members) < 2 or keeper_id not in member_ids:
+                        raise LibraryError("A duplicate group changed after review; refresh and choose its keeper again")
+                    removals = [member for member in members if member["id"] != keeper_id]
+                    overlap = planned_removals.intersection(member["id"] for member in removals)
+                    if overlap:
+                        raise LibraryError("A ROM cannot be removed by two duplicate decisions")
+                    planned_removals.update(member["id"] for member in removals)
+                    plans.append({"key": key, "keeper_id": keeper_id, "members": members, "removals": removals})
+
+                all_ids = [member["id"] for plan in plans for member in plan["members"]]
+                placeholders = ",".join("?" for _ in all_ids)
+                selected_ids = {
+                    row["game_id"] for row in connection.execute(
+                        f"SELECT DISTINCT game_id FROM device_selections WHERE game_id IN ({placeholders})",
+                        all_ids,
+                    )
+                }
+                files_by_game: dict[int, list[str]] = {game_id: [] for game_id in all_ids}
+                for row in connection.execute(
+                    f"SELECT game_id,relpath FROM game_files WHERE game_id IN ({placeholders})",
+                    all_ids,
+                ):
+                    files_by_game[row["game_id"]].append(row["relpath"])
+                device_ids = [row["id"] for row in connection.execute("SELECT id FROM devices")]
+
+            inventory_paths: set[str] = set()
+            for device_id in device_ids:
+                inventory_paths.update(self.device_inventory(device_id))
+            present_ids = {
+                game_id for game_id, relpaths in files_by_game.items()
+                if any(relpath in inventory_paths for relpath in relpaths)
+            }
+            in_use_ids = selected_ids | present_ids
+            for plan in plans:
+                used = [member for member in plan["members"] if member["id"] in in_use_ids]
+                if len(used) > 1:
+                    raise LibraryError(
+                        "Multiple copies in one reviewed group are used by devices; resolve that group before bulk cleanup"
+                    )
+
+            if len(planned_removals) > 2000:
+                raise LibraryError("Trash at most 2,000 duplicate bundles in one job")
+            results: list[dict[str, object]] = []
+            try:
+                for plan in plans:
+                    for member in plan["removals"]:
+                        results.append(self.delete_bundle(member["id"]))
+            except Exception as exc:
+                raise LibraryError(
+                    f"Moved {len(results)} duplicate bundles to recoverable Trash before stopping: {exc}"
+                ) from exc
+            self.db.activity(
+                "bulk_delete",
+                f"Kept {len(plans)} reviewed copies and moved {len(results)} duplicate bundles to trash",
+            )
+            return {
+                "groups": len(plans),
+                "trashed": len(results),
+                "trash_ids": [result["trash_id"] for result in results],
+            }
 
     def restore_trash(self, trash_id: int) -> dict[str, object]:
         with self._operation_lock:
