@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from app.config import Settings
 from app.db import Database
-from app.library import LibraryError
+from app.library import LibraryError, normalize_name
 from app.saves import SaveSnapshotService
 
 
@@ -45,6 +45,50 @@ class SaveSnapshotTests(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(content)
         return path
+
+    def add_game(self, platform: str, name: str, relpath: str | None = None) -> int:
+        relpath = relpath or f"{platform}/{name}.rom"
+        with self.db.write() as connection:
+            connection.execute(
+                "INSERT INTO games(platform,primary_relpath,display_name,extension,size,bundle_hash,normalized_name,mtime_ns) "
+                "VALUES(?,?,?,?,?,?,?,?)",
+                (platform, relpath, name, Path(relpath).suffix, 1, f"hash-{platform}-{name}-{relpath}", normalize_name(name), 1),
+            )
+            return connection.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
+
+    def test_save_matching_reports_exact_possible_ambiguous_and_orphan_groups(self):
+        pokemon_id = self.add_game("gba", "Pokemon Emerald (USA)", "gba/Pokemon Emerald (USA).gba")
+        self.add_game("nds", "Advance Wars - Days of Ruin (USA)", "nds/Advance Wars - Days of Ruin (USA).nds")
+        self.add_game("gba", "Shared Game (USA)", "gba/Shared Game (USA).gba")
+        self.add_game("gba", "Shared Game (Europe)", "gba/Shared Game (Europe).gba")
+        self.write("saves/mGBA/Pokemon Emerald (USA).srm", b"save")
+        self.write("states/mGBA/Pokemon Emerald (USA).state1", b"state")
+        self.write("saves/melonDS/Advance Wars - Days of Ruin.sav", b"possible")
+        self.write("saves/mGBA/Shared Game.srm", b"ambiguous")
+        self.write("saves/mGBA/Unknown Adventure.srm", b"orphan")
+        self.write("config/mGBA/mGBA.opt", b"ignored")
+        self.write("manifest.server", b"ignored")
+
+        impacts = self.service.save_impacts([pokemon_id])
+        self.assertEqual(impacts[pokemon_id]["status"], "exact")
+        self.assertEqual(impacts[pokemon_id]["save_files"], 1)
+        self.assertEqual(impacts[pokemon_id]["state_files"], 1)
+
+        report = self.service.unmatched_groups()
+        self.assertEqual(report["summary"], {"groups": 4, "exact": 1, "possible": 1, "ambiguous": 1, "orphan": 1})
+        self.assertEqual({item["status"] for item in report["items"]}, {"possible", "ambiguous", "orphan"})
+        orphan = next(item for item in report["items"] if item["status"] == "orphan")
+        self.assertEqual(orphan["content_name"], "Unknown Adventure")
+        self.assertEqual(orphan["games"], [])
+
+    def test_core_directory_narrows_same_filename_to_the_correct_platform(self):
+        gba_id = self.add_game("gba", "Core Test", "gba/Core Test.gba")
+        snes_id = self.add_game("snes", "Core Test", "snes/Core Test.sfc")
+        self.write("saves/mGBA/Core Test.srm", b"save")
+
+        impacts = self.service.save_impacts()
+        self.assertEqual(impacts[gba_id]["status"], "exact")
+        self.assertEqual(impacts[snes_id]["status"], "none")
 
     def test_snapshots_deduplicate_and_report_changes(self):
         self.write("saves/Pokemon.srm", b"first")

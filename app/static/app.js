@@ -25,12 +25,16 @@ const state = {
   // both report the same outcome.
   reportedJobs: new Set(),
   namingConfidence: "all",
+  namingSaveImpact: "all",
   namingSelected: new Map(),
   jobReportId: null,
   jobIssueOffset: 0,
   saveTab: "current",
   saveSearch: "",
   saveOffset: 0,
+  saveMatchSearch: "",
+  saveMatchStatus: "all",
+  saveMatchOffset: 0,
   saveSnapshotId: null,
   saveSnapshotOffset: 0,
   saveSnapshotSearch: "",
@@ -553,13 +557,15 @@ async function renderOverview() {
   if (data.cleanup.groups) attention.push({ view: "duplicates", label: `${data.cleanup.groups.toLocaleString()} exact duplicate groups`, detail: `${data.cleanup.extra_copies.toLocaleString()} extra copies · ${formatBytes(data.cleanup.reclaimable_bytes)} recoverable`, tone: "danger", duplicate: "exact" });
   if (data.cleanup.possible_groups) attention.push({ view: "duplicates", label: `${data.cleanup.possible_groups.toLocaleString()} possible duplicate groups`, detail: "Similar filenames with different content", tone: "warning", duplicate: "possible" });
   if (data.last_scan?.reported_issue_count) attention.push({ view: "jobs", label: `${data.last_scan.reported_issue_count.toLocaleString()} unreadable files`, detail: `From scan #${data.last_scan.id}`, tone: "warning", job: data.last_scan.id });
+  const saveReview = (data.saves.matching?.orphan || 0) + (data.saves.matching?.possible || 0) + (data.saves.matching?.ambiguous || 0);
+  if (saveReview) attention.push({ view: "saves", label: `${saveReview.toLocaleString()} save names need review`, detail: `${(data.saves.matching?.orphan || 0).toLocaleString()} have no ROM match`, tone: "warning", saveTab: "matches" });
   if (pendingDeviceFiles) attention.push({ view: "devices", label: `${pendingDeviceFiles.toLocaleString()} pending device file changes`, detail: "Selections have not been fully applied", tone: "accent" });
   if (data.cleanup.trash) attention.push({ view: "trash", label: `${data.cleanup.trash.toLocaleString()} bundles in trash`, detail: "Recoverable until permanently purged", tone: "neutral" });
   const missingArtwork = Math.max(0, collection.games - data.artwork.games);
   if (missingArtwork) attention.push({ view: "library", label: `${missingArtwork.toLocaleString()} games without artwork`, detail: data.screenscraper_configured ? "Select games to scrape missing assets" : "ScreenScraper credentials are not configured", tone: "neutral" });
   if (!data.cleanup.naming_catalogs) attention.push({ view: "naming", label: "No naming catalogs imported", detail: "Import a DAT for canonical filename matches", tone: "neutral" });
   const attentionHtml = attention.length
-    ? `<div class="attention-list">${attention.slice(0, 7).map((item) => `<button class="attention-row ${item.tone}" data-dashboard-view="${item.view}" ${item.duplicate ? `data-dashboard-duplicate="${item.duplicate}"` : ""} ${item.job ? `data-dashboard-job="${item.job}"` : ""}><span class="attention-mark" aria-hidden="true"></span><span><strong>${escapeHtml(item.label)}</strong><small>${escapeHtml(item.detail)}</small></span><span aria-hidden="true">→</span></button>`).join("")}</div>`
+    ? `<div class="attention-list">${attention.slice(0, 7).map((item) => `<button class="attention-row ${item.tone}" data-dashboard-view="${item.view}" ${item.duplicate ? `data-dashboard-duplicate="${item.duplicate}"` : ""} ${item.job ? `data-dashboard-job="${item.job}"` : ""} ${item.saveTab ? `data-dashboard-save-tab="${item.saveTab}"` : ""}><span class="attention-mark" aria-hidden="true"></span><span><strong>${escapeHtml(item.label)}</strong><small>${escapeHtml(item.detail)}</small></span><span aria-hidden="true">→</span></button>`).join("")}</div>`
     : '<div class="dashboard-empty"><strong>Nothing needs immediate review</strong><span>Scans, devices, saves, and cleanup queues are current.</span></div>';
 
   const devicesHtml = data.devices.length
@@ -598,6 +604,7 @@ async function renderOverview() {
       duplicate: button.dataset.dashboardDuplicate,
       jobId: Number(button.dataset.dashboardJob) || null,
       deviceId: Number(button.dataset.dashboardDevice) || null,
+      saveTab: button.dataset.dashboardSaveTab || null,
     });
   }));
 }
@@ -773,9 +780,13 @@ function bindGameEvents(data, deviceMode) {
       const bundleOverflow = detail.files.length > visibleBundleNames.length
         ? `, and ${detail.files.length - visibleBundleNames.length} more`
         : "";
+      const impact = detail.save_impact;
+      const saveWarning = impact?.status && impact.status !== "none"
+        ? `<p class="issue-warning"><strong>${escapeHtml(saveMatchLabel(impact.status))}: ${impact.save_files} ${impact.save_files === 1 ? "save" : "saves"} and ${impact.state_files} ${impact.state_files === 1 ? "state" : "states"}.</strong> This operation renames the ROM bundle only. RetroArch save filenames will not change.</p>${impact.paths?.length ? `<ul class="confirm-list save-impact-paths">${impact.paths.slice(0, 8).map((path) => `<li><code>${escapeHtml(path)}</code></li>`).join("")}${impact.paths.length > 8 ? `<li>and ${impact.paths.length - 8} more</li>` : ""}</ul>` : ""}`
+        : "";
       const confirmed = await confirmAction({
         title: "Rename this bundle?",
-        content: `<p class="warning-copy">ROMmates will rename the complete file or folder bundle. References inside CUE, GDI, and M3U descriptors will be updated.</p><p><strong>${escapeHtml(bundleNames + bundleOverflow)}</strong></p>`,
+        content: `<p class="warning-copy">ROMmates will rename the complete file or folder bundle. References inside CUE, GDI, and M3U descriptors will be updated.</p>${saveWarning}<p><strong>${escapeHtml(bundleNames + bundleOverflow)}</strong></p>`,
         confirmLabel: "Rename bundle",
         cancelLabel: "Keep current name",
         danger: false,
@@ -1074,11 +1085,46 @@ async function renderTrash() {
 }
 
 function saveTabs(overview) {
+  const matching = overview.matching || { orphan: 0, possible: 0, ambiguous: 0 };
+  const reviewCount = matching.orphan + matching.possible + matching.ambiguous;
   return `<div class="device-scope save-tabs" role="tablist" aria-label="Save management view">
     <button class="scope-button ${state.saveTab === "current" ? "active" : ""}" data-save-tab="current" role="tab" aria-selected="${state.saveTab === "current"}">Current saves</button>
+    <button class="scope-button ${state.saveTab === "matches" ? "active" : ""}" data-save-tab="matches" role="tab" aria-selected="${state.saveTab === "matches"}">Save matching <span>${reviewCount.toLocaleString()}</span></button>
     <button class="scope-button ${state.saveTab === "snapshots" ? "active" : ""}" data-save-tab="snapshots" role="tab" aria-selected="${state.saveTab === "snapshots"}">Snapshots <span>${overview.snapshot_count.toLocaleString()}</span></button>
     <button class="scope-button ${state.saveTab === "settings" ? "active" : ""}" data-save-tab="settings" role="tab" aria-selected="${state.saveTab === "settings"}">Settings</button>
   </div>`;
+}
+
+function saveMatchLabel(status) {
+  return { exact: "Matched", possible: "Possible match", ambiguous: "Needs choice", orphan: "No ROM found", none: "No saves" }[status] || status;
+}
+
+function saveMatchClass(status) {
+  return status === "exact" ? "unique" : status === "orphan" ? "exact" : "possible";
+}
+
+function saveMatchesHtml(data) {
+  const summary = data.summary || { orphan: 0, possible: 0, ambiguous: 0, exact: 0 };
+  const toolbar = `<div class="toolbar save-match-toolbar">
+    <label class="search-field"><span class="sr-only">Search unmatched saves</span><input id="save-match-search" type="search" value="${escapeHtml(state.saveMatchSearch)}" placeholder="Search save name, core, or path" autocomplete="off"></label>
+    <label><span class="sr-only">Match status</span><select id="save-match-status">
+      <option value="all" ${state.saveMatchStatus === "all" ? "selected" : ""}>All to review</option>
+      <option value="orphan" ${state.saveMatchStatus === "orphan" ? "selected" : ""}>No ROM found (${summary.orphan})</option>
+      <option value="possible" ${state.saveMatchStatus === "possible" ? "selected" : ""}>Possible (${summary.possible})</option>
+      <option value="ambiguous" ${state.saveMatchStatus === "ambiguous" ? "selected" : ""}>Needs choice (${summary.ambiguous})</option>
+    </select></label>
+  </div>`;
+  if (!data.available) return `${toolbar}<div class="empty-state save-empty"><div><h2>Save source is not mounted</h2><p>ROMmates needs the live WebDAV directory to match saves against the ROM library.</p></div></div>`;
+  if (!data.items.length) return `${toolbar}<div class="empty-state save-empty"><div><h2>No save matches need review</h2><p>${state.saveMatchSearch || state.saveMatchStatus !== "all" ? "Try broader filters." : "Every recognized save and state group has one exact ROM match."}</p></div></div>`;
+  const end = Math.min(data.offset + data.items.length, data.total);
+  const rows = data.items.map((item) => {
+    const candidates = item.games?.length
+      ? item.games.map((game) => `${escapeHtml(game.name)} <span class="meta">(${escapeHtml(game.platform)})</span>`).join("<br>")
+      : '<span class="meta">None</span>';
+    const paths = item.files.map((file) => `<li><code class="save-path">${escapeHtml(file.relpath)}</code></li>`).join("");
+    return `<tr><td class="name-cell"><strong>${escapeHtml(item.content_name)}</strong><span class="path-line">${escapeHtml(item.core || "No core directory")}</span><details class="save-paths"><summary>${item.files.length} ${item.files.length === 1 ? "file" : "files"}</summary><ul>${paths}</ul></details></td><td><span class="badge ${saveMatchClass(item.status)}">${saveMatchLabel(item.status)}</span></td><td>${candidates}</td><td class="meta">${item.save_files} saves · ${item.state_files} states<br>${formatBytes(item.bytes)}</td><td class="meta">${new Date(Number(item.latest_mtime_ns) / 1e6).toLocaleString()}</td></tr>`;
+  }).join("");
+  return `${toolbar}<p class="save-match-note">Matching is read-only. Exact filenames are matched first; normalized names are suggestions and ambiguous results always require review.</p><div class="table-wrap"><table><thead><tr><th>RetroArch content name</th><th>Status</th><th>Candidate ROM</th><th>Files</th><th>Last changed</th></tr></thead><tbody>${rows}</tbody></table></div><div class="pager"><span>Showing ${data.offset + 1}–${end} of ${data.total.toLocaleString()}</span><div class="bulk-actions"><button class="button secondary small" data-save-match-page="previous" ${data.offset === 0 ? "disabled" : ""}>Previous</button><button class="button secondary small" data-save-match-page="next" ${end >= data.total ? "disabled" : ""}>Next</button></div></div>`;
 }
 
 function saveHeader(overview) {
@@ -1167,6 +1213,9 @@ async function renderSaves() {
       state.saveSnapshotId = null;
     }
     content = snapshotsHtml(snapshotData, snapshotDetail, comparison);
+  } else if (state.saveTab === "matches") {
+    const params = new URLSearchParams({ search: state.saveMatchSearch, status: state.saveMatchStatus, limit: 200, offset: state.saveMatchOffset });
+    content = saveMatchesHtml(await api(`/api/saves/unmatched?${params}`));
   } else {
     content = saveSettingsHtml(overview.settings);
   }
@@ -1174,6 +1223,7 @@ async function renderSaves() {
   view.querySelectorAll("[data-save-tab]").forEach((button) => button.addEventListener("click", () => {
     state.saveTab = button.dataset.saveTab;
     state.saveOffset = 0;
+    state.saveMatchOffset = 0;
     renderSaves();
   }));
   view.querySelector("[data-snapshot-form]")?.addEventListener("submit", async (event) => {
@@ -1204,6 +1254,25 @@ async function renderSaves() {
   });
   view.querySelectorAll("[data-save-page]").forEach((button) => button.addEventListener("click", () => {
     state.saveOffset = Math.max(0, state.saveOffset + (button.dataset.savePage === "next" ? 250 : -250));
+    renderSaves();
+  }));
+  const saveMatchSearch = view.querySelector("#save-match-search");
+  let saveMatchSearchTimer;
+  saveMatchSearch?.addEventListener("input", (event) => {
+    clearTimeout(saveMatchSearchTimer);
+    saveMatchSearchTimer = setTimeout(() => {
+      state.saveMatchSearch = event.target.value;
+      state.saveMatchOffset = 0;
+      renderSaves();
+    }, 220);
+  });
+  view.querySelector("#save-match-status")?.addEventListener("change", (event) => {
+    state.saveMatchStatus = event.target.value;
+    state.saveMatchOffset = 0;
+    renderSaves();
+  });
+  view.querySelectorAll("[data-save-match-page]").forEach((button) => button.addEventListener("click", () => {
+    state.saveMatchOffset = Math.max(0, state.saveMatchOffset + (button.dataset.saveMatchPage === "next" ? 200 : -200));
     renderSaves();
   }));
   view.querySelectorAll("[data-open-snapshot]").forEach((button) => button.addEventListener("click", () => {
@@ -1294,12 +1363,20 @@ function namingConfidenceLabel(value) {
   return { exact: "Exact DAT match", strong: "Strong name match", cleanup: "Cleanup only" }[value] || value;
 }
 
+function saveImpactHtml(impact) {
+  if (!impact || impact.status === "none") return '<span class="meta">No matched saves</span>';
+  const counts = `${impact.save_files} ${impact.save_files === 1 ? "save" : "saves"} · ${impact.state_files} ${impact.state_files === 1 ? "state" : "states"}`;
+  const title = (impact.paths || []).join("\n");
+  return `<span class="badge ${saveMatchClass(impact.status)}" title="${escapeHtml(title)}">${saveMatchLabel(impact.status)}</span><span class="path-line">${counts}</span>`;
+}
+
 async function renderNaming() {
   setHeading("Naming", "Review canonical filenames before changing bundles.");
   const params = new URLSearchParams({
     search: state.search,
     platform: state.platform,
     confidence: state.namingConfidence,
+    save_impact: state.namingSaveImpact,
     limit: state.limit,
     offset: state.offset,
   });
@@ -1329,19 +1406,26 @@ async function renderNaming() {
       <option value="strong" ${state.namingConfidence === "strong" ? "selected" : ""}>Strong name matches</option>
       <option value="cleanup" ${state.namingConfidence === "cleanup" ? "selected" : ""}>Cleanup only</option>
     </select></label>
+    <label><span class="sr-only">Save impact</span><select id="naming-save-impact">
+      <option value="all" ${state.namingSaveImpact === "all" ? "selected" : ""}>All save impacts</option>
+      <option value="no_saves" ${state.namingSaveImpact === "no_saves" ? "selected" : ""}>No matched saves</option>
+      <option value="has_saves" ${state.namingSaveImpact === "has_saves" ? "selected" : ""}>Has save data</option>
+      <option value="review" ${state.namingSaveImpact === "review" ? "selected" : ""}>Save match needs review</option>
+    </select></label>
   </div>`;
   let content;
   if (!data.items.length) {
-    content = `<div class="empty-state naming-empty"><div><h2>No naming suggestions</h2><p>${state.search || state.platform || state.namingConfidence !== "all" ? "Try broader filters." : "Your current filenames do not need conservative cleanup. Import a DAT catalog to find canonical matches."}</p></div></div>`;
+    content = `<div class="empty-state naming-empty"><div><h2>No naming suggestions</h2><p>${state.search || state.platform || state.namingConfidence !== "all" || state.namingSaveImpact !== "all" ? "Try broader filters." : "Your current filenames do not need conservative cleanup. Import a DAT catalog to find canonical matches."}</p></div></div>`;
   } else {
     const end = Math.min(data.offset + data.items.length, data.total);
-    content = `<div class="table-wrap"><table><thead><tr><th class="checkbox-cell"><input type="checkbox" data-naming-select-all aria-label="Select visible safe suggestions"></th><th>Current filename</th><th>Suggested filename</th><th>Confidence</th><th>Source</th></tr></thead><tbody>${data.items.map((item) => {
+    content = `<div class="table-wrap"><table><thead><tr><th class="checkbox-cell"><input type="checkbox" data-naming-select-all aria-label="Select visible suggestions without matched saves"></th><th>Current filename</th><th>Suggested filename</th><th>Confidence</th><th>Save impact</th><th>Source</th></tr></thead><tbody>${data.items.map((item) => {
       const checked = state.namingSelected.has(item.game_id);
       return `<tr class="${item.collision ? "collision-row" : ""}">
         <td class="checkbox-cell"><input type="checkbox" data-naming-select="${item.game_id}" ${checked ? "checked" : ""} ${item.collision ? "disabled" : ""} aria-label="Select suggestion for ${escapeHtml(item.current_name)}"></td>
         <td class="name-cell"><strong>${escapeHtml(item.current_name)}</strong><span class="path-line">${escapeHtml(item.primary_relpath)}</span></td>
         <td class="suggestion-cell"><input class="input suggestion-input" data-suggestion-name="${item.game_id}" value="${escapeHtml(state.namingSelected.get(item.game_id)?.name || item.suggested_name)}" maxlength="255" ${item.collision ? "disabled" : ""}>${item.collision ? `<span class="collision-note">${escapeHtml(item.collision_detail || "A file with this name already exists")}</span>` : ""}</td>
         <td><span class="badge naming-${item.confidence}">${escapeHtml(namingConfidenceLabel(item.confidence))}</span></td>
+        <td>${saveImpactHtml(item.save_impact)}</td>
         <td class="meta">${escapeHtml(item.source)}</td>
       </tr>`;
     }).join("")}</tbody></table></div><div class="pager"><span>Showing ${data.offset + 1}–${end} of ${data.total.toLocaleString()}</span><div class="bulk-actions"><button class="button secondary small" data-page="previous" ${data.offset === 0 ? "disabled" : ""}>Previous</button><button class="button secondary small" data-page="next" ${end >= data.total ? "disabled" : ""}>Next</button></div></div>`;
@@ -1352,6 +1436,7 @@ async function renderNaming() {
 
   bindFilters(renderNaming);
   view.querySelector("#naming-confidence")?.addEventListener("change", (event) => { state.namingConfidence = event.target.value; state.offset = 0; renderNaming(); });
+  view.querySelector("#naming-save-impact")?.addEventListener("change", (event) => { state.namingSaveImpact = event.target.value; state.offset = 0; renderNaming(); });
   view.querySelector("#dat-import-form")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = event.currentTarget;
@@ -1374,7 +1459,7 @@ async function renderNaming() {
   const selectSuggestion = (id, selected) => {
     const item = byId.get(id);
     const input = view.querySelector(`[data-suggestion-name="${id}"]`);
-    if (selected && item) state.namingSelected.set(id, { name: input?.value || item.suggested_name, current: item.current_name });
+    if (selected && item) state.namingSelected.set(id, { name: input?.value || item.suggested_name, current: item.current_name, saveImpact: item.save_impact });
     else state.namingSelected.delete(id);
   };
   view.querySelectorAll("[data-naming-select]").forEach((box) => box.addEventListener("change", () => { selectSuggestion(Number(box.dataset.namingSelect), box.checked); renderNaming(); }));
@@ -1383,14 +1468,15 @@ async function renderNaming() {
     if (state.namingSelected.has(id)) state.namingSelected.get(id).name = input.value;
   }));
   view.querySelector("[data-naming-select-all]")?.addEventListener("change", (event) => {
-    data.items.filter((item) => !item.collision).forEach((item) => selectSuggestion(item.game_id, event.target.checked));
+    data.items.filter((item) => !item.collision && item.save_impact?.status === "none").forEach((item) => selectSuggestion(item.game_id, event.target.checked));
     renderNaming();
   });
   view.querySelector("[data-clear-naming]")?.addEventListener("click", () => { state.namingSelected.clear(); renderNaming(); });
   view.querySelector("[data-apply-naming]")?.addEventListener("click", async () => {
     const items = [...state.namingSelected.entries()].map(([game_id, item]) => ({ game_id, name: item.name }));
+    const saveAffected = [...state.namingSelected.values()].filter((item) => item.saveImpact?.status && item.saveImpact.status !== "none");
     const preview = items.slice(0, 12).map((item) => `<li>${escapeHtml(state.namingSelected.get(item.game_id).current)} → <strong>${escapeHtml(item.name)}</strong></li>`).join("");
-    const confirmed = await confirmAction({ title: `Apply ${items.length} naming ${items.length === 1 ? "suggestion" : "suggestions"}?`, content: `<p class="warning-copy">ROMmates will rename complete file or folder bundles and update CUE, GDI, and M3U references. Existing device selections stay attached.</p><ul class="confirm-list">${preview}${items.length > 12 ? `<li>and ${items.length - 12} more</li>` : ""}</ul>`, confirmLabel: "Apply renames", cancelLabel: "Keep reviewing", danger: false });
+    const confirmed = await confirmAction({ title: `Apply ${items.length} naming ${items.length === 1 ? "suggestion" : "suggestions"}?`, content: `<p class="warning-copy">ROMmates will rename complete file or folder bundles and update CUE, GDI, and M3U references. Existing device selections stay attached.</p>${saveAffected.length ? `<p class="issue-warning"><strong>${saveAffected.length} selected ${saveAffected.length === 1 ? "game has" : "games have"} matching save data.</strong> This job renames ROMs only; RetroArch save and state filenames will not change.</p>` : ""}<ul class="confirm-list">${preview}${items.length > 12 ? `<li>and ${items.length - 12} more</li>` : ""}</ul>`, confirmLabel: "Apply renames", cancelLabel: "Keep reviewing", danger: false });
     if (!confirmed) return;
     try {
       const result = await requestJob("/api/naming/apply", { method: "POST", body: JSON.stringify({ items }) }, "Naming changes queued");
@@ -1627,6 +1713,7 @@ function navigateTo(viewName, options = {}) {
     state.jobIssueOffset = 0;
   }
   if (options.deviceId) state.deviceId = options.deviceId;
+  if (options.saveTab) state.saveTab = options.saveTab;
   state.selectedRows.clear();
   state.editingId = null;
   state.assigningId = null;

@@ -52,8 +52,8 @@ def migrate_legacy_storage() -> None:
 migrate_legacy_storage()
 db = Database(settings.database_path)
 library = LibraryService(settings, db)
-naming = NamingService(db, settings.library_root, library)
 saves = SaveSnapshotService(settings, db)
+naming = NamingService(db, settings.library_root, library, saves)
 screenscraper = ScreenScraperService(settings, db)
 job_cancellations: dict[int, threading.Event] = {}
 job_cancellations_lock = threading.Lock()
@@ -493,6 +493,7 @@ def dashboard():
         ).fetchone()["count"]
     try:
         save_source = saves.source_summary()
+        save_matching = saves.match_summary()
     except LibraryError as exc:
         save_source = {
             "available": False,
@@ -503,6 +504,7 @@ def dashboard():
             "latest_mtime_ns": 0,
             "error": str(exc),
         }
+        save_matching = {"groups": 0, "exact": 0, "possible": 0, "ambiguous": 0, "orphan": 0}
     for job in recent_jobs:
         job.pop("result_json", None)
     last_scan = job_payload(last_scan_row) if last_scan_row else None
@@ -522,6 +524,7 @@ def dashboard():
         "devices": devices,
         "saves": {
             **save_source,
+            "matching": save_matching,
             "snapshots": snapshot_count,
             "latest_snapshot": dict(latest_snapshot) if latest_snapshot else None,
         },
@@ -838,7 +841,11 @@ def game_detail(game_id: int):
             "SELECT d.id,d.name,EXISTS(SELECT 1 FROM device_selections ds WHERE ds.device_id=d.id AND ds.game_id=?) AS selected "
             "FROM devices d ORDER BY d.name", (game_id,)
         )]
-    return {"game": game, "files": files, "devices": devices, "artwork": screenscraper.detail(game_id)}
+    impact = saves.save_impacts([game_id]).get(
+        game_id,
+        {"status": "none", "groups": 0, "files": 0, "save_files": 0, "state_files": 0, "paths": [], "content_names": []},
+    )
+    return {"game": game, "files": files, "devices": devices, "artwork": screenscraper.detail(game_id), "save_impact": impact}
 
 
 @app.get("/api/artwork/status")
@@ -911,10 +918,11 @@ def naming_suggestions(
     search: str = "",
     platform: str = "",
     confidence: str = Query("all", pattern="^(all|exact|strong|cleanup)$"),
+    save_impact: str = Query("all", pattern="^(all|has_saves|no_saves|review)$"),
     limit: int = Query(200, ge=1, le=1000),
     offset: int = Query(0, ge=0),
 ):
-    return naming.suggestions(search, platform, confidence, limit, offset)
+    return naming.suggestions(search, platform, confidence, save_impact, limit, offset)
 
 
 @app.post("/api/naming/apply", status_code=202)
@@ -1014,6 +1022,7 @@ def save_overview():
         "settings": saves.settings_payload(),
         "latest_snapshot": snapshots["items"][0] if snapshots["items"] else None,
         "snapshot_count": snapshots["total"],
+        "matching": saves.match_summary(),
     }
 
 
@@ -1024,6 +1033,16 @@ def current_saves(
     offset: int = Query(0, ge=0),
 ):
     return saves.current_files(search, limit, offset)
+
+
+@app.get("/api/saves/unmatched")
+def unmatched_saves(
+    search: str = "",
+    status: str = Query("all", pattern="^(all|orphan|possible|ambiguous)$"),
+    limit: int = Query(200, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+):
+    return saves.unmatched_groups(search, status, limit, offset)
 
 
 @app.get("/api/saves/settings")

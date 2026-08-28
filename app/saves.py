@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import shutil
 import threading
 import time
@@ -13,11 +14,37 @@ from typing import Callable
 
 from .config import Settings
 from .db import Database
-from .library import JobCancelled, LibraryError
+from .library import JobCancelled, LibraryError, normalize_name
 
 
 ProgressCallback = Callable[[int, str], None]
 CancelCheck = Callable[[], None]
+
+SAVE_EXTENSIONS = frozenset({
+    ".srm", ".sav", ".dsv", ".rtc", ".eep", ".fla", ".sra", ".mpk", ".nv", ".fs",
+})
+STATE_NAME = re.compile(r"^(?P<name>.+)\.state(?:\d+|\.auto)?(?:\.png)?$", re.IGNORECASE)
+CORE_PLATFORMS = {
+    "mgba": frozenset({"gba", "gb", "gbc"}),
+    "gpsp": frozenset({"gba"}),
+    "gambatte": frozenset({"gb", "gbc"}),
+    "sameboy": frozenset({"gb", "gbc"}),
+    "snes9x": frozenset({"snes"}),
+    "bsnes": frozenset({"snes"}),
+    "mesen": frozenset({"nes", "snes"}),
+    "quicknes": frozenset({"nes"}),
+    "nestopia": frozenset({"nes"}),
+    "genesisplusgx": frozenset({"megadrive", "genesis", "mastersystem", "sms", "gamegear", "gg", "segacd"}),
+    "picodrive": frozenset({"megadrive", "genesis", "mastersystem", "sms", "gamegear", "gg", "segacd", "32x"}),
+    "mupen64plusnext": frozenset({"n64"}),
+    "paralleln64": frozenset({"n64"}),
+    "desmume": frozenset({"nds"}),
+    "melonds": frozenset({"nds"}),
+    "beetlepsxhw": frozenset({"psx", "ps1"}),
+    "pcsxrearmed": frozenset({"psx", "ps1"}),
+    "ppsspp": frozenset({"psp"}),
+    "flycast": frozenset({"dreamcast"}),
+}
 
 
 @dataclass(frozen=True)
@@ -391,6 +418,166 @@ class SaveSnapshotService:
             "save_files": save_files,
             "state_files": state_files,
             "latest_mtime_ns": latest_mtime_ns,
+        }
+
+    @staticmethod
+    def _core_key(value: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "", value.casefold())
+
+    def _save_groups(self) -> list[dict[str, object]]:
+        if not self.available():
+            return []
+        root = self.settings.saves_root
+        groups: dict[tuple[str, str], dict[str, object]] = {}
+        for path in self._source_paths():
+            relpath = path.relative_to(root).as_posix()
+            parts = Path(relpath).parts
+            if not parts or parts[0].casefold() not in {"saves", "states"}:
+                continue
+            filename = parts[-1]
+            state_match = STATE_NAME.match(filename)
+            if state_match:
+                content_name = state_match.group("name")
+                kind = "state"
+            elif Path(filename).suffix.casefold() in SAVE_EXTENSIONS:
+                content_name = Path(filename).stem
+                kind = "save"
+            else:
+                continue
+            core = parts[1] if len(parts) >= 3 else ""
+            key = (self._core_key(core), content_name.casefold())
+            group = groups.setdefault(
+                key,
+                {
+                    "key": "\x1f".join(key),
+                    "core": core,
+                    "content_name": content_name,
+                    "files": [],
+                    "save_files": 0,
+                    "state_files": 0,
+                    "bytes": 0,
+                    "latest_mtime_ns": 0,
+                },
+            )
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            group["files"].append(
+                {"relpath": relpath, "kind": kind, "size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+            )
+            group[f"{kind}_files"] += 1
+            group["bytes"] += stat.st_size
+            group["latest_mtime_ns"] = max(group["latest_mtime_ns"], stat.st_mtime_ns)
+        return sorted(groups.values(), key=lambda item: (str(item["content_name"]).casefold(), str(item["core"]).casefold()))
+
+    def _matched_save_groups(self) -> tuple[list[dict[str, object]], dict[int, dict[str, object]]]:
+        with self.db.connect() as connection:
+            games = [dict(row) for row in connection.execute(
+                "SELECT id,platform,display_name,primary_relpath,normalized_name FROM games"
+            )]
+        exact_map: dict[str, list[dict[str, object]]] = {}
+        normalized_map: dict[str, list[dict[str, object]]] = {}
+        for game in games:
+            names = {str(game["display_name"]).casefold(), Path(game["primary_relpath"]).stem.casefold()}
+            for name in names:
+                exact_map.setdefault(name, []).append(game)
+            normalized = str(game["normalized_name"] or normalize_name(str(game["display_name"])))
+            if normalized:
+                normalized_map.setdefault(normalized, []).append(game)
+
+        impacts: dict[int, dict[str, object]] = {
+            game["id"]: {
+                "status": "none", "groups": 0, "files": 0, "save_files": 0,
+                "state_files": 0, "paths": [], "content_names": [],
+            }
+            for game in games
+        }
+        rank = {"none": 0, "possible": 1, "exact": 2, "ambiguous": 3}
+        groups = self._save_groups()
+        for group in groups:
+            allowed = CORE_PLATFORMS.get(self._core_key(str(group["core"])))
+
+            def narrow(candidates: list[dict[str, object]]) -> list[dict[str, object]]:
+                if not allowed:
+                    return candidates
+                filtered = [game for game in candidates if str(game["platform"]).casefold() in allowed]
+                return filtered or candidates
+
+            candidates = narrow(exact_map.get(str(group["content_name"]).casefold(), []))
+            if len(candidates) == 1:
+                status = "exact"
+            elif len(candidates) > 1:
+                status = "ambiguous"
+            else:
+                normalized = normalize_name(str(group["content_name"]))
+                candidates = narrow(normalized_map.get(normalized, [])) if normalized else []
+                status = "possible" if len(candidates) == 1 else "ambiguous" if candidates else "orphan"
+            group["status"] = status
+            group["games"] = [
+                {"id": game["id"], "name": game["display_name"], "platform": game["platform"]}
+                for game in candidates
+            ]
+            for game in candidates:
+                impact = impacts[game["id"]]
+                if rank.get(status, 0) > rank.get(str(impact["status"]), 0):
+                    impact["status"] = status
+                impact["groups"] += 1
+                impact["files"] += len(group["files"])
+                impact["save_files"] += group["save_files"]
+                impact["state_files"] += group["state_files"]
+                impact["content_names"].append(group["content_name"])
+                remaining = max(0, 12 - len(impact["paths"]))
+                impact["paths"].extend(item["relpath"] for item in group["files"][:remaining])
+        return groups, impacts
+
+    def save_impacts(self, game_ids: list[int] | None = None) -> dict[int, dict[str, object]]:
+        _, impacts = self._matched_save_groups()
+        if game_ids is None:
+            return impacts
+        wanted = set(game_ids)
+        return {game_id: impact for game_id, impact in impacts.items() if game_id in wanted}
+
+    def match_summary(self) -> dict[str, int]:
+        groups, _ = self._matched_save_groups()
+        return {
+            "groups": len(groups),
+            "exact": sum(group["status"] == "exact" for group in groups),
+            "possible": sum(group["status"] == "possible" for group in groups),
+            "ambiguous": sum(group["status"] == "ambiguous" for group in groups),
+            "orphan": sum(group["status"] == "orphan" for group in groups),
+        }
+
+    def unmatched_groups(
+        self, search: str = "", status: str = "all", limit: int = 200, offset: int = 0
+    ) -> dict[str, object]:
+        groups, _ = self._matched_save_groups()
+        items = [group for group in groups if group["status"] != "exact"]
+        if status != "all":
+            items = [group for group in items if group["status"] == status]
+        if search.strip():
+            needle = search.strip().casefold()
+            items = [
+                group for group in items
+                if needle in str(group["content_name"]).casefold()
+                or needle in str(group["core"]).casefold()
+                or any(needle in item["relpath"].casefold() for item in group["files"])
+            ]
+        total = len(items)
+        summary = {
+            "groups": len(groups),
+            "exact": sum(group["status"] == "exact" for group in groups),
+            "possible": sum(group["status"] == "possible" for group in groups),
+            "ambiguous": sum(group["status"] == "ambiguous" for group in groups),
+            "orphan": sum(group["status"] == "orphan" for group in groups),
+        }
+        return {
+            "items": items[offset:offset + limit],
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "summary": summary,
+            "available": self.available(),
         }
 
     def snapshot_detail(

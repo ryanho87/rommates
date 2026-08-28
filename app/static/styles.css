@@ -425,6 +425,12 @@ input[type="checkbox"] { width: 15px; height: 15px; margin: 0; accent-color: var
 .save-tabs { margin-bottom: 12px; }
 .save-path { color: var(--text-muted); font-size: 0.75rem; }
 .save-empty { min-height: 280px; }
+.save-match-note { margin: -2px 0 10px; color: var(--text-muted); font-size: 0.75rem; }
+.save-paths { margin-top: 5px; color: var(--text-muted); font-size: 0.72rem; }
+.save-paths summary { cursor: pointer; }
+.save-paths ul { max-width: 620px; margin: 6px 0 0; padding-left: 18px; }
+.save-paths li { margin: 3px 0; }
+.save-impact-paths code { overflow-wrap: anywhere; }
 .snapshot-detail { margin-top: 12px; padding: 0 12px 12px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface); }
 .snapshot-detail .report-grid { grid-template-columns: repeat(6, minmax(100px, 1fr)); }
 .restore-panel { display: flex; align-items: center; justify-content: space-between; gap: 24px; margin: 14px 0; padding: 12px; border: 1px solid color-mix(in oklch, var(--danger), var(--border) 72%); border-radius: var(--radius-md); background: var(--danger-soft); }

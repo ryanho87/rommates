@@ -24,6 +24,7 @@ The MVP supports:
 - Safe stop controls for scans and device deployment jobs
 - Detailed job reports with timing, structured results, and paginated unreadable-file paths
 - Deduplicated RetroArch save snapshots with scheduling, retention, historical downloads, and guarded full-state restore
+- Read-only RetroArch save-to-ROM matching, orphan detection, and rename impact warnings
 - ScreenScraper matching with locally cached covers, screenshots, and logos
 - Bearer-token protection for the private API
 - Browser/OS light and dark themes
@@ -100,6 +101,7 @@ so frequent snapshots only consume space for changed save data.
 The **Saves** screen provides:
 
 - Searchable current WebDAV files
+- A Save matching review queue for orphaned, normalized-name, and ambiguous ROM matches
 - Manual snapshots with optional notes
 - Scheduled snapshots and tiered recent, daily, weekly, and monthly retention
 - Pinned snapshots that retention never removes
@@ -240,6 +242,13 @@ Suggested names remain editable. Colliding targets are disabled, and every batch
 validated again before any file changes. Applying suggestions uses the same bundle-aware
 rename path as the Library screen, preserves device selections, updates descriptor
 references, and carries hash-cache records to the new paths.
+
+ROMmates also checks the live RetroArch `saves/` and `states/` trees before showing a
+rename. Exact content filenames are matched first, with the core directory used to narrow
+platforms when possible. Normalized-name matches are explicitly marked as possible or
+ambiguous. Save matching is read-only: a ROM rename never silently renames or deletes save
+data. “Select all” on the Naming screen skips games with matched save data by default;
+individual affected games can still be selected after reviewing the warning.
 
 ## Configuration
 

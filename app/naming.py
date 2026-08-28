@@ -13,10 +13,14 @@ MAX_DAT_ENTRIES = 500_000
 
 
 class NamingService:
-    def __init__(self, db: Database, library_root: Path, library: LibraryService | None = None):
+    def __init__(
+        self, db: Database, library_root: Path, library: LibraryService | None = None,
+        save_service=None,
+    ):
         self.db = db
         self.library_root = library_root
         self.library = library
+        self.save_service = save_service
 
     def import_dat(self, source_name: str, platform: str, content: str) -> dict[str, object]:
         source_name = Path(source_name.strip()).name
@@ -87,6 +91,7 @@ class NamingService:
         search: str = "",
         platform: str = "",
         confidence: str = "all",
+        save_impact: str = "all",
         limit: int = 200,
         offset: int = 0,
     ) -> dict[str, object]:
@@ -169,6 +174,18 @@ class NamingService:
                     "_file_count": game["file_count"],
                 }
             )
+        impacts = self.save_service.save_impacts([item["game_id"] for item in results]) if self.save_service else {}
+        for item in results:
+            item["save_impact"] = impacts.get(
+                item["game_id"],
+                {"status": "none", "groups": 0, "files": 0, "save_files": 0, "state_files": 0, "paths": [], "content_names": []},
+            )
+        if save_impact == "has_saves":
+            results = [item for item in results if item["save_impact"]["status"] != "none"]
+        elif save_impact == "no_saves":
+            results = [item for item in results if item["save_impact"]["status"] == "none"]
+        elif save_impact == "review":
+            results = [item for item in results if item["save_impact"]["status"] in {"possible", "ambiguous"}]
         rank = {"exact": 0, "strong": 1, "cleanup": 2}
         results.sort(key=lambda item: (rank[item["confidence"]], item["platform"].casefold(), item["current_name"].casefold()))
         page = results[offset : offset + limit]
