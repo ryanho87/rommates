@@ -590,6 +590,99 @@ def games(
     }
 
 
+@app.get("/api/duplicates")
+def duplicate_groups(
+    kind: str = Query("exact", pattern="^(exact|possible)$"),
+    search: str = "",
+    platform: str = "",
+    limit: int = Query(30, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+):
+    """Return complete duplicate sets, paginated by group instead of game row."""
+    status_expr = (
+        "CASE WHEN (SELECT COUNT(*) FROM games x WHERE x.bundle_hash=g.bundle_hash)>1 THEN 'exact' "
+        "WHEN g.normalized_name<>'' AND (SELECT COUNT(*) FROM games x WHERE x.platform=g.platform "
+        "AND x.normalized_name=g.normalized_name)>1 THEN 'possible' ELSE 'unique' END"
+    )
+    group_expr = "g.bundle_hash" if kind == "exact" else "g.platform || char(31) || g.normalized_name"
+    if kind == "exact":
+        where = ["(SELECT COUNT(*) FROM games x WHERE x.bundle_hash=g.bundle_hash)>1"]
+    else:
+        # Filename review is useful even when one of the variants also has exact
+        # copies. Require at least two distinct contents so exact-only sets do not
+        # appear a second time in the possible-duplicate view.
+        where = [
+            "g.normalized_name<>'' AND (SELECT COUNT(DISTINCT x.bundle_hash) FROM games x "
+            "WHERE x.platform=g.platform AND x.normalized_name=g.normalized_name)>1"
+        ]
+    params: list[object] = []
+    if search.strip():
+        escaped = search.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        where.append("(g.display_name LIKE ? ESCAPE '\\' OR g.primary_relpath LIKE ? ESCAPE '\\')")
+        params.extend([f"%{escaped}%", f"%{escaped}%"])
+    if platform:
+        where.append("g.platform=?")
+        params.append(platform)
+    where_sql = " AND ".join(where)
+    grouped_sql = (
+        f"SELECT {group_expr} AS group_key,MIN(g.display_name) AS sort_name "
+        f"FROM games g WHERE {where_sql} GROUP BY group_key"
+    )
+    with db.connect() as connection:
+        total = connection.execute(
+            f"SELECT COUNT(*) AS count FROM ({grouped_sql})", params
+        ).fetchone()["count"]
+        group_rows = connection.execute(
+            f"{grouped_sql} ORDER BY sort_name COLLATE NOCASE,group_key LIMIT ? OFFSET ?",
+            [*params, limit, offset],
+        ).fetchall()
+        keys = [row["group_key"] for row in group_rows]
+        if not keys:
+            return {"items": [], "total": total, "limit": limit, "offset": offset}
+        placeholders = ",".join("?" for _ in keys)
+        item_group_expr = (
+            "g.bundle_hash" if kind == "exact" else "g.platform || char(31) || g.normalized_name"
+        )
+        rows = connection.execute(
+            f"SELECT g.*,({item_group_expr}) AS group_key,({status_expr}) AS duplicate_status,"
+            "(SELECT COUNT(*) FROM game_files gf WHERE gf.game_id=g.id) AS file_count,"
+            "(SELECT COUNT(*) FROM device_selections ds WHERE ds.game_id=g.id) AS device_count "
+            f"FROM games g WHERE ({item_group_expr}) IN ({placeholders}) "
+            "ORDER BY group_key,g.primary_relpath COLLATE NOCASE",
+            keys,
+        ).fetchall()
+        items = [dict(row) for row in rows]
+        game_ids = [item["id"] for item in items]
+        game_placeholders = ",".join("?" for _ in game_ids)
+        device_rows = connection.execute(
+            "SELECT ds.game_id,d.name FROM device_selections ds JOIN devices d ON d.id=ds.device_id "
+            f"WHERE ds.game_id IN ({game_placeholders}) ORDER BY d.name COLLATE NOCASE",
+            game_ids,
+        ).fetchall()
+    devices_by_game: dict[int, list[str]] = {game_id: [] for game_id in game_ids}
+    for row in device_rows:
+        devices_by_game[row["game_id"]].append(row["name"])
+    items_by_group: dict[str, list[dict[str, object]]] = {key: [] for key in keys}
+    for item in items:
+        item["devices"] = devices_by_game[item["id"]]
+        items_by_group[item.pop("group_key")].append(item)
+    groups = []
+    for row in group_rows:
+        key = row["group_key"]
+        members = items_by_group[key]
+        groups.append(
+            {
+                "key": key,
+                "kind": kind,
+                "label": row["sort_name"],
+                "copies": len(members),
+                "bytes": sum(member["size"] for member in members),
+                "items": members,
+            }
+        )
+    return {"items": groups, "total": total, "limit": limit, "offset": offset}
+
+
 @app.get("/api/games/{game_id}")
 def game_detail(game_id: int):
     game, files = library.game_bundle(game_id)

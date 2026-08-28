@@ -375,6 +375,37 @@ input[type="checkbox"] { width: 15px; height: 15px; margin: 0; accent-color: var
 .section-heading h2 { margin: 0; font-size: 0.95rem; }
 .section-heading p { margin: 2px 0 0; color: var(--text-muted); font-size: 0.78rem; }
 
+.duplicate-heading { align-items: center; }
+.duplicate-groups { display: grid; gap: 14px; }
+.duplicate-group {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+.duplicate-group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  min-height: 58px;
+  padding: 9px 11px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-raised);
+}
+.duplicate-group-title { display: flex; align-items: center; gap: 8px; }
+.duplicate-group-title strong { font-size: 0.82rem; }
+.duplicate-group-head p { margin: 3px 0 0; color: var(--text-muted); font-size: 0.72rem; }
+.duplicate-table-wrap { overflow-x: auto; }
+.duplicate-table-wrap th { position: static; }
+.duplicate-table-wrap th:first-child { width: 92px; }
+.keeper-cell { width: 92px; }
+.keeper-choice { display: inline-flex; align-items: center; gap: 6px; color: var(--text-muted); font-size: 0.74rem; cursor: pointer; }
+.keeper-choice input { width: 15px; height: 15px; margin: 0; accent-color: var(--accent); }
+.keeper-row > td { background: var(--success-soft); }
+.keeper-row .keeper-choice { color: var(--success); font-weight: 650; }
+.duplicate-empty { min-height: 280px; }
+
 .job-report { margin-top: 12px; padding: 0 12px 12px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface); }
 .report-heading { align-items: center; margin-top: 12px; }
 .report-summary { padding-bottom: 12px; border-bottom: 1px solid var(--border); }
@@ -480,6 +511,8 @@ dialog form { padding: 18px; }
   .settings-section { grid-template-columns: 1fr; }
   .settings-section > p, .settings-section > .field, .settings-section > .device-choice, .settings-section > .retention-grid { grid-column: 1; }
   .rename-arrow { display: none; }
+  .duplicate-group-head { align-items: stretch; flex-direction: column; }
+  .duplicate-group-head .button { align-self: flex-start; }
 }
 
 @media (pointer: coarse) {

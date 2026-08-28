@@ -76,6 +76,50 @@ class ApiIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 403)
 
+    def test_duplicate_endpoint_groups_complete_matching_sets(self):
+        first = self.root / "roms/gba/Original Name.gba"
+        second = self.root / "roms/gba/Differently Named Copy.gba"
+        usa = self.root / "roms/gba/Variant Game (USA).gba"
+        europe = self.root / "roms/gba/Variant Game (Europe).gba"
+        first.write_bytes(b"same-rom-content")
+        second.write_bytes(b"same-rom-content")
+        usa.write_bytes(b"usa-content")
+        europe.write_bytes(b"europe-content")
+        try:
+            scan = self.client.post("/api/scan?confirm_prune=true", headers=self.headers)
+            self.assertEqual(self.wait_for_job(scan.json()["job_id"])["status"], "complete")
+            response = self.client.get(
+                "/api/duplicates?kind=exact&search=Original%20Name",
+                headers=self.headers,
+            )
+            self.assertEqual(response.status_code, 200)
+            data = response.json()
+            matching = [
+                group for group in data["items"]
+                if {item["display_name"] for item in group["items"]}
+                == {"Original Name", "Differently Named Copy"}
+            ]
+            self.assertEqual(len(matching), 1)
+            self.assertEqual(matching[0]["copies"], 2)
+            self.assertEqual(matching[0]["kind"], "exact")
+            self.assertEqual(len(matching[0]["key"]), 64)
+            possible = self.client.get(
+                "/api/duplicates?kind=possible&search=Variant%20Game",
+                headers=self.headers,
+            ).json()
+            self.assertEqual(possible["total"], 1)
+            self.assertEqual(
+                {item["display_name"] for item in possible["items"][0]["items"]},
+                {"Variant Game (USA)", "Variant Game (Europe)"},
+            )
+        finally:
+            first.unlink(missing_ok=True)
+            second.unlink(missing_ok=True)
+            usa.unlink(missing_ok=True)
+            europe.unlink(missing_ok=True)
+            scan = self.client.post("/api/scan?confirm_prune=true", headers=self.headers)
+            self.assertEqual(self.wait_for_job(scan.json()["job_id"])["status"], "complete")
+
     def test_device_view_uses_actual_files_and_reports_selection_state(self):
         scan = self.client.post("/api/scan", headers=self.headers)
         self.assertEqual(self.wait_for_job(scan.json()["job_id"])["status"], "complete")

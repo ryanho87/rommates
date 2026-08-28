@@ -11,6 +11,9 @@ const state = {
   // id -> {display_name, platform}. A map rather than a set so the bulk bar and the
   // confirmation dialog can name selections that current filters have scrolled away.
   selectedRows: new Map(),
+  // Duplicate group key -> game id chosen as the copy to keep. A keeper must be
+  // explicitly chosen before any group cleanup action is enabled.
+  duplicateKeepers: new Map(),
   editingId: null,
   assigningId: null,
   assignmentDevices: [],
@@ -295,6 +298,9 @@ async function getGames(deviceId = null, deviceScope = "all") {
 }
 
 function libraryToolbar(includeDuplicate = true) {
+  const duplicateOptions = state.view === "duplicates"
+    ? `<option value="exact" ${state.duplicate === "exact" ? "selected" : ""}>Exact content</option><option value="possible" ${state.duplicate === "possible" ? "selected" : ""}>Similar filenames</option>`
+    : `<option value="all" ${state.duplicate === "all" ? "selected" : ""}>All statuses</option><option value="exact" ${state.duplicate === "exact" ? "selected" : ""}>Exact duplicates</option><option value="possible" ${state.duplicate === "possible" ? "selected" : ""}>Possible duplicates</option><option value="unique" ${state.duplicate === "unique" ? "selected" : ""}>Unique</option>`;
   return `
     <div class="toolbar">
       <label class="search-field">
@@ -305,12 +311,7 @@ function libraryToolbar(includeDuplicate = true) {
         <span class="sr-only">Platform</span>
         <select id="platform-filter">${platformOptions()}</select>
       </label>
-      ${includeDuplicate ? `<label><span class="sr-only">Duplicate status</span><select id="duplicate-filter">
-        <option value="all" ${state.duplicate === "all" ? "selected" : ""}>All statuses</option>
-        <option value="exact" ${state.duplicate === "exact" ? "selected" : ""}>Exact duplicates</option>
-        <option value="possible" ${state.duplicate === "possible" ? "selected" : ""}>Possible duplicates</option>
-        <option value="unique" ${state.duplicate === "unique" ? "selected" : ""}>Unique</option>
-      </select></label>` : ""}
+      ${includeDuplicate ? `<label><span class="sr-only">Duplicate status</span><select id="duplicate-filter">${duplicateOptions}</select></label>` : ""}
     </div>`;
 }
 
@@ -468,12 +469,102 @@ async function renderLibrary() {
 async function renderDuplicates() {
   setHeading("Duplicates", "Exact hashes first, filename matches for manual review.");
   if (state.duplicate === "all" || state.duplicate === "unique") state.duplicate = "exact";
-  const data = await getGames();
-  setViewHtml(`${libraryToolbar(true)}<div class="section-heading"><div><h2>${state.duplicate === "possible" ? "Possible duplicates" : "Exact duplicates"}</h2><p>${state.duplicate === "possible" ? "Names normalize to the same title within a platform. Compare before deleting." : "Bundle content hashes match exactly."}</p></div></div>${gamesTable(data)}<div id="bulk-bar-slot"></div>`);
-  renderBulkBar();
-  syncSelectAll();
+  const params = new URLSearchParams({
+    kind: state.duplicate,
+    search: state.search,
+    platform: state.platform,
+    limit: 30,
+    offset: state.offset,
+  });
+  const data = await api(`/api/duplicates?${params}`);
+  if (data.total > 0 && state.offset >= data.total) {
+    state.offset = Math.floor((data.total - 1) / 30) * 30;
+    return renderDuplicates();
+  }
+  const possible = state.duplicate === "possible";
+  const content = data.items.length
+    ? `<div class="duplicate-groups">${data.items.map((group, index) => duplicateGroupHtml(group, index)).join("")}</div>${duplicatePager(data)}`
+    : `<div class="empty-state duplicate-empty"><div><h2>No ${possible ? "possible" : "exact"} duplicate groups found</h2><p>${state.search || state.platform ? "Try a different title or platform." : possible ? "No same-platform filenames need manual comparison." : "Every indexed bundle has unique content."}</p></div></div>`;
+  setViewHtml(`${libraryToolbar(true)}<div class="section-heading duplicate-heading"><div><h2>${possible ? "Possible duplicate groups" : "Exact duplicate groups"}</h2><p>${possible ? "Names normalize to the same title. Inspect paths and sizes before choosing what to keep." : "Every section contains bundles with the same content hash. Choose one keeper before cleaning up the rest."}</p></div><span class="meta">${data.total.toLocaleString()} ${data.total === 1 ? "group" : "groups"}</span></div>${content}`);
   bindFilters(renderDuplicates);
-  bindGameEvents(data, false);
+  bindDuplicateGroups(data.items);
+}
+
+function duplicateGroupHtml(group, index) {
+  const keeper = state.duplicateKeepers.get(group.key);
+  const removeCount = group.items.length - 1;
+  const exact = group.kind === "exact";
+  const signature = exact ? `Hash ${group.key.slice(0, 10)}` : "Filename match";
+  const rows = group.items.map((game) => {
+    const checked = keeper === game.id;
+    const devices = game.devices.length ? escapeHtml(game.devices.join(", ")) : "None";
+    return `<tr class="${checked ? "keeper-row" : ""}" data-duplicate-row="${game.id}">
+      <td class="keeper-cell"><label class="keeper-choice"><input type="radio" name="keeper-${index}" value="${game.id}" data-duplicate-keeper="${index}" ${checked ? "checked" : ""}><span>Keep</span></label></td>
+      <td class="name-cell" title="${escapeHtml(game.primary_relpath)}"><strong>${escapeHtml(game.display_name)}</strong><span class="path-line">${escapeHtml(game.primary_relpath)}</span></td>
+      <td>${escapeHtml(game.platform)}</td>
+      <td class="meta">${formatBytes(game.size)}</td>
+      <td class="meta optional-column">${game.file_count} ${game.file_count === 1 ? "file" : "files"}</td>
+      <td class="meta optional-column" title="${devices}">${devices}</td>
+    </tr>`;
+  }).join("");
+  return `<section class="duplicate-group" data-duplicate-group="${index}">
+    <div class="duplicate-group-head">
+      <div><div class="duplicate-group-title"><strong>${group.copies} ${exact ? "identical" : "similarly named"} ${group.copies === 1 ? "copy" : "copies"}</strong><span class="badge ${exact ? "exact" : "possible"}">${signature}</span></div><p>${exact ? `${formatBytes(group.bytes)} across this set. Only one copy is needed.` : "Content differs. Confirm the correct edition, region, or revision before removing anything."}</p></div>
+      <button class="button danger-subtle small" data-clean-duplicate="${index}" ${keeper ? "" : "disabled"}>Trash ${removeCount} other ${removeCount === 1 ? "copy" : "copies"}</button>
+    </div>
+    <div class="duplicate-table-wrap"><table><thead><tr><th>Decision</th><th>Filename and path</th><th>Platform</th><th>Size</th><th class="optional-column">Bundle</th><th class="optional-column">Devices</th></tr></thead><tbody>${rows}</tbody></table></div>
+  </section>`;
+}
+
+function duplicatePager(data) {
+  const end = Math.min(data.offset + data.items.length, data.total);
+  return `<div class="pager"><span>Showing groups ${data.offset + 1}–${end} of ${data.total.toLocaleString()}</span><div class="bulk-actions"><button class="button secondary small" data-duplicate-page="previous" ${data.offset === 0 ? "disabled" : ""}>Previous</button><button class="button secondary small" data-duplicate-page="next" ${end >= data.total ? "disabled" : ""}>Next</button></div></div>`;
+}
+
+function bindDuplicateGroups(groups) {
+  view.querySelectorAll("[data-duplicate-keeper]").forEach((radio) => radio.addEventListener("change", () => {
+    const index = Number(radio.dataset.duplicateKeeper);
+    const group = groups[index];
+    state.duplicateKeepers.set(group.key, Number(radio.value));
+    const section = view.querySelector(`[data-duplicate-group="${index}"]`);
+    section.querySelectorAll("[data-duplicate-row]").forEach((row) => row.classList.toggle("keeper-row", Number(row.dataset.duplicateRow) === Number(radio.value)));
+    section.querySelector("[data-clean-duplicate]").disabled = false;
+  }));
+  view.querySelectorAll("[data-clean-duplicate]").forEach((button) => button.addEventListener("click", () => cleanDuplicateGroup(groups[Number(button.dataset.cleanDuplicate)])));
+  view.querySelectorAll("[data-duplicate-page]").forEach((button) => button.addEventListener("click", () => {
+    state.offset = Math.max(0, state.offset + (button.dataset.duplicatePage === "next" ? 30 : -30));
+    renderDuplicates();
+  }));
+}
+
+async function cleanDuplicateGroup(group) {
+  const keeperId = state.duplicateKeepers.get(group.key);
+  const keeper = group.items.find((game) => game.id === keeperId);
+  if (!keeper) return;
+  const removals = group.items.filter((game) => game.id !== keeperId);
+  const confirmed = await confirmAction({
+    title: `Keep “${keeper.display_name}” and trash ${removals.length} ${removals.length === 1 ? "copy" : "copies"}?`,
+    content: `<p class="warning-copy">Keeping <strong>${escapeHtml(keeper.primary_relpath)}</strong>. The following recoverable bundles will move to Trash, including their companion files and managed device copies.</p><ul class="confirm-list">${removals.map((game) => `<li>${escapeHtml(game.primary_relpath)} (${formatBytes(game.size)})</li>`).join("")}</ul>${group.kind === "possible" ? '<p class="issue-warning"><strong>Content is not identical.</strong> These files only have similar names.</p>' : ""}`,
+    confirmLabel: `Trash ${removals.length} ${removals.length === 1 ? "copy" : "copies"}`,
+    cancelLabel: "Review again",
+    danger: true,
+  });
+  if (!confirmed) return;
+  let completed = 0;
+  for (const game of removals) {
+    try {
+      await requestJob(`/api/games/${game.id}`, { method: "DELETE" }, `Moving duplicate ${completed + 1} of ${removals.length}`);
+      completed += 1;
+    } catch (error) {
+      toast(`Stopped after ${completed}: ${error.message}`, "error");
+      break;
+    }
+  }
+  state.duplicateKeepers.delete(group.key);
+  toast(`Kept ${keeper.display_name}; moved ${completed} ${completed === 1 ? "copy" : "copies"} to trash`);
+  await refreshStatus();
+  await loadReferenceData();
+  await renderDuplicates();
 }
 
 function bindGameEvents(data, deviceMode) {
