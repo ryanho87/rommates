@@ -8,8 +8,9 @@ The MVP supports:
 - Compact filtering by platform and duplicate status
 - SHA-256 exact duplicate detection
 - Normalized-filename possible duplicate review
-- Bundle-aware `.cue`/`.bin` and `.m3u` scanning
-- Safe bundle rename with `.cue` and `.m3u` reference rewriting
+- Bundle-aware `.cue`, `.gdi`, and `.m3u` descriptor scanning
+- Complete folder bundles for directory-based platforms such as PS3
+- Safe bundle rename with descriptor reference rewriting
 - Reviewable naming suggestions from XML DAT catalogs and conservative filename cleanup
 - Confidence filters, collision checks, editable proposals, and bulk bundle renaming
 - Recoverable deletion, restoration, and explicit permanent deletion
@@ -166,6 +167,12 @@ a devices root that reports no devices at all is treated as unavailable rather t
 Files that cannot be read — including symlinks, which are never indexed — are counted and
 named in the scan job detail instead of being dropped silently.
 
+Disc descriptors (`.cue`, `.gdi`, and `.m3u`) are indexed with their referenced tracks as
+one game. Platforms listed in `ROMMATES_FOLDER_BUNDLE_PLATFORMS` are indexed as one game
+per immediate child folder, including every nested file. `ps3` is enabled by default;
+cartridge collection folders remain file-based. The first scan after enabling folder
+bundles may require prune confirmation because old internal-file rows collapse into games.
+
 Running scans can be stopped from the header or Jobs screen. Cancellation is cooperative:
 ROMmates finishes the current filesystem checkpoint, preserves completed hash-cache batches,
 and does not commit a partially reconciled catalog. A later scan resumes from those cached
@@ -215,6 +222,7 @@ references, and carries hash-cache records to the new paths.
 | `ROMMATES_ALLOW_ANONYMOUS` | `false` | Disables the token check. Only for instances already behind an authenticated reverse proxy |
 | `ROMMATES_SCAN_PRUNE_LIMIT` | `0.5` | Largest share of the catalog one scan may delete without confirmation |
 | `ROMMATES_EXTENSIONS` | built-in list | Optional comma-separated extension override |
+| `ROMMATES_FOLDER_BUNDLE_PLATFORMS` | `ps3` | Comma-separated platforms where each immediate child directory is one game bundle |
 
 ## Local development
 

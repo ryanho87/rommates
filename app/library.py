@@ -5,6 +5,7 @@ import errno
 import json
 import os
 import re
+import shlex
 import shutil
 import threading
 from dataclasses import dataclass
@@ -20,6 +21,8 @@ COPY_SUFFIX = ".rommates-copy"
 LEGACY_COPY_SUFFIX = ".rommanager-copy"
 
 CUE_FILE_RE = re.compile(r'^\s*FILE\s+"([^"]+)"', re.IGNORECASE)
+GDI_FILE_RE = re.compile(r'^(\s*\d+\s+\d+\s+\d+\s+\d+\s+)(?:"([^"]+)"|(\S+))(\s+\d+.*)$')
+DESCRIPTOR_EXTENSIONS = frozenset({".cue", ".gdi", ".m3u"})
 TAG_RE = re.compile(r"\s*[\(\[].*?[\)\]]")
 NON_WORD_RE = re.compile(r"[^a-z0-9]+")
 PACK_NUMBER_RE = re.compile(r"^\s*(?:\[\d{1,4}\]|\d{1,4}[.)])\s*")
@@ -214,6 +217,16 @@ class LibraryService:
                 value = line.strip()
                 if value and not value.startswith("#"):
                     refs.append(descriptor.parent / value.replace("\\", "/"))
+        elif descriptor.suffix.lower() == ".gdi":
+            # GDI track rows are: track lba type sector-size filename offset.
+            # shlex handles both quoted filenames and the common unquoted form.
+            for line in lines[1:]:
+                try:
+                    fields = shlex.split(line, posix=True)
+                except ValueError:
+                    continue
+                if len(fields) >= 6:
+                    refs.append(descriptor.parent / fields[4].replace("\\", "/"))
         return refs
 
     def _bundle_paths(self, primary: Path, cancel_check: CancelCheck | None = None) -> tuple[Path, ...]:
@@ -232,7 +245,7 @@ class LibraryService:
                 return
             seen.add(resolved)
             found.append(resolved)
-            if resolved.suffix.lower() in {".cue", ".m3u"}:
+            if resolved.suffix.lower() in DESCRIPTOR_EXTENSIONS:
                 for ref in self._descriptor_refs(resolved):
                     visit(ref)
 
@@ -255,7 +268,7 @@ class LibraryService:
         for path in paths:
             relpath = _rel(root, path)
             sha256, stat = self._hash_file(path, relpath, cache, cache_updates, progress, cancel_check)
-            kind = "descriptor" if path.suffix.lower() in {".cue", ".m3u"} else "content"
+            kind = "descriptor" if path.suffix.lower() in DESCRIPTOR_EXTENSIONS else "content"
             records.append(FileRecord(relpath, stat.st_size, sha256, kind, stat.st_mtime_ns))
         if not records:
             raise LibraryError(f"No readable files found for {primary}")
@@ -264,14 +277,20 @@ class LibraryService:
         for record in sorted(hash_records, key=lambda item: (item.sha256, item.size)):
             aggregate.update(record.sha256.encode("ascii"))
             aggregate.update(str(record.size).encode("ascii"))
+        folder_extension = ""
+        display_name = primary.stem
+        if primary.is_dir():
+            expected_suffix = f".{platform.casefold()}"
+            folder_extension = primary.suffix.lower() if primary.suffix.lower() == expected_suffix else ""
+            display_name = primary.stem if folder_extension else primary.name
         return GameCandidate(
             platform=platform,
             primary_relpath=_rel(root, primary),
-            display_name=primary.stem,
-            extension=primary.suffix.lower(),
+            display_name=display_name,
+            extension=folder_extension if primary.is_dir() else primary.suffix.lower(),
             size=sum(record.size for record in records),
             bundle_hash=aggregate.hexdigest(),
-            normalized_name=normalize_name(primary.name),
+            normalized_name=normalize_name(display_name),
             mtime_ns=max(record.mtime_ns for record in records),
             files=tuple(records),
         )
@@ -321,15 +340,45 @@ class LibraryService:
                 if cancel_check:
                     cancel_check()
                 platform_paths.append(path)
+            claimed: set[Path] = set()
+            bundle_paths: dict[Path, tuple[Path, ...]] = {}
+            primaries: list[Path] = []
+
+            if platform_dir.name.casefold() in self.settings.folder_bundle_platforms:
+                for folder in sorted(
+                    (path for path in platform_dir.iterdir() if path.is_dir()),
+                    key=lambda path: path.name.casefold(),
+                ):
+                    files: list[Path] = []
+                    for path in sorted(folder.rglob("*"), key=lambda item: item.as_posix().casefold()):
+                        if cancel_check:
+                            cancel_check()
+                        if path.name.startswith("._") or path.name == ".DS_Store":
+                            continue
+                        if path.is_symlink():
+                            record_issue(path, "symbolic links are not indexed")
+                            continue
+                        if path.is_file():
+                            files.append(path)
+                    if files:
+                        primaries.append(folder)
+                        bundle_paths[folder] = tuple(files)
+                        claimed.update(path.resolve() for path in files)
+
             descriptors = sorted(
                 (
                     path for path in platform_paths
-                    if path.is_file() and path.suffix.lower() in {".m3u", ".cue"} and not path.name.startswith("._")
+                    if path.is_file()
+                    and path.resolve() not in claimed
+                    and path.suffix.lower() in DESCRIPTOR_EXTENSIONS
+                    and not path.name.startswith("._")
                 ),
-                key=lambda p: (0 if p.suffix.lower() == ".m3u" else 1, p.as_posix().lower()),
+                key=lambda p: (
+                    0 if p.suffix.lower() == ".m3u" else 1,
+                    p.as_posix().lower(),
+                ),
             )
             referenced: set[Path] = set()
-            primaries: list[Path] = []
             for descriptor in descriptors:
                 resolved = descriptor.resolve()
                 if resolved in referenced:
@@ -348,14 +397,20 @@ class LibraryService:
                 if path.is_symlink():
                     record_issue(path, "symbolic links are not indexed")
                     continue
-                if path.resolve() in referenced or path in primaries:
+                if path.resolve() in claimed or path.resolve() in referenced or path in primaries:
                     continue
                 primaries.append(path)
 
             for primary in primaries:
                 if cancel_check:
                     cancel_check()
-                work.append((primary, platform_dir.name, self._bundle_paths(primary, cancel_check)))
+                work.append(
+                    (
+                        primary,
+                        platform_dir.name,
+                        bundle_paths.get(primary) or self._bundle_paths(primary, cancel_check),
+                    )
+                )
 
         total_bytes = 0
         total_files = 0
@@ -567,6 +622,22 @@ class LibraryService:
                 ) from exc
             raise
 
+    @staticmethod
+    def _remove_empty_tree(root: Path) -> None:
+        """Remove only empty directories, deepest first, leaving unknown files alone."""
+        if not root.is_dir():
+            return
+        directories = sorted(
+            (path for path in root.rglob("*") if path.is_dir()),
+            key=lambda path: len(path.parts),
+            reverse=True,
+        )
+        for directory in [*directories, root]:
+            try:
+                directory.rmdir()
+            except OSError:
+                pass
+
     def game_bundle(self, game_id: int):
         with self.db.connect() as connection:
             game = connection.execute("SELECT * FROM games WHERE id=?", (game_id,)).fetchone()
@@ -597,6 +668,18 @@ class LibraryService:
                     if old_ref in mapping:
                         newline = "\r\n" if line.endswith("\r\n") else "\n" if line.endswith("\n") else ""
                         line = os.path.relpath(mapping[old_ref], new_path.parent).replace(os.sep, "/") + newline
+            elif old_path.suffix.lower() == ".gdi":
+                newline = "\r\n" if line.endswith("\r\n") else "\n" if line.endswith("\n") else ""
+                body = line[: -len(newline)] if newline else line
+                match = GDI_FILE_RE.match(body)
+                if match:
+                    value = match.group(2) or match.group(3)
+                    old_ref = (old_path.parent / value.replace("\\", "/")).resolve()
+                    if old_ref in mapping:
+                        new_ref = os.path.relpath(mapping[old_ref], new_path.parent).replace(os.sep, "/")
+                        if match.group(2) is not None or " " in new_ref:
+                            new_ref = f'"{new_ref}"'
+                        line = match.group(1) + new_ref + match.group(4) + newline
             output.append(line)
         return "".join(output)
 
@@ -608,31 +691,43 @@ class LibraryService:
         root = self.settings.library_root.resolve()
         primary = _inside(root, root / game["primary_relpath"])
         extension = primary.suffix
-        new_stem = Path(requested_name).stem if Path(requested_name).suffix.lower() == extension.lower() else requested_name
+        new_stem = (
+            Path(requested_name).stem
+            if extension and Path(requested_name).suffix.lower() == extension.lower()
+            else requested_name
+        )
         new_stem = new_stem.strip().rstrip(".")
         if not new_stem:
             raise LibraryError("Enter a valid filename")
-        old_stem = primary.stem
         paths = [_inside(root, root / item["relpath"]) for item in files]
         mapping: dict[Path, Path] = {}
-        for old in paths:
-            if old == primary:
-                target_name = new_stem + old.suffix
-            elif old.stem.startswith(old_stem):
-                target_name = new_stem + old.stem[len(old_stem) :] + old.suffix
-            else:
-                target_name = old.name
-            mapping[old] = _inside(root, old.with_name(target_name))
+        if primary.is_dir():
+            primary_target = _inside(root, primary.with_name(new_stem + extension))
+            if primary_target.exists() and primary_target != primary:
+                raise LibraryError(f"A folder named {primary_target.name} already exists")
+            for old in paths:
+                mapping[old] = _inside(root, primary_target / old.relative_to(primary))
+        else:
+            primary_target = primary.with_name(new_stem + extension)
+            old_stem = primary.stem
+            for old in paths:
+                if old == primary:
+                    target_name = new_stem + old.suffix
+                elif old.stem.startswith(old_stem):
+                    target_name = new_stem + old.stem[len(old_stem) :] + old.suffix
+                else:
+                    target_name = old.name
+                mapping[old] = _inside(root, old.with_name(target_name))
         targets = list(mapping.values())
         if len(set(targets)) != len(targets):
             raise LibraryError("The rename would give two bundle files the same name")
         for old, target in mapping.items():
             if target.exists() and target not in mapping:
                 raise LibraryError(f"A file named {target.name} already exists")
-        return game, files, root, primary, new_stem, paths, mapping
+        return game, files, root, primary, primary_target, new_stem, paths, mapping
 
     def preview_rename(self, game_id: int, requested_name: str) -> dict[str, object]:
-        game, _, root, _, new_stem, _, mapping = self._rename_plan(game_id, requested_name)
+        game, _, root, _, _, new_stem, _, mapping = self._rename_plan(game_id, requested_name)
         return {
             "game_id": game_id,
             "old_name": game["display_name"],
@@ -642,11 +737,11 @@ class LibraryService:
 
     def rename_bundle(self, game_id: int, requested_name: str, rescan: bool = True) -> dict[str, str]:
         with self._operation_lock:
-            game, files, root, primary, new_stem, paths, mapping = self._rename_plan(game_id, requested_name)
+            game, files, root, primary, primary_target, new_stem, paths, mapping = self._rename_plan(game_id, requested_name)
 
             descriptor_original: dict[Path, str] = {}
             for old in paths:
-                if old.suffix.lower() in {".cue", ".m3u"}:
+                if old.suffix.lower() in DESCRIPTOR_EXTENSIONS:
                     descriptor_original[old] = old.read_text(encoding="utf-8-sig", errors="replace")
 
             moved: list[tuple[Path, Path, Path]] = []
@@ -666,6 +761,8 @@ class LibraryService:
                     new_descriptor = mapping[old_descriptor]
                     updated = self._rewrite_descriptor(old_descriptor, new_descriptor, mapping, original)
                     new_descriptor.write_text(updated, encoding="utf-8")
+                if primary.is_dir() and primary != primary_target:
+                    self._remove_empty_tree(primary)
             except Exception:
                 for old, temp, target in reversed(moved):
                     current = target if target.exists() else temp
@@ -676,7 +773,7 @@ class LibraryService:
                         old_descriptor.write_text(original, encoding="utf-8")
                 raise
 
-            new_primary_relpath = _rel(root, mapping[primary])
+            new_primary_relpath = _rel(root, primary_target)
             with self.db.write() as connection:
                 connection.execute(
                     "UPDATE games SET primary_relpath=?,display_name=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
@@ -728,6 +825,7 @@ class LibraryService:
         with self._operation_lock:
             game, files = self.game_bundle(game_id)
             root = self.settings.library_root.resolve()
+            primary = _inside(root, root / game["primary_relpath"])
             stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
             batch_root = _inside(self.settings.trash_root, self.settings.trash_root / stamp)
             batch_root.mkdir(parents=True, exist_ok=False)
@@ -750,6 +848,8 @@ class LibraryService:
                     target = _inside(batch_root, batch_root / item["relpath"])
                     self._atomic_move(source, target)
                     moved.append((source, target))
+                if primary.is_dir():
+                    self._remove_empty_tree(primary)
                 for deployment in deployments:
                     source = _inside(
                         self.settings.devices_root,

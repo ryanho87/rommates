@@ -19,6 +19,7 @@ class ConfigurationCompatibilityTests(unittest.TestCase):
                 "ROMMATES_SAVES_ROOT": "/srv/webdav/RetroArch",
                 "ROMMATES_SNAPSHOTS_ROOT": "/srv/rommates-snapshots",
                 "ROMMATES_SAVE_SNAPSHOT_INTERVAL_MINUTES": "90",
+                "ROMMATES_FOLDER_BUNDLE_PLATFORMS": "ps3,wiiu",
             },
             clear=True,
         ):
@@ -28,6 +29,7 @@ class ConfigurationCompatibilityTests(unittest.TestCase):
         self.assertEqual(str(settings.saves_root), "/srv/webdav/RetroArch")
         self.assertEqual(str(settings.snapshots_root), "/srv/rommates-snapshots")
         self.assertEqual(settings.save_snapshot_interval_minutes, 90)
+        self.assertEqual(settings.folder_bundle_platforms, frozenset({"ps3", "wiiu"}))
 
     def test_legacy_rom_manager_environment_still_works(self):
         with patch.dict(

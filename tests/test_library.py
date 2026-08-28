@@ -62,6 +62,90 @@ class LibraryServiceTests(unittest.TestCase):
         self.assertEqual(game["extension"], ".cue")
         self.assertEqual({Path(item["relpath"]).suffix for item in files}, {".cue", ".bin"})
 
+    def test_scan_groups_gdi_tracks_as_one_bundle(self):
+        self.write("dreamcast/Alienfront Online (USA)/track01.bin", b"track-one")
+        self.write("dreamcast/Alienfront Online (USA)/track02.raw", b"track-two")
+        self.write("dreamcast/Alienfront Online (USA)/track03.bin", b"track-three")
+        self.write(
+            "dreamcast/Alienfront Online (USA)/Alienfront Online (USA).gdi",
+            "3\n"
+            "1 0 4 2352 track01.bin 0\n"
+            "2 45000 0 2352 track02.raw 0\n"
+            "3 45000 4 2352 track03.bin 0\n",
+        )
+
+        result = self.service.scan()
+
+        self.assertEqual(result["games"], 1)
+        game, files = self.service.game_bundle(self.game_id("Alienfront Online (USA)"))
+        self.assertEqual(game["extension"], ".gdi")
+        self.assertEqual(len(files), 4)
+        self.assertEqual(
+            {Path(item["relpath"]).name for item in files},
+            {"Alienfront Online (USA).gdi", "track01.bin", "track02.raw", "track03.bin"},
+        )
+
+    def test_ps3_directory_trees_are_complete_folder_bundles(self):
+        for release in ("BLES01756", "BLUS31059"):
+            base = f"ps3/Zone of the Enders HD Collection [{release}].ps3/PS3_GAME"
+            self.write(f"{base}/PARAM.SFO", b"same-metadata")
+            self.write(f"{base}/USRDIR/data/amabs.bin", b"same-content")
+
+        result = self.service.scan()
+
+        self.assertEqual(result["games"], 2)
+        with self.db.connect() as connection:
+            rows = connection.execute(
+                "SELECT display_name,primary_relpath,bundle_hash,normalized_name,size "
+                "FROM games ORDER BY display_name"
+            ).fetchall()
+        self.assertTrue(all(row["primary_relpath"].endswith(".ps3") for row in rows))
+        self.assertEqual(len({row["bundle_hash"] for row in rows}), 1)
+        self.assertEqual({row["normalized_name"] for row in rows}, {"zone of the enders hd collection"})
+        self.assertTrue(all(row["size"] == len(b"same-metadata") + len(b"same-content") for row in rows))
+        game, files = self.service.game_bundle(self.game_id("Zone of the Enders HD Collection [BLES01756]"))
+        self.assertEqual(game["extension"], ".ps3")
+        self.assertEqual(len(files), 2)
+
+    def test_cartridge_collection_folders_remain_individual_games(self):
+        self.write("gba/gba-top100/First Game.gba", b"first")
+        self.write("gba/gba-top100/Second Game.gba", b"second")
+
+        result = self.service.scan()
+
+        self.assertEqual(result["games"], 2)
+        with self.db.connect() as connection:
+            names = {row["display_name"] for row in connection.execute("SELECT display_name FROM games")}
+        self.assertEqual(names, {"First Game", "Second Game"})
+
+    def test_folder_bundle_rename_moves_the_complete_tree(self):
+        self.write("ps3/Old Folder.ps3/PS3_GAME/PARAM.SFO", b"metadata")
+        self.write("ps3/Old Folder.ps3/PS3_GAME/USRDIR/game.bin", b"content")
+        self.service.scan()
+
+        game_id = self.game_id("Old Folder")
+        self.service.rename_bundle(game_id, "New Folder")
+
+        self.assertFalse((self.roms / "ps3/Old Folder.ps3").exists())
+        self.assertTrue((self.roms / "ps3/New Folder.ps3/PS3_GAME/PARAM.SFO").is_file())
+        self.assertTrue((self.roms / "ps3/New Folder.ps3/PS3_GAME/USRDIR/game.bin").is_file())
+        with self.db.connect() as connection:
+            game = connection.execute("SELECT primary_relpath,display_name FROM games").fetchone()
+        self.assertEqual(game["primary_relpath"], "ps3/New Folder.ps3")
+        self.assertEqual(game["display_name"], "New Folder")
+
+    def test_folder_bundle_delete_and_restore_moves_the_complete_tree(self):
+        self.write("ps3/Restore Folder.ps3/PS3_GAME/PARAM.SFO", b"metadata")
+        self.write("ps3/Restore Folder.ps3/PS3_GAME/USRDIR/game.bin", b"content")
+        self.service.scan()
+
+        deleted = self.service.delete_bundle(self.game_id("Restore Folder"))
+        self.assertFalse((self.roms / "ps3/Restore Folder.ps3").exists())
+
+        self.service.restore_trash(deleted["trash_id"])
+        self.assertTrue((self.roms / "ps3/Restore Folder.ps3/PS3_GAME/PARAM.SFO").is_file())
+        self.assertTrue((self.roms / "ps3/Restore Folder.ps3/PS3_GAME/USRDIR/game.bin").is_file())
+
     def test_scan_reports_byte_and_file_progress(self):
         self.write("gba/One.gba", b"a" * (2 * 1024 * 1024))
         self.write("gba/Two.gba", b"two")

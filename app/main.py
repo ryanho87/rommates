@@ -662,6 +662,10 @@ def duplicate_groups(
         devices = [dict(row) for row in connection.execute(
             "SELECT id,name FROM devices ORDER BY name COLLATE NOCASE"
         )]
+        file_rows = connection.execute(
+            f"SELECT game_id,relpath FROM game_files WHERE game_id IN ({game_placeholders})",
+            game_ids,
+        ).fetchall()
     devices_by_game: dict[int, list[str]] = {game_id: [] for game_id in game_ids}
     for row in device_rows:
         devices_by_game[row["game_id"]].append(row["name"])
@@ -669,12 +673,15 @@ def duplicate_groups(
         device["name"]: library.device_inventory(device["id"])
         for device in devices
     }
+    files_by_game: dict[int, list[str]] = {game_id: [] for game_id in game_ids}
+    for row in file_rows:
+        files_by_game[row["game_id"]].append(row["relpath"])
     items_by_group: dict[str, list[dict[str, object]]] = {key: [] for key in keys}
     for item in items:
         selected_devices = devices_by_game[item["id"]]
         present_devices = [
             name for name, inventory in device_inventories.items()
-            if item["primary_relpath"] in inventory
+            if any(relpath in inventory for relpath in files_by_game[item["id"]])
         ]
         item["devices"] = selected_devices
         item["selected_devices"] = selected_devices

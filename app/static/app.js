@@ -621,10 +621,14 @@ function bindGameEvents(data, deviceMode) {
     const name = new FormData(form).get("name");
     try {
       const detail = await api(`/api/games/${id}`);
-      const bundleNames = detail.files.map((item) => item.relpath.split("/").pop()).join(", ");
+      const visibleBundleNames = detail.files.slice(0, 8).map((item) => item.relpath.split("/").pop());
+      const bundleNames = visibleBundleNames.join(", ");
+      const bundleOverflow = detail.files.length > visibleBundleNames.length
+        ? `, and ${detail.files.length - visibleBundleNames.length} more`
+        : "";
       const confirmed = await confirmAction({
         title: "Rename this bundle?",
-        content: `<p class="warning-copy">The primary file and prefix-matching companions will be renamed. References inside CUE and M3U files will be updated.</p><p><strong>${escapeHtml(bundleNames)}</strong></p>`,
+        content: `<p class="warning-copy">ROMmates will rename the complete file or folder bundle. References inside CUE, GDI, and M3U descriptors will be updated.</p><p><strong>${escapeHtml(bundleNames + bundleOverflow)}</strong></p>`,
         confirmLabel: "Rename bundle",
         cancelLabel: "Keep current name",
         danger: false,
@@ -1171,7 +1175,7 @@ async function renderNaming() {
   view.querySelector("[data-apply-naming]")?.addEventListener("click", async () => {
     const items = [...state.namingSelected.entries()].map(([game_id, item]) => ({ game_id, name: item.name }));
     const preview = items.slice(0, 12).map((item) => `<li>${escapeHtml(state.namingSelected.get(item.game_id).current)} → <strong>${escapeHtml(item.name)}</strong></li>`).join("");
-    const confirmed = await confirmAction({ title: `Apply ${items.length} naming ${items.length === 1 ? "suggestion" : "suggestions"}?`, content: `<p class="warning-copy">ROMmates will rename complete bundles and update CUE and M3U references. Existing device selections stay attached.</p><ul class="confirm-list">${preview}${items.length > 12 ? `<li>and ${items.length - 12} more</li>` : ""}</ul>`, confirmLabel: "Apply renames", cancelLabel: "Keep reviewing", danger: false });
+    const confirmed = await confirmAction({ title: `Apply ${items.length} naming ${items.length === 1 ? "suggestion" : "suggestions"}?`, content: `<p class="warning-copy">ROMmates will rename complete file or folder bundles and update CUE, GDI, and M3U references. Existing device selections stay attached.</p><ul class="confirm-list">${preview}${items.length > 12 ? `<li>and ${items.length - 12} more</li>` : ""}</ul>`, confirmLabel: "Apply renames", cancelLabel: "Keep reviewing", danger: false });
     if (!confirmed) return;
     try {
       const result = await requestJob("/api/naming/apply", { method: "POST", body: JSON.stringify({ items }) }, "Naming changes queued");

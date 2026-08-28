@@ -9,7 +9,7 @@ DEFAULT_EXTENSIONS = frozenset(
     {
         ".7z", ".a26", ".a52", ".a78", ".bin", ".chd", ".col", ".cue",
         ".d64", ".fds", ".gb", ".gba", ".gbc", ".gg", ".iso", ".lnx",
-        ".m3u", ".md", ".n64", ".nds", ".nes", ".ngc", ".pbp", ".pce",
+        ".gdi", ".m3u", ".md", ".n64", ".nds", ".nes", ".ngc", ".pbp", ".pce",
         ".rvz", ".sfc", ".sg", ".smc", ".sms", ".swc", ".v64", ".wad",
         ".wbfs", ".ws", ".wsc", ".z64", ".zip",
     }
@@ -56,6 +56,9 @@ class Settings:
     allow_anonymous: bool = False
     require_existing_roots: bool = False
     extensions: frozenset[str] = DEFAULT_EXTENSIONS
+    # These platforms store one game as a directory tree rather than one launch
+    # file. Each immediate child directory is indexed as a complete bundle.
+    folder_bundle_platforms: frozenset[str] = frozenset({"ps3"})
     # Largest share of the indexed catalog a single scan may prune without an
     # explicit confirmation. Guards against an unmounted library root cascading
     # into every device selection.
@@ -79,6 +82,12 @@ class Settings:
                 for value in extension_value.split(",")
                 if value.strip()
             )
+        folder_platform_value = os.getenv("ROMMATES_FOLDER_BUNDLE_PLATFORMS", "ps3")
+        folder_bundle_platforms = frozenset(
+            value.strip().casefold()
+            for value in folder_platform_value.split(",")
+            if value.strip()
+        )
         return cls(
             library_root=Path(_env("ROMMATES_LIBRARY_ROOT", "ROM_LIBRARY_ROOT", "/roms")),
             devices_root=Path(_env("ROMMATES_DEVICES_ROOT", "ROM_DEVICES_ROOT", "/devices")),
@@ -91,6 +100,7 @@ class Settings:
                 "ROMMATES_REQUIRE_EXISTING_ROOTS", "ROM_REQUIRE_EXISTING_ROOTS", False
             ),
             extensions=extensions,
+            folder_bundle_platforms=folder_bundle_platforms,
             scan_prune_limit=_float_env("ROMMATES_SCAN_PRUNE_LIMIT", "ROM_SCAN_PRUNE_LIMIT", 0.5),
             saves_root=Path(os.getenv("ROMMATES_SAVES_ROOT", "/saves")),
             snapshots_root=Path(os.getenv("ROMMATES_SNAPSHOTS_ROOT", "/snapshots")),
