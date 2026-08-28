@@ -143,6 +143,37 @@ unreadable file with its library-relative path and error reason. Scans created b
 this feature may expose only the first 50 paths retained by that older version; the
 report labels that limitation, and the next cached scan records the complete list.
 
+## ScreenScraper artwork
+
+ROMmates can match games with ScreenScraper and cache a cover, screenshot, and logo under
+`/data/media`. Artwork belongs to the logical game bundle, so multi-track discs and
+folder-based games receive one media set. Scrapes run as cancellable background jobs;
+single-file ROMs use CRC32, MD5, SHA-1, and size before falling back to an unambiguous
+exact-title match. Fingerprints and downloaded assets are reused by later jobs.
+
+ScreenScraper requires developer credentials issued for the application. Put these in
+the same `.env` file as `EMULATION_ROOT`, then recreate the container:
+
+```env
+ROMMATES_SCREENSCRAPER_DEV_ID=your-developer-id
+ROMMATES_SCREENSCRAPER_DEV_PASSWORD=your-developer-password
+ROMMATES_SCREENSCRAPER_SOFTNAME=ROMmates
+ROMMATES_SCREENSCRAPER_USER=your-optional-user-name
+ROMMATES_SCREENSCRAPER_PASSWORD=your-optional-user-password
+```
+
+ROMmates downloads ScreenScraper's current system list and maps common folder names such
+as `gba`, `gbc`, `megadrive`, and `ps3`. Add numeric overrides for custom folder names as
+a JSON object:
+
+```env
+ROMMATES_SCREENSCRAPER_SYSTEM_MAP={"my-gba-folder":12,"custom-system":123}
+```
+
+Select games in Library and choose **Find missing artwork**, or use the artwork tile on
+one game. Clicking an existing cover performs an explicit refresh. Ambiguous name matches
+and unmapped platforms are skipped and listed in the job report rather than guessed.
+
 On the first run, existing files in a device directory are considered unmanaged and will not be deleted. Select matching games in the UI to bring them under management.
 
 You can build the desired set in either direction:

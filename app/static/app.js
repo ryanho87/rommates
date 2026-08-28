@@ -34,6 +34,10 @@ const state = {
   saveSnapshotId: null,
   saveSnapshotOffset: 0,
   saveSnapshotSearch: "",
+  artworkUrls: [],
+  artworkId: null,
+  artworkDetail: null,
+  artworkObserver: null,
 };
 
 const view = document.querySelector("#view");
@@ -167,6 +171,7 @@ const JOB_LABELS = {
   purge: "Deleting permanently…",
   save_snapshot: "Snapshotting saves…",
   save_restore: "Restoring saves…",
+  artwork_scrape: "Scraping artwork…",
 };
 
 const JOB_POLL_INTERVAL = 700;
@@ -342,7 +347,7 @@ function gameRows(items, deviceMode = false) {
     const checked = deviceMode ? game.selected : state.selectedRows.has(game.id);
     const editor = state.editingId === game.id ? `
       <tr class="inline-editor">
-        <td colspan="8">
+        <td colspan="9">
           <form class="rename-grid" data-rename-form="${game.id}">
             <div class="field"><label>Current bundle name</label><div class="current-name">${escapeHtml(game.display_name)}${escapeHtml(game.extension)}</div></div>
             <span class="rename-arrow" aria-hidden="true">→</span>
@@ -353,7 +358,7 @@ function gameRows(items, deviceMode = false) {
       </tr>` : "";
     const assignment = !deviceMode && state.assigningId === game.id ? `
       <tr class="inline-editor">
-        <td colspan="8">
+        <td colspan="9">
           <div class="assignment-panel">
             <div class="assignment-head">
               <div><h3>Include “${escapeHtml(game.display_name)}” on devices</h3><p>Selections update immediately. Apply each device when you are ready to copy or remove files.</p></div>
@@ -363,9 +368,11 @@ function gameRows(items, deviceMode = false) {
           </div>
         </td>
       </tr>` : "";
+    const artwork = !deviceMode && state.artworkId === game.id ? artworkPanel(game) : "";
     return `
       <tr>
         <td class="checkbox-cell"><input type="checkbox" aria-label="Select ${escapeHtml(game.display_name)}" data-${deviceMode ? "device" : "row"}-select="${game.id}" ${checked ? "checked" : ""}></td>
+        <td class="artwork-cell">${artworkThumb(game, !deviceMode)}</td>
         <td class="name-cell" title="${escapeHtml(game.primary_relpath)}"><strong>${escapeHtml(game.display_name)}</strong><span class="path-line">${escapeHtml(game.primary_relpath)}</span></td>
         <td>${escapeHtml(game.platform)}</td>
         ${deviceMode ? "" : `<td>${duplicateLabel(game.duplicate_status)}</td>`}
@@ -376,7 +383,7 @@ function gameRows(items, deviceMode = false) {
           <button class="button secondary small" data-rename="${game.id}" ${deviceMode ? "disabled" : ""}>Rename</button>
           <button class="button danger-subtle small" data-delete="${game.id}" data-name="${escapeHtml(game.display_name)}" ${deviceMode ? "disabled" : ""}>Trash</button>
         </td>`}
-      </tr>${editor}${assignment}`;
+      </tr>${editor}${assignment}${artwork}`;
   }).join("");
 }
 
@@ -404,12 +411,64 @@ function gamesTable(data, deviceMode = false) {
       <table>
         <thead><tr>
           <th class="checkbox-cell"><input type="checkbox" aria-label="Select visible ROMs" data-select-all></th>
-          <th>Filename</th><th>Platform</th>${deviceMode ? "" : "<th>Duplicate status</th>"}<th>Size</th><th class="optional-column">Bundle</th><th class="optional-column">${deviceMode ? "Target state" : "Devices"}</th>${deviceMode ? "" : "<th>Actions</th>"}
+          <th class="artwork-cell">Art</th><th>Filename</th><th>Platform</th>${deviceMode ? "" : "<th>Duplicate status</th>"}<th>Size</th><th class="optional-column">Bundle</th><th class="optional-column">${deviceMode ? "Target state" : "Devices"}</th>${deviceMode ? "" : "<th>Actions</th>"}
         </tr></thead>
         <tbody>${gameRows(data.items, deviceMode)}</tbody>
       </table>
     </div>
     <div class="pager"><span>Showing ${data.offset + 1}–${end} of ${data.total.toLocaleString()}</span><div class="bulk-actions"><button class="button secondary small" data-page="previous" ${data.offset === 0 ? "disabled" : ""}>Previous</button><button class="button secondary small" data-page="next" ${end >= data.total ? "disabled" : ""}>Next</button></div></div>`;
+}
+
+function artworkThumb(game, interactive = true) {
+  const hasArtwork = Number(game.artwork_count) > 0;
+  const label = hasArtwork ? `View artwork for ${game.display_name}` : `Find artwork for ${game.display_name}`;
+  const content = game.cover_asset_id ? `<img data-artwork-src="${game.cover_asset_id}" alt="" loading="lazy"><span class="sr-only">${game.artwork_count} assets</span>` : `<span aria-hidden="true">${hasArtwork ? "●" : "＋"}</span>`;
+  return interactive
+    ? `<button class="artwork-button ${hasArtwork ? "has-artwork" : ""}" data-artwork-view="${game.id}" data-artwork-name="${escapeHtml(game.display_name)}" data-artwork-existing="${game.artwork_count || 0}" title="${escapeHtml(label)}" aria-label="${escapeHtml(label)}">${content}</button>`
+    : `<span class="artwork-button passive ${hasArtwork ? "has-artwork" : ""}" title="${escapeHtml(hasArtwork ? `${game.artwork_count} cached assets` : "No cached artwork")}">${content}</span>`;
+}
+
+function artworkPanel(game) {
+  const detail = state.artworkDetail;
+  if (!detail) return `<tr class="inline-editor"><td colspan="9"><div class="artwork-panel"><p class="meta">Loading artwork…</p></div></td></tr>`;
+  const metadata = detail.metadata;
+  const cards = detail.assets.length
+    ? detail.assets.map((asset) => `<figure class="asset-card"><img data-artwork-src="${asset.id}" alt="${escapeHtml(asset.kind)} for ${escapeHtml(game.display_name)}"><figcaption>${escapeHtml(asset.kind)} <span>${formatBytes(asset.size)}</span></figcaption></figure>`).join("")
+    : '<div class="artwork-empty"><strong>No artwork cached</strong><p>Match this game with ScreenScraper to add a cover, screenshot, and logo.</p></div>';
+  return `<tr class="inline-editor"><td colspan="9"><div class="artwork-panel">
+    <div class="assignment-head"><div><h3>${escapeHtml(metadata?.title || game.display_name)}</h3><p>${metadata ? `Matched by ${escapeHtml(metadata.match_method)} · ScreenScraper game ${escapeHtml(metadata.source_game_id)}` : "No ScreenScraper match yet"}</p></div><div class="bulk-actions"><button class="button secondary small" data-refresh-artwork="${game.id}" data-name="${escapeHtml(game.display_name)}">${detail.assets.length ? "Refresh artwork" : "Find artwork"}</button><button class="button secondary small" data-close-artwork>Close</button></div></div>
+    ${metadata?.description ? `<p class="artwork-description">${escapeHtml(metadata.description)}</p>` : ""}
+    <div class="asset-grid">${cards}</div>
+  </div></td></tr>`;
+}
+
+async function loadArtworkImages() {
+  state.artworkObserver?.disconnect();
+  state.artworkUrls.forEach((url) => URL.revokeObjectURL(url));
+  state.artworkUrls = [];
+  const token = storedAccessToken();
+  const load = async (image) => {
+    try {
+      const response = await fetch(`/api/artwork/assets/${image.dataset.artworkSrc}`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (!response.ok) return;
+      const url = URL.createObjectURL(await response.blob());
+      state.artworkUrls.push(url);
+      if (image.isConnected) image.src = url;
+    } catch { /* A missing thumbnail should not prevent the library from loading. */ }
+  };
+  if (!("IntersectionObserver" in window)) {
+    await Promise.all([...view.querySelectorAll("[data-artwork-src]")].map(load));
+    return;
+  }
+  state.artworkObserver = new IntersectionObserver((entries, observer) => {
+    entries.filter((entry) => entry.isIntersecting).forEach((entry) => {
+      observer.unobserve(entry.target);
+      load(entry.target);
+    });
+  }, { rootMargin: "240px 0px" });
+  view.querySelectorAll("[data-artwork-src]").forEach((image) => state.artworkObserver.observe(image));
 }
 
 function bulkBarHtml() {
@@ -424,7 +483,7 @@ function bulkBarHtml() {
   const hint = offScreen
     ? `<span class="meta"> · ${offScreen} not shown by the current filters</span>`
     : `<span class="meta"> for library cleanup</span>`;
-  return `<div class="bulk-bar"><div><strong>${count} selected</strong>${hint}</div><div class="bulk-actions"><button class="button secondary" data-clear-selection>Clear selection</button><button class="button danger" data-delete-selected>Move ${count} to trash</button></div></div>`;
+  return `<div class="bulk-bar"><div><strong>${count} selected</strong>${hint}</div><div class="bulk-actions"><button class="button secondary" data-clear-selection>Clear selection</button><button class="button secondary" data-scrape-selected>Find missing artwork</button><button class="button danger" data-delete-selected>Move ${count} to trash</button></div></div>`;
 }
 
 // Row selection is client-side state, so refresh just this strip instead of refetching
@@ -445,6 +504,7 @@ function bindBulkBarEvents() {
     renderBulkBar();
   });
   view.querySelector("[data-delete-selected]")?.addEventListener("click", deleteSelected);
+  view.querySelector("[data-scrape-selected]")?.addEventListener("click", scrapeSelectedArtwork);
 }
 
 function syncSelectAll() {
@@ -464,6 +524,7 @@ async function renderLibrary() {
   syncSelectAll();
   bindFilters(renderLibrary);
   bindGameEvents(data, false);
+  loadArtworkImages();
 }
 
 async function renderDuplicates() {
@@ -647,6 +708,38 @@ function bindGameEvents(data, deviceMode) {
     } catch (error) { toast(error.message, "error"); }
   }));
   view.querySelectorAll("[data-delete]").forEach((button) => button.addEventListener("click", () => deleteOne(Number(button.dataset.delete), button.dataset.name)));
+  view.querySelectorAll("[data-artwork-view]").forEach((button) => button.addEventListener("click", async () => {
+    const gameId = Number(button.dataset.artworkView);
+    if (Number(button.dataset.artworkExisting) === 0) {
+      await scrapeArtwork([gameId], button.dataset.artworkName, true);
+      return;
+    }
+    if (state.artworkId === gameId) {
+      state.artworkId = null;
+      state.artworkDetail = null;
+      await renderCurrentView();
+      return;
+    }
+    state.artworkId = gameId;
+    state.artworkDetail = null;
+    state.editingId = null;
+    state.assigningId = null;
+    await renderCurrentView();
+    try {
+      state.artworkDetail = await api(`/api/games/${gameId}/artwork`);
+      await renderCurrentView();
+    } catch (error) { toast(error.message, "error"); }
+  }));
+  view.querySelector("[data-close-artwork]")?.addEventListener("click", () => {
+    state.artworkId = null;
+    state.artworkDetail = null;
+    renderCurrentView();
+  });
+  view.querySelector("[data-refresh-artwork]")?.addEventListener("click", (event) => scrapeArtwork(
+    [Number(event.currentTarget.dataset.refreshArtwork)],
+    event.currentTarget.dataset.name,
+    !state.artworkDetail?.assets?.length,
+  ));
   view.querySelectorAll("[data-assign-devices]").forEach((button) => button.addEventListener("click", async () => {
     const gameId = Number(button.dataset.assignDevices);
     if (state.assigningId === gameId) {
@@ -693,6 +786,41 @@ function bindGameEvents(data, deviceMode) {
     state.offset = Math.max(0, state.offset + (button.dataset.page === "next" ? state.limit : -state.limit));
     renderCurrentView();
   }));
+}
+
+async function scrapeArtwork(gameIds, label, missingOnly = true) {
+  try {
+    if (!state.status?.screenscraper?.configured) {
+      throw new Error("Add ScreenScraper developer credentials to Compose before scraping artwork.");
+    }
+    if (!missingOnly) {
+      const confirmed = await confirmAction({
+        title: `Refresh artwork for “${label}”?`,
+        content: "<p>This replaces locally cached ScreenScraper artwork for this game with the current preferred cover, screenshot, and logo.</p>",
+        confirmLabel: "Refresh artwork",
+        cancelLabel: "Keep current artwork",
+        danger: false,
+      });
+      if (!confirmed) return;
+    }
+    const result = await requestJob(
+      "/api/artwork/scrape",
+      { method: "POST", body: JSON.stringify({ game_ids: gameIds, missing_only: missingOnly }) },
+      `Artwork job queued for ${gameIds.length} ${gameIds.length === 1 ? "game" : "games"}`,
+    );
+    toast(`Downloaded ${result.downloaded || 0} assets for ${result.matched || 0} matched games`);
+    if (gameIds.length === 1 && state.artworkId === gameIds[0]) {
+      state.artworkDetail = await api(`/api/games/${gameIds[0]}/artwork`);
+    }
+    await refreshStatus();
+    await renderCurrentView();
+  } catch (error) { toast(error.message, "error"); }
+}
+
+async function scrapeSelectedArtwork() {
+  const gameIds = [...state.selectedRows.keys()];
+  if (!gameIds.length) return;
+  await scrapeArtwork(gameIds, `${gameIds.length} selected games`, true);
 }
 
 async function deleteOne(id, name) {
@@ -830,6 +958,7 @@ async function renderDevices() {
     } catch (error) { toast(error.message, "error"); }
   });
   bindGameEvents(data, true);
+  loadArtworkImages();
 }
 
 async function renderTrash() {

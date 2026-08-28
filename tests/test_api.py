@@ -69,6 +69,22 @@ class ApiIntegrationTests(unittest.TestCase):
         self.assertIn("frame-ancestors 'none'", unauthorized.headers["content-security-policy"])
         self.assertEqual(self.client.get("/api/health").status_code, 200)
 
+    def test_artwork_api_reports_missing_credentials_without_exposing_secrets(self):
+        status = self.client.get("/api/artwork/status", headers=self.headers)
+        self.assertEqual(status.status_code, 200)
+        self.assertFalse(status.json()["configured"])
+        games = self.client.get("/api/games", headers=self.headers).json()["items"]
+        if games:
+            self.assertIn("cover_asset_id", games[0])
+            self.assertIn("artwork_count", games[0])
+            response = self.client.post(
+                "/api/artwork/scrape",
+                headers=self.headers,
+                json={"game_ids": [games[0]["id"]], "missing_only": True},
+            )
+            self.assertEqual(response.status_code, 400)
+            self.assertNotIn("password", response.text.casefold())
+
     def test_cross_site_mutation_is_rejected(self):
         response = self.client.post(
             "/api/scan",

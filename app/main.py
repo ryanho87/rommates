@@ -17,10 +17,11 @@ from .db import Database
 from .library import JobCancelled, LibraryError, LibraryService
 from .naming import NamingService
 from .saves import SaveSnapshotService
+from .screenscraper import ScreenScraperService
 
 
 MINIMUM_TOKEN_LENGTH = 16
-CANCELLABLE_JOB_KINDS = frozenset({"scan", "device_apply", "save_snapshot", "save_restore"})
+CANCELLABLE_JOB_KINDS = frozenset({"scan", "device_apply", "save_snapshot", "save_restore", "artwork_scrape"})
 
 settings = Settings.from_env()
 
@@ -53,6 +54,7 @@ db = Database(settings.database_path)
 library = LibraryService(settings, db)
 naming = NamingService(db, settings.library_root, library)
 saves = SaveSnapshotService(settings, db)
+screenscraper = ScreenScraperService(settings, db)
 job_cancellations: dict[int, threading.Event] = {}
 job_cancellations_lock = threading.Lock()
 
@@ -108,6 +110,11 @@ def job_result_detail(kind: str, result: object, fallback: str) -> str:
         return (
             f"Restored save snapshot #{result.get('snapshot_id')}: {result.get('files', 0)} files; "
             f"safety snapshot #{result.get('safety_snapshot_id')}"
+        )
+    if kind == "artwork_scrape":
+        return (
+            f"Matched {result.get('matched', 0)} games and downloaded "
+            f"{result.get('downloaded', 0)} visual assets; skipped {result.get('skipped', 0)}"
         )
     if kind == "restore":
         return f"Restored {result.get('restored', 'trash item')}"
@@ -169,12 +176,14 @@ def run_job(
             )
         elif kind == "device_apply":
             result = operation(*args, cancel_check=check_cancelled)
-        elif kind in {"save_snapshot", "save_restore"}:
+        elif kind in {"save_snapshot", "save_restore", "artwork_scrape"}:
             result = operation(
                 *args, progress_callback=report_progress, cancel_check=check_cancelled
             )
         else:
             result = operation(*args)
+        if kind == "artwork_scrape" and isinstance(result, dict):
+            job_issues.extend(str(issue) for issue in result.get("issues", []))
         # Cooperative operations check cancellation before their final commit. A
         # stop request arriving after the operation returns must not relabel a
         # successfully committed filesystem change as cancelled.
@@ -340,6 +349,11 @@ class SavePinRequest(BaseModel):
     pinned: bool
 
 
+class ArtworkScrapeRequest(BaseModel):
+    game_ids: list[int] = Field(min_length=1, max_length=500)
+    missing_only: bool = True
+
+
 @app.middleware("http")
 async def protect_private_api(request: Request, call_next):
     if request.url.path.startswith("/api/") and request.url.path != "/api/health":
@@ -361,7 +375,8 @@ async def protect_private_api(request: Request, call_next):
 async def add_security_headers(request: Request, call_next):
     response = await call_next(request)
     response.headers["Content-Security-Policy"] = (
-        "default-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; object-src 'none'"
+        "default-src 'self'; img-src 'self' blob: data:; base-uri 'none'; form-action 'self'; "
+        "frame-ancestors 'none'; object-src 'none'"
     )
     response.headers["Referrer-Policy"] = "no-referrer"
     response.headers["X-Content-Type-Options"] = "nosniff"
@@ -416,7 +431,9 @@ def status():
             "trash": str(settings.trash_root),
             "saves": str(settings.saves_root),
             "snapshots": str(settings.snapshots_root),
+            "media": str(settings.media_root),
         },
+        "screenscraper": screenscraper.status(),
     }
 
 
@@ -517,6 +534,8 @@ def games(
             f"SELECT g.*,({status_expr}) AS duplicate_status,"
             f"(SELECT COUNT(*) FROM game_files gf WHERE gf.game_id=g.id) AS file_count,"
             f"(SELECT COUNT(*) FROM device_selections ds WHERE ds.game_id=g.id) AS device_count,"
+            f"(SELECT id FROM game_assets ga WHERE ga.game_id=g.id AND ga.kind='cover' LIMIT 1) AS cover_asset_id,"
+            f"(SELECT COUNT(*) FROM game_assets ga WHERE ga.game_id=g.id) AS artwork_count,"
             f"({selected_expr}) AS selected,({present_expr}) AS on_device,"
             f"({managed_expr}) AS managed,({synced_expr}) AS synced FROM games g WHERE {where_sql} "
             "ORDER BY g.display_name COLLATE NOCASE,g.platform LIMIT ? OFFSET ?",
@@ -726,7 +745,50 @@ def game_detail(game_id: int):
             "SELECT d.id,d.name,EXISTS(SELECT 1 FROM device_selections ds WHERE ds.device_id=d.id AND ds.game_id=?) AS selected "
             "FROM devices d ORDER BY d.name", (game_id,)
         )]
-    return {"game": game, "files": files, "devices": devices}
+    return {"game": game, "files": files, "devices": devices, "artwork": screenscraper.detail(game_id)}
+
+
+@app.get("/api/artwork/status")
+def artwork_status():
+    return screenscraper.status()
+
+
+@app.get("/api/games/{game_id}/artwork")
+def game_artwork(game_id: int):
+    with db.connect() as connection:
+        if not connection.execute("SELECT 1 FROM games WHERE id=?", (game_id,)).fetchone():
+            raise HTTPException(status_code=404, detail="Game was not found")
+    return screenscraper.detail(game_id)
+
+
+@app.get("/api/artwork/assets/{asset_id}")
+def artwork_asset(asset_id: int):
+    path, content_type = screenscraper.asset_path(asset_id)
+    return FileResponse(path, media_type=content_type, headers={"Cache-Control": "private, max-age=86400"})
+
+
+@app.post("/api/artwork/scrape", status_code=202)
+def scrape_artwork(payload: ArtworkScrapeRequest):
+    if not screenscraper.configured:
+        raise HTTPException(
+            status_code=400,
+            detail="ScreenScraper developer credentials are not configured",
+        )
+    with db.connect() as connection:
+        active = connection.execute(
+            "SELECT id FROM jobs WHERE kind='artwork_scrape' AND status IN ('queued','running','cancelling') "
+            "ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    if active:
+        return {"job_id": active["id"], "already_running": True}
+    job_id = enqueue_job(
+        "artwork_scrape",
+        f"Scraping artwork for {len(payload.game_ids)} games",
+        screenscraper.scrape,
+        payload.game_ids,
+        payload.missing_only,
+    )
+    return {"job_id": job_id, "already_running": False}
 
 
 @app.patch("/api/games/{game_id}/rename", status_code=202)

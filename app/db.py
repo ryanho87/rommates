@@ -48,6 +48,46 @@ CREATE TABLE IF NOT EXISTS file_cache (
     sha256 TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS game_fingerprints (
+    game_id INTEGER PRIMARY KEY REFERENCES games(id) ON DELETE CASCADE,
+    bundle_hash TEXT NOT NULL,
+    crc32 TEXT NOT NULL,
+    md5 TEXT NOT NULL,
+    sha1 TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS game_metadata (
+    game_id INTEGER PRIMARY KEY REFERENCES games(id) ON DELETE CASCADE,
+    source TEXT NOT NULL,
+    source_game_id TEXT NOT NULL,
+    source_system_id INTEGER NOT NULL,
+    match_method TEXT NOT NULL,
+    title TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    release_date TEXT NOT NULL DEFAULT '',
+    developer TEXT NOT NULL DEFAULT '',
+    publisher TEXT NOT NULL DEFAULT '',
+    players TEXT NOT NULL DEFAULT '',
+    raw_json TEXT NOT NULL DEFAULT '{}',
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS game_assets (
+    id INTEGER PRIMARY KEY,
+    game_id INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+    source TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    media_type TEXT NOT NULL,
+    local_relpath TEXT NOT NULL,
+    content_type TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    sha256 TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(game_id, kind)
+);
+CREATE INDEX IF NOT EXISTS idx_game_assets_game ON game_assets(game_id);
+
 CREATE TABLE IF NOT EXISTS naming_catalogs (
     id INTEGER PRIMARY KEY,
     name TEXT NOT NULL,
@@ -205,6 +245,7 @@ class Database:
             if "last_attempt_at" not in save_setting_columns:
                 connection.execute("ALTER TABLE save_settings ADD COLUMN last_attempt_at TEXT")
             connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(5)")
+            connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(6)")
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:

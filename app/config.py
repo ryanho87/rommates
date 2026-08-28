@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -71,6 +72,13 @@ class Settings:
     save_retention_daily: int = 30
     save_retention_weekly: int = 12
     save_retention_monthly: int = 12
+    media_root: Path = Path("/data/media")
+    screenscraper_dev_id: str = ""
+    screenscraper_dev_password: str = ""
+    screenscraper_softname: str = "ROMmates"
+    screenscraper_user: str = ""
+    screenscraper_password: str = ""
+    screenscraper_system_map: dict[str, int] | None = None
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -88,6 +96,19 @@ class Settings:
             for value in folder_platform_value.split(",")
             if value.strip()
         )
+        system_map: dict[str, int] = {}
+        raw_system_map = os.getenv("ROMMATES_SCREENSCRAPER_SYSTEM_MAP", "").strip()
+        if raw_system_map:
+            try:
+                parsed = json.loads(raw_system_map)
+                if isinstance(parsed, dict):
+                    system_map = {
+                        str(key).strip().casefold(): int(value)
+                        for key, value in parsed.items()
+                        if str(key).strip()
+                    }
+            except (ValueError, TypeError, json.JSONDecodeError):
+                system_map = {}
         return cls(
             library_root=Path(_env("ROMMATES_LIBRARY_ROOT", "ROM_LIBRARY_ROOT", "/roms")),
             devices_root=Path(_env("ROMMATES_DEVICES_ROOT", "ROM_DEVICES_ROOT", "/devices")),
@@ -114,4 +135,17 @@ class Settings:
             save_retention_daily=_int_env("ROMMATES_SAVE_RETENTION_DAILY", 30, 0, 3650),
             save_retention_weekly=_int_env("ROMMATES_SAVE_RETENTION_WEEKLY", 12, 0, 520),
             save_retention_monthly=_int_env("ROMMATES_SAVE_RETENTION_MONTHLY", 12, 0, 240),
+            media_root=Path(os.getenv("ROMMATES_MEDIA_ROOT", "/data/media")),
+            screenscraper_dev_id=os.getenv("ROMMATES_SCREENSCRAPER_DEV_ID", "").strip(),
+            screenscraper_dev_password=os.getenv(
+                "ROMMATES_SCREENSCRAPER_DEV_PASSWORD", ""
+            ).strip(),
+            screenscraper_softname=os.getenv(
+                "ROMMATES_SCREENSCRAPER_SOFTNAME", "ROMmates"
+            ).strip() or "ROMmates",
+            screenscraper_user=os.getenv("ROMMATES_SCREENSCRAPER_USER", "").strip(),
+            screenscraper_password=os.getenv(
+                "ROMMATES_SCREENSCRAPER_PASSWORD", ""
+            ).strip(),
+            screenscraper_system_map=system_map,
         )
