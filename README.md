@@ -2,6 +2,24 @@
 
 ROMmates is a private, self-hosted web interface for cleaning a canonical ROM library and giving each handheld its own game roster. It deploys selected games into per-device ES-DE folders, while Syncthing continues to handle transport to each device.
 
+## Screenshots
+
+### Collection overview
+
+![ROMmates collection overview showing platform totals, cleanup alerts, and device sync status](docs/screenshots/overview.jpg)
+
+### Library and device assignment
+
+![ROMmates library with duplicate status, bundle details, and inline device assignment](docs/screenshots/library-device-assignment.jpg)
+
+### Grouped duplicate review
+
+![ROMmates exact duplicate group with keeper selection and save impact](docs/screenshots/duplicate-review.jpg)
+
+### Device reconciliation
+
+![ROMmates device page showing a pending multi-file game deployment](docs/screenshots/device-sync.jpg)
+
 The MVP supports:
 
 - At-a-glance collection dashboard with cleanup, device, save, artwork, and job health
