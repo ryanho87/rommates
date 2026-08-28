@@ -59,7 +59,7 @@ class Settings:
     extensions: frozenset[str] = DEFAULT_EXTENSIONS
     # These platforms store one game as a directory tree rather than one launch
     # file. Each immediate child directory is indexed as a complete bundle.
-    folder_bundle_platforms: frozenset[str] = frozenset({"ps3"})
+    folder_bundle_platforms: frozenset[str] = frozenset({"ps3", "wiiu"})
     # Largest share of the indexed catalog a single scan may prune without an
     # explicit confirmation. Guards against an unmounted library root cascading
     # into every device selection.
@@ -91,7 +91,7 @@ class Settings:
                 for value in extension_value.split(",")
                 if value.strip()
             )
-        folder_platform_value = os.getenv("ROMMATES_FOLDER_BUNDLE_PLATFORMS", "ps3")
+        folder_platform_value = os.getenv("ROMMATES_FOLDER_BUNDLE_PLATFORMS", "ps3,wiiu")
         folder_bundle_platforms = frozenset(
             value.strip().casefold()
             for value in folder_platform_value.split(",")

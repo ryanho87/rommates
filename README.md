@@ -252,10 +252,13 @@ Files that cannot be read — including symlinks, which are never indexed — ar
 named in the scan job detail instead of being dropped silently.
 
 Disc descriptors (`.cue`, `.gdi`, and `.m3u`) are indexed with their referenced tracks as
-one game. Platforms listed in `ROMMATES_FOLDER_BUNDLE_PLATFORMS` are indexed as one game
-per immediate child folder, including every nested file. `ps3` is enabled by default;
-cartridge collection folders remain file-based. The first scan after enabling folder
-bundles may require prune confirmation because old internal-file rows collapse into games.
+one game. Dreamcast and PSX game folders claim every nested disc component, preventing
+shared tracks or incomplete descriptor rows from becoming standalone games. Platforms
+listed in `ROMMATES_FOLDER_BUNDLE_PLATFORMS` are indexed as one game per immediate child
+folder, including every nested file; `ps3` and `wiiu` are enabled by default. Cartridge
+collection folders remain file-based. A corrective scan automatically merges legacy
+component rows into their logical bundle while preserving device selections and managed
+deployment history.
 
 Running scans can be stopped from the header or Jobs screen. Cancellation is cooperative:
 ROMmates finishes the current filesystem checkpoint, preserves completed hash-cache batches,
@@ -321,7 +324,7 @@ Duplicate and ROM trash confirmations list matching save filenames that would be
 | `ROMMATES_ALLOW_ANONYMOUS` | `false` | Disables the token check. Only for instances already behind an authenticated reverse proxy |
 | `ROMMATES_SCAN_PRUNE_LIMIT` | `0.5` | Largest share of the catalog one scan may delete without confirmation |
 | `ROMMATES_EXTENSIONS` | built-in list | Optional comma-separated extension override |
-| `ROMMATES_FOLDER_BUNDLE_PLATFORMS` | `ps3` | Comma-separated platforms where each immediate child directory is one game bundle |
+| `ROMMATES_FOLDER_BUNDLE_PLATFORMS` | `ps3,wiiu` | Comma-separated platforms where each immediate child directory is one game bundle |
 | `ROMMATES_RAWG_API_KEY` / `RAWG_API_KEY` | empty | Optional RAWG key for cached per-platform Top 100 Metacritic coverage; the prefixed name takes precedence |
 
 ## Local development

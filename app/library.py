@@ -24,9 +24,13 @@ COPY_SUFFIX = ".rommates-copy"
 LEGACY_COPY_SUFFIX = ".rommanager-copy"
 DEVICE_INVENTORY_CACHE_SECONDS = 5.0
 
-CUE_FILE_RE = re.compile(r'^\s*FILE\s+"([^"]+)"', re.IGNORECASE)
+CUE_FILE_RE = re.compile(
+    r'^\s*FILE\s+(?:"([^"]+)"|(.+?))\s+(?:BINARY|MOTOROLA|WAVE|AIFF|MP3)\s*$',
+    re.IGNORECASE,
+)
 GDI_FILE_RE = re.compile(r'^(\s*\d+\s+\d+\s+\d+\s+\d+\s+)(?:"([^"]+)"|(\S+))(\s+\d+.*)$')
 DESCRIPTOR_EXTENSIONS = frozenset({".cue", ".gdi", ".m3u"})
+DISC_FOLDER_PLATFORMS = frozenset({"dreamcast", "psx"})
 TAG_RE = re.compile(r"\s*[\(\[].*?[\)\]]")
 NON_WORD_RE = re.compile(r"[^a-z0-9]+")
 PACK_NUMBER_RE = re.compile(r"^\s*(?:\[\d{1,4}\]|\d{1,4}[.)])\s*")
@@ -216,7 +220,9 @@ class LibraryService:
             for line in lines:
                 match = CUE_FILE_RE.match(line)
                 if match:
-                    refs.append(descriptor.parent / match.group(1).replace("\\", "/"))
+                    filename = (match.group(1) or match.group(2) or "").strip()
+                    if filename:
+                        refs.append(descriptor.parent / filename.replace("\\", "/"))
         elif descriptor.suffix.lower() == ".m3u":
             for line in lines:
                 value = line.strip()
@@ -393,6 +399,32 @@ class LibraryService:
                     continue
                 primaries.append(descriptor)
                 bundle = self._bundle_paths(descriptor, cancel_check)
+                relative = descriptor.relative_to(platform_dir)
+                if (
+                    platform_dir.name.casefold() in DISC_FOLDER_PLATFORMS
+                    and len(relative.parts) > 1
+                ):
+                    # Optical-disc dumps commonly keep one game beneath one folder.
+                    # Claim the complete folder so malformed/missing descriptor rows,
+                    # repeated audio tracks, and multi-disc subfolders never become
+                    # standalone games or cross-title duplicate groups.
+                    game_folder = platform_dir / relative.parts[0]
+                    folder_files: list[Path] = []
+                    for path in sorted(
+                        game_folder.rglob("*"), key=lambda item: item.as_posix().casefold()
+                    ):
+                        if cancel_check:
+                            cancel_check()
+                        if path.name.startswith("._") or path.name == ".DS_Store":
+                            continue
+                        if path.is_symlink():
+                            record_issue(path, "symbolic links are not indexed")
+                            continue
+                        if path.is_file():
+                            folder_files.append(path.resolve())
+                    if folder_files:
+                        bundle = tuple(dict.fromkeys([*bundle, *folder_files]))
+                bundle_paths[descriptor] = bundle
                 referenced.update(path for path in bundle if path != resolved)
 
             for path in sorted(platform_paths, key=lambda p: p.as_posix().lower()):
@@ -523,8 +555,21 @@ class LibraryService:
             if cancel_check:
                 cancel_check()
             seen = {candidate.primary_relpath for candidate in candidates}
+            component_owners = {
+                item.relpath: candidate.primary_relpath
+                for candidate in candidates
+                for item in candidate.files
+                if item.relpath != candidate.primary_relpath
+            }
+            covered_relpaths = set(component_owners)
             # Check before writing anything: the guard aborts the whole scan.
-            self._guard_prune(known_relpaths, seen, skipped, force_prune)
+            self._guard_prune(
+                known_relpaths,
+                seen,
+                skipped,
+                force_prune,
+                covered_relpaths,
+            )
             if progress_callback:
                 progress_callback(92, f"Updating catalog with {len(candidates):,} games")
             with self.db.write() as connection:
@@ -564,6 +609,40 @@ class LibraryService:
                             for item in candidate.files
                         ),
                     )
+                reconciled_components = 0
+                if component_owners:
+                    connection.execute(
+                        "CREATE TEMP TABLE IF NOT EXISTS bundle_ownership("
+                        "component_relpath TEXT PRIMARY KEY,owner_relpath TEXT NOT NULL)"
+                    )
+                    connection.execute("DELETE FROM bundle_ownership")
+                    connection.executemany(
+                        "INSERT OR REPLACE INTO bundle_ownership(component_relpath,owner_relpath) "
+                        "VALUES(?,?)",
+                        component_owners.items(),
+                    )
+                    reconciled_components = connection.execute(
+                        "SELECT COUNT(*) AS count FROM games old "
+                        "JOIN bundle_ownership bo ON bo.component_relpath=old.primary_relpath "
+                        "WHERE old.primary_relpath<>bo.owner_relpath"
+                    ).fetchone()["count"]
+                    # Preserve device intent and managed-copy history when upgrading
+                    # a catalog that previously treated bundle components as games.
+                    connection.execute(
+                        "INSERT OR IGNORE INTO device_selections(device_id,game_id) "
+                        "SELECT ds.device_id,owner.id FROM device_selections ds "
+                        "JOIN games old ON old.id=ds.game_id "
+                        "JOIN bundle_ownership bo ON bo.component_relpath=old.primary_relpath "
+                        "JOIN games owner ON owner.primary_relpath=bo.owner_relpath"
+                    )
+                    connection.execute(
+                        "INSERT OR IGNORE INTO deployments(device_id,game_id,relpath) "
+                        "SELECT dp.device_id,owner.id,dp.relpath FROM deployments dp "
+                        "JOIN games old ON old.id=dp.game_id "
+                        "JOIN bundle_ownership bo ON bo.component_relpath=old.primary_relpath "
+                        "JOIN games owner ON owner.primary_relpath=bo.owner_relpath"
+                    )
+                    connection.execute("DROP TABLE bundle_ownership")
                 if seen:
                     connection.execute("CREATE TEMP TABLE IF NOT EXISTS scan_seen(relpath TEXT PRIMARY KEY)")
                     connection.execute("DELETE FROM scan_seen")
@@ -581,6 +660,8 @@ class LibraryService:
             if progress_callback:
                 progress_callback(99, "Finalizing scan")
             detail = f"Indexed {len(candidates)} games"
+            if reconciled_components:
+                detail += f", merged {reconciled_components} legacy bundle components"
             if skipped:
                 detail += f", skipped {len(skipped)} unreadable files"
             if removed_devices:
@@ -602,6 +683,7 @@ class LibraryService:
         seen: set[str],
         skipped: list[str],
         force_prune: bool,
+        covered_relpaths: set[str] | None = None,
     ) -> None:
         """Refuse to reconcile when a scan would delete an implausible share of the catalog.
 
@@ -612,7 +694,10 @@ class LibraryService:
         """
         if force_prune or not known_relpaths:
             return
-        missing = known_relpaths - seen
+        # Old scanner versions indexed individual BIN/RAW/PS3 component files as
+        # games. They are not missing when a new logical bundle now owns the same
+        # path, so allow that catalog repair without a destructive-prune warning.
+        missing = known_relpaths - seen - (covered_relpaths or set())
         if not missing:
             return
         share = len(missing) / len(known_relpaths)

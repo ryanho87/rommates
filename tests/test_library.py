@@ -113,6 +113,68 @@ class LibraryServiceTests(unittest.TestCase):
             _, files = self.service.game_bundle(game["id"])
             self.assertEqual(len(files), 4)
 
+    def test_optical_disc_folders_claim_unreferenced_component_files(self):
+        self.write("dreamcast/Rez (USA)/track01.bin", b"unique-dreamcast-data")
+        self.write("dreamcast/Rez (USA)/track02.raw", b"shared-audio")
+        self.write(
+            "dreamcast/Rez (USA)/Rez (USA).gdi",
+            "1\n1 0 4 2352 track01.bin 0\n",
+        )
+        self.write("psx/Colony Wars (USA)/track01.bin", b"unique-playstation-data")
+        self.write("psx/Colony Wars (USA)/track02.bin", b"shared-audio")
+        self.write(
+            "psx/Colony Wars (USA)/Colony Wars (USA).cue",
+            "FILE track01.bin BINARY\n  TRACK 01 MODE2/2352\n",
+        )
+
+        result = self.service.scan()
+
+        self.assertEqual(result["games"], 2)
+        with self.db.connect() as connection:
+            games = connection.execute(
+                "SELECT id,platform,display_name,bundle_hash FROM games ORDER BY platform"
+            ).fetchall()
+        self.assertEqual({game["platform"] for game in games}, {"dreamcast", "psx"})
+        self.assertEqual(len({game["bundle_hash"] for game in games}), 2)
+        for game in games:
+            _, files = self.service.game_bundle(game["id"])
+            self.assertEqual(len(files), 3)
+
+    def test_rescan_merges_legacy_disc_components_and_preserves_device_state(self):
+        self.write("dreamcast/Legacy Game/track01.bin", b"game-data")
+        self.write("dreamcast/Legacy Game/track02.bin", b"audio-data")
+        (self.devices / "handheld/roms").mkdir(parents=True)
+        self.service.scan()
+        with self.db.connect() as connection:
+            device_id = connection.execute("SELECT id FROM devices").fetchone()["id"]
+            legacy_ids = [row["id"] for row in connection.execute("SELECT id FROM games")]
+        self.service.set_selections(device_id, legacy_ids, True)
+        self.service.apply_device(device_id)
+        self.write(
+            "dreamcast/Legacy Game/Legacy Game.gdi",
+            "2\n1 0 4 2352 track01.bin 0\n2 45000 0 2352 track02.bin 0\n",
+        )
+
+        result = self.service.scan()
+
+        self.assertEqual(result["games"], 1)
+        with self.db.connect() as connection:
+            game = connection.execute("SELECT id,extension FROM games").fetchone()
+            selections = connection.execute(
+                "SELECT game_id FROM device_selections WHERE device_id=?", (device_id,)
+            ).fetchall()
+            deployments = connection.execute(
+                "SELECT DISTINCT game_id FROM deployments WHERE device_id=?", (device_id,)
+            ).fetchall()
+        self.assertEqual(game["extension"], ".gdi")
+        self.assertEqual([row["game_id"] for row in selections], [game["id"]])
+        self.assertEqual([row["game_id"] for row in deployments], [game["id"]])
+        with self.db.connect() as connection:
+            detail = connection.execute(
+                "SELECT detail FROM activity ORDER BY id DESC LIMIT 1"
+            ).fetchone()["detail"]
+        self.assertIn("merged 2 legacy bundle components", detail)
+
     def test_ps3_directory_trees_are_complete_folder_bundles(self):
         for release in ("BLES01756", "BLUS31059"):
             base = f"ps3/Zone of the Enders HD Collection [{release}].ps3/PS3_GAME"
@@ -134,6 +196,28 @@ class LibraryServiceTests(unittest.TestCase):
         game, files = self.service.game_bundle(self.game_id("Zone of the Enders HD Collection [BLES01756]"))
         self.assertEqual(game["extension"], ".ps3")
         self.assertEqual(len(files), 2)
+
+    def test_wiiu_directory_trees_are_complete_folder_bundles(self):
+        for title, unique in (("Mario Kart 8", b"kart"), ("Super Mario 3D World", b"world")):
+            base = f"wiiu/{title}/code"
+            self.write(f"{base}/main.rpx", unique)
+            self.write(f"wiiu/{title}/content/common.pack", b"shared-content")
+
+        result = self.service.scan()
+
+        self.assertEqual(result["games"], 2)
+        with self.db.connect() as connection:
+            games = connection.execute(
+                "SELECT id,display_name,bundle_hash FROM games ORDER BY display_name"
+            ).fetchall()
+        self.assertEqual(
+            {game["display_name"] for game in games},
+            {"Mario Kart 8", "Super Mario 3D World"},
+        )
+        self.assertEqual(len({game["bundle_hash"] for game in games}), 2)
+        for game in games:
+            _, files = self.service.game_bundle(game["id"])
+            self.assertEqual(len(files), 2)
 
     def test_cartridge_collection_folders_remain_individual_games(self):
         self.write("gba/gba-top100/First Game.gba", b"first")
