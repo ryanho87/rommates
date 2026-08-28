@@ -7,7 +7,7 @@ const state = {
   platform: "",
   duplicate: "all",
   offset: 0,
-  limit: 200,
+  limit: 100,
   // id -> {display_name, platform}. A map rather than a set so the bulk bar and the
   // confirmation dialog can name selections that current filters have scrolled away.
   selectedRows: new Map(),
@@ -42,6 +42,10 @@ const state = {
   artworkId: null,
   artworkDetail: null,
   artworkObserver: null,
+  renderVersion: 0,
+  navigationCache: new Map(),
+  prefetchStarted: false,
+  navigationLoadingTimer: null,
 };
 
 const view = document.querySelector("#view");
@@ -85,9 +89,29 @@ function restoreFocus(snapshot) {
 }
 
 function setViewHtml(html) {
+  clearTimeout(state.navigationLoadingTimer);
   const snapshot = captureFocus();
   view.innerHTML = html;
   restoreFocus(snapshot);
+}
+
+function beginPageRender() {
+  state.renderVersion += 1;
+  return state.renderVersion;
+}
+
+function pageRenderIsCurrent(renderVersion, expectedView) {
+  return renderVersion === state.renderVersion && state.view === expectedView;
+}
+
+function scheduleNavigationLoading(renderVersion) {
+  clearTimeout(state.navigationLoadingTimer);
+  state.navigationLoadingTimer = setTimeout(() => {
+    if (!pageRenderIsCurrent(renderVersion, state.view)) return;
+    setViewHtml(`<div class="navigation-loading" role="status" aria-label="Loading page">
+      <span></span><span></span><span></span><span></span>
+    </div>`);
+  }, 120);
 }
 
 function escapeHtml(value) {
@@ -125,24 +149,88 @@ function storedAccessToken() {
   return token;
 }
 
+const NAVIGATION_CACHE_TTL = 20_000;
+
+function clearNavigationCache() {
+  state.navigationCache.clear();
+}
+
 async function api(path, options = {}) {
+  const { cacheTtl = 0, ...fetchOptions } = options;
   const token = storedAccessToken();
-  const response = await fetch(path, {
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(options.headers || {}),
-    },
-  });
-  const contentType = response.headers.get("content-type") || "";
-  const body = contentType.includes("application/json") ? await response.json() : null;
-  if (!response.ok) {
-    const error = new Error(body?.detail || `Request failed (${response.status})`);
-    error.status = response.status;
+  const method = String(fetchOptions.method || "GET").toUpperCase();
+  const cacheKey = method === "GET" && cacheTtl ? path : null;
+  const cached = cacheKey ? state.navigationCache.get(cacheKey) : null;
+  if (cached && cached.expiresAt > Date.now()) return cached.data;
+  if (cached?.promise) return cached.promise;
+
+  const request = (async () => {
+    const response = await fetch(path, {
+      ...fetchOptions,
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(fetchOptions.headers || {}),
+      },
+    });
+    const contentType = response.headers.get("content-type") || "";
+    const body = contentType.includes("application/json") ? await response.json() : null;
+    if (!response.ok) {
+      const error = new Error(body?.detail || `Request failed (${response.status})`);
+      error.status = response.status;
+      throw error;
+    }
+    if (method !== "GET") clearNavigationCache();
+    return body;
+  })();
+
+  if (cacheKey) state.navigationCache.set(cacheKey, { promise: request, expiresAt: 0 });
+  try {
+    const data = await request;
+    if (cacheKey) state.navigationCache.set(cacheKey, { data, expiresAt: Date.now() + cacheTtl });
+    return data;
+  } catch (error) {
+    if (cacheKey && state.navigationCache.get(cacheKey)?.promise === request) {
+      state.navigationCache.delete(cacheKey);
+    }
     throw error;
   }
-  return body;
+}
+
+function navigationApi(path, options = {}) {
+  return api(path, { cacheTtl: NAVIGATION_CACHE_TTL, ...options });
+}
+
+function prefetchNavigationData() {
+  if (state.prefetchStarted) return;
+  state.prefetchStarted = true;
+  const paths = [
+    `/api/games?${new URLSearchParams({ search: "", platform: "", duplicate: "all", limit: state.limit, offset: 0 })}`,
+    `/api/duplicates?${new URLSearchParams({ kind: "exact", search: "", platform: "", limit: 30, offset: 0 })}`,
+    `/api/naming/suggestions?${new URLSearchParams({ search: "", platform: "", confidence: "all", save_impact: "all", limit: state.limit, offset: 0 })}`,
+    "/api/naming/catalogs",
+    "/api/saves",
+    `/api/saves/current?${new URLSearchParams({ search: "", limit: 250, offset: 0 })}`,
+    "/api/jobs",
+    "/api/activity",
+    "/api/trash",
+  ];
+  if (state.devices.length) {
+    const deviceId = state.deviceId || state.devices[0].id;
+    paths.push(`/api/devices/${deviceId}/preview`);
+    paths.push(`/api/games?${new URLSearchParams({ search: "", platform: "", duplicate: "all", limit: state.limit, offset: 0, device_id: deviceId, device_scope: "on_device" })}`);
+  }
+  const warm = async () => {
+    for (const path of paths) {
+      try { await navigationApi(path); } catch { /* Prefetch must never affect the active page. */ }
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  };
+  if ("requestIdleCallback" in window) {
+    window.requestIdleCallback(warm, { timeout: 1500 });
+  } else {
+    setTimeout(warm, 300);
+  }
 }
 
 async function downloadApiFile(path, filename) {
@@ -305,7 +393,7 @@ async function getGames(deviceId = null, deviceScope = "all") {
   });
   if (deviceId) params.set("device_id", deviceId);
   if (deviceId) params.set("device_scope", deviceScope);
-  return api(`/api/games?${params}`, { signal: state.gamesController.signal });
+  return navigationApi(`/api/games?${params}`, { signal: state.gamesController.signal });
 }
 
 function libraryToolbar(includeDuplicate = true) {
@@ -542,8 +630,10 @@ function dashboardJobBadge(job) {
 }
 
 async function renderOverview() {
+  const renderVersion = beginPageRender();
   setHeading("Overview", "Collection health and recent activity.");
-  const data = await api("/api/dashboard");
+  const data = await navigationApi("/api/dashboard");
+  if (!pageRenderIsCurrent(renderVersion, "overview")) return;
   const collection = data.collection;
   const largestPlatform = Math.max(...data.platforms.map((item) => item.games), 1);
   const visiblePlatforms = data.platforms.slice(0, 10);
@@ -612,8 +702,10 @@ async function renderOverview() {
 }
 
 async function renderLibrary() {
+  const renderVersion = beginPageRender();
   setHeading("Library", "Browse, rename, and clean the canonical collection.");
   const data = await getGames();
+  if (!pageRenderIsCurrent(renderVersion, "library")) return;
   setViewHtml(`${libraryToolbar(true)}${gamesTable(data)}<div id="bulk-bar-slot"></div>`);
   renderBulkBar();
   syncSelectAll();
@@ -623,6 +715,7 @@ async function renderLibrary() {
 }
 
 async function renderDuplicates() {
+  const renderVersion = beginPageRender();
   setHeading("Duplicates", "Exact hashes first, filename matches for manual review.");
   if (state.duplicate === "all" || state.duplicate === "unique") state.duplicate = "exact";
   const params = new URLSearchParams({
@@ -632,7 +725,8 @@ async function renderDuplicates() {
     limit: 30,
     offset: state.offset,
   });
-  const data = await api(`/api/duplicates?${params}`);
+  const data = await navigationApi(`/api/duplicates?${params}`);
+  if (!pageRenderIsCurrent(renderVersion, "duplicates")) return;
   if (data.total > 0 && state.offset >= data.total) {
     state.offset = Math.floor((data.total - 1) / 30) * 30;
     return renderDuplicates();
@@ -1064,6 +1158,7 @@ async function deleteSelected() {
 }
 
 async function renderDevices() {
+  const renderVersion = beginPageRender();
   setHeading("Devices", "See what is present now, then choose what changes next.");
   if (!state.devices.length) {
     setViewHtml(`<div class="empty-state"><div><h2>No device folders found</h2><p>Create a directory such as <code>/devices/retroid/roms</code>, then scan the library. Device folders are discovered automatically.</p><button class="button" data-scan>Scan again</button></div></div>`);
@@ -1074,8 +1169,9 @@ async function renderDevices() {
   state.deviceId = device.id;
   const [data, preview] = await Promise.all([
     getGames(device.id, state.deviceScope),
-    api(`/api/devices/${device.id}/preview`),
+    navigationApi(`/api/devices/${device.id}/preview`),
   ]);
+  if (!pageRenderIsCurrent(renderVersion, "devices")) return;
   const inventory = data.device_inventory;
   const noFilters = !state.search && !state.platform;
   let table = gamesTable(data, true);
@@ -1153,8 +1249,10 @@ async function renderDevices() {
 }
 
 async function renderTrash() {
+  const renderVersion = beginPageRender();
   setHeading("Trash", "Restore bundles or permanently delete them.");
-  const items = await api("/api/trash");
+  const items = await navigationApi("/api/trash");
+  if (!pageRenderIsCurrent(renderVersion, "trash")) return;
   if (!items.length) {
     setViewHtml(`<div class="empty-state"><div><h2>Trash is empty</h2><p>Deleted ROM bundles remain recoverable here until you permanently delete them.</p></div></div>`);
     return;
@@ -1280,8 +1378,9 @@ function saveSettingsHtml(settings) {
 }
 
 async function renderSaves() {
+  const renderVersion = beginPageRender();
   setHeading("Saves", "Snapshot and restore the complete RetroArch cloud state.");
-  const overview = await api("/api/saves");
+  const overview = await navigationApi("/api/saves");
   let content = "";
   let currentData = null;
   let snapshotData = null;
@@ -1290,19 +1389,19 @@ async function renderSaves() {
   let matchData = null;
   if (state.saveTab === "current") {
     const params = new URLSearchParams({ search: state.saveSearch, limit: 250, offset: state.saveOffset });
-    currentData = await api(`/api/saves/current?${params}`);
+    currentData = await navigationApi(`/api/saves/current?${params}`);
     content = currentSavesHtml(currentData);
   } else if (state.saveTab === "snapshots") {
-    snapshotData = await api("/api/saves/snapshots?limit=100");
+    snapshotData = await navigationApi("/api/saves/snapshots?limit=100");
     if (state.saveSnapshotId && snapshotData.items.some((item) => item.id === state.saveSnapshotId)) {
       const params = new URLSearchParams({ search: state.saveSnapshotSearch, limit: 250, offset: state.saveSnapshotOffset });
       if (overview.settings.available) {
         [snapshotDetail, comparison] = await Promise.all([
-          api(`/api/saves/snapshots/${state.saveSnapshotId}?${params}`),
-          api(`/api/saves/snapshots/${state.saveSnapshotId}/compare`),
+          navigationApi(`/api/saves/snapshots/${state.saveSnapshotId}?${params}`),
+          navigationApi(`/api/saves/snapshots/${state.saveSnapshotId}/compare`),
         ]);
       } else {
-        snapshotDetail = await api(`/api/saves/snapshots/${state.saveSnapshotId}?${params}`);
+        snapshotDetail = await navigationApi(`/api/saves/snapshots/${state.saveSnapshotId}?${params}`);
       }
     } else {
       state.saveSnapshotId = null;
@@ -1310,11 +1409,12 @@ async function renderSaves() {
     content = snapshotsHtml(snapshotData, snapshotDetail, comparison);
   } else if (state.saveTab === "matches") {
     const params = new URLSearchParams({ search: state.saveMatchSearch, status: state.saveMatchStatus, limit: 200, offset: state.saveMatchOffset });
-    matchData = await api(`/api/saves/unmatched?${params}`);
+    matchData = await navigationApi(`/api/saves/unmatched?${params}`);
     content = saveMatchesHtml(matchData);
   } else {
     content = saveSettingsHtml(overview.settings);
   }
+  if (!pageRenderIsCurrent(renderVersion, "saves")) return;
   setViewHtml(`${saveHeader(overview)}${saveTabs(overview)}${content}`);
   view.querySelectorAll("[data-save-tab]").forEach((button) => button.addEventListener("click", () => {
     state.saveTab = button.dataset.saveTab;
@@ -1491,6 +1591,7 @@ function saveImpactHtml(impact) {
 }
 
 async function renderNaming() {
+  const renderVersion = beginPageRender();
   setHeading("Naming", "Review canonical filenames before changing bundles.");
   const params = new URLSearchParams({
     search: state.search,
@@ -1500,7 +1601,8 @@ async function renderNaming() {
     limit: state.limit,
     offset: state.offset,
   });
-  const [data, catalogs] = await Promise.all([api(`/api/naming/suggestions?${params}`), api("/api/naming/catalogs")]);
+  const [data, catalogs] = await Promise.all([navigationApi(`/api/naming/suggestions?${params}`), navigationApi("/api/naming/catalogs")]);
+  if (!pageRenderIsCurrent(renderVersion, "naming")) return;
   const platformChoices = state.platforms.map((item) => `<option value="${escapeHtml(item.platform)}">${escapeHtml(item.platform)}</option>`).join("");
   const catalogList = catalogs.length
     ? `<div class="catalog-list">${catalogs.map((catalog) => `<span class="catalog-chip"><span><strong>${escapeHtml(catalog.platform)}</strong> · ${escapeHtml(catalog.name)} · ${catalog.entry_count.toLocaleString()}</span><button class="icon-button compact" data-delete-catalog="${catalog.id}" aria-label="Remove ${escapeHtml(catalog.name)}">×</button></span>`).join("")}</div>`
@@ -1610,8 +1712,9 @@ async function renderNaming() {
 }
 
 async function renderJobs() {
+  const renderVersion = beginPageRender();
   setHeading("Jobs", "Detailed reports for scans and filesystem activity.");
-  const [jobs, activity] = await Promise.all([api("/api/jobs"), api("/api/activity")]);
+  const [jobs, activity] = await Promise.all([navigationApi("/api/jobs", { cacheTtl: 5_000 }), navigationApi("/api/activity", { cacheTtl: 5_000 })]);
   if (state.jobReportId && !jobs.some((job) => job.id === state.jobReportId)) state.jobReportId = null;
   let report = null;
   let issues = null;
@@ -1621,6 +1724,7 @@ async function renderJobs() {
       api(`/api/jobs/${state.jobReportId}/issues?limit=250&offset=${state.jobIssueOffset}`),
     ]);
   }
+  if (!pageRenderIsCurrent(renderVersion, "jobs")) return;
   const jobsHtml = jobs.length ? `<div class="table-wrap"><table><thead><tr><th>Job</th><th>Status</th><th>Detail</th><th>Started</th><th>Finished</th><th>Action</th></tr></thead><tbody>${jobs.map((job) => `<tr${state.jobReportId === job.id ? ` class="selected-row"` : ""}><td>${escapeHtml(job.kind)}</td><td><span class="badge ${job.status === "failed" ? "exact" : job.status === "complete" ? "unique" : job.status === "cancelled" ? "cancelled" : "possible"}">${escapeHtml(job.status)}${["running", "cancelling"].includes(job.status) ? ` · ${job.progress}%` : ""}</span></td><td class="name-cell">${escapeHtml(job.detail)}</td><td class="meta">${escapeHtml(job.created_at)}</td><td class="meta">${escapeHtml(job.completed_at || "In progress")}</td><td><div class="bulk-actions"><button class="button secondary small" data-job-report="${job.id}" aria-expanded="${state.jobReportId === job.id}">${state.jobReportId === job.id ? "Close" : "Report"}${job.reported_issue_count ? ` · ${job.reported_issue_count} issues` : ""}</button>${job.cancellable ? `<button class="button danger-subtle small" data-cancel-job="${job.id}" ${job.status === "cancelling" ? "disabled" : ""}>${job.status === "cancelling" ? "Stopping…" : "Stop"}</button>` : ""}</div></td></tr>`).join("")}</tbody></table></div>` : `<div class="empty-state"><div><h2>No jobs yet</h2><p>Library scans will appear here.</p></div></div>`;
   const reportHtml = report ? renderJobReport(report, issues) : "";
   const activityHtml = activity.length ? `<div class="section-heading"><div><h2>Activity</h2><p>Rename, delete, restore, and deployment history.</p></div></div><div class="table-wrap"><table><thead><tr><th>Action</th><th>Detail</th><th>Time</th></tr></thead><tbody>${activity.map((item) => `<tr><td>${escapeHtml(item.action)}</td><td class="name-cell">${escapeHtml(item.detail)}</td><td class="meta">${escapeHtml(item.created_at)} UTC</td></tr>`).join("")}</tbody></table></div>` : "";
@@ -1787,10 +1891,15 @@ async function offerPruneConfirmation(detail) {
 
 async function renderCurrentView() {
   view.setAttribute("aria-busy", "true");
+  const requestedView = state.view;
+  let renderVersion = state.renderVersion;
   try {
     const renderers = { overview: renderOverview, library: renderLibrary, duplicates: renderDuplicates, naming: renderNaming, devices: renderDevices, saves: renderSaves, jobs: renderJobs, trash: renderTrash };
-    await renderers[state.view]();
+    const renderPromise = renderers[requestedView]();
+    renderVersion = state.renderVersion;
+    await renderPromise;
   } catch (error) {
+    if (!pageRenderIsCurrent(renderVersion, requestedView)) return;
     if (error.name === "AbortError") return;
     if (error.status === 401) {
       renderAuthentication();
@@ -1798,7 +1907,9 @@ async function renderCurrentView() {
     }
     setViewHtml(`<div class="empty-state"><div><h2>This view could not load</h2><p>${escapeHtml(error.message)}</p><button class="button secondary" data-retry>Try again</button></div></div>`);
     view.querySelector("[data-retry]")?.addEventListener("click", renderCurrentView);
-  } finally { view.removeAttribute("aria-busy"); }
+  } finally {
+    if (pageRenderIsCurrent(renderVersion, requestedView)) view.removeAttribute("aria-busy");
+  }
 }
 
 function renderAuthentication() {
@@ -1845,6 +1956,7 @@ function navigateTo(viewName, options = {}) {
   if (state.view !== "saves") state.saveSnapshotId = null;
   document.querySelectorAll(".nav-item").forEach((item) => item.classList.toggle("active", item.dataset.view === viewName));
   renderCurrentView();
+  scheduleNavigationLoading(state.renderVersion);
 }
 
 document.querySelector("#navigation").addEventListener("click", (event) => {
@@ -1856,7 +1968,7 @@ document.querySelector("#navigation").addEventListener("click", (event) => {
 scanButton.addEventListener("click", () => startScan());
 stopJobButton.addEventListener("click", () => cancelJob(Number(stopJobButton.dataset.jobId), stopJobButton));
 refreshButton.addEventListener("click", async () => {
-  try { await refreshStatus(); await loadReferenceData(); await renderCurrentView(); }
+  try { clearNavigationCache(); await refreshStatus(); await loadReferenceData(); await renderCurrentView(); }
   catch (error) { toast(error.message, "error"); }
 });
 
@@ -1872,6 +1984,7 @@ async function initialize() {
     await refreshStatus();
     await loadReferenceData();
     await renderCurrentView();
+    prefetchNavigationData();
   } catch (error) {
     if (error.status === 401) {
       renderAuthentication();
