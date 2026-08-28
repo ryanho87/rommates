@@ -176,6 +176,14 @@ a JSON object:
 ROMMATES_SCREENSCRAPER_SYSTEM_MAP={"my-gba-folder":12,"custom-system":123}
 ```
 
+ROMmates follows ScreenScraper's account-specific API limits. Every request includes the
+configured developer credentials and software name, and only one ScreenScraper request
+stream can run at a time. Limits returned by the API are enforced for requests per minute,
+requests per day, unmatched ROMs per day, and media download speed. The system catalog is
+cached for 24 hours, while ROM fingerprints and artwork remain cached until their source
+changes or you explicitly refresh them. Limit, closure, and blocked-client responses stop
+the job with a specific error instead of being retried aggressively.
+
 Select games in Library and choose **Find missing artwork**, or use the artwork tile on
 one game. Clicking an existing cover performs an explicit refresh. Ambiguous name matches
 and unmapped platforms are skipped and listed in the job report rather than guessed.

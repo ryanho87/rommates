@@ -4,10 +4,14 @@ import hashlib
 import json
 import os
 import re
+import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 import zlib
+from collections import deque
+from datetime import date
 from pathlib import Path
 from typing import Callable
 
@@ -18,6 +22,18 @@ from .library import JobCancelled, LibraryError
 
 API_ROOT = "https://api.screenscraper.fr/api2"
 MAX_MEDIA_BYTES = 20 * 1024 * 1024
+SYSTEM_LIST_TTL_SECONDS = 24 * 60 * 60
+QUOTA_FIELDS = {
+    "maxthreads": "max_threads",
+    "maxdownloadspeed": "max_download_speed",
+    "requeststoday": "requests_today",
+    "requestskotoday": "failed_requests_today",
+    "maxrequestsperdmin": "max_requests_per_minute",
+    "maxrequestspermin": "max_requests_per_minute",
+    "maxrequestsperminute": "max_requests_per_minute",
+    "maxrequestsperday": "max_requests_per_day",
+    "maxrequestskoperday": "max_failed_requests_per_day",
+}
 ASSET_CHOICES = {
     "cover": ("box-2D", "box-2D-hd", "mixrbv2", "mixrbv1"),
     "screenshot": ("ss", "sstitle"),
@@ -72,6 +88,15 @@ class ScreenScraperService:
     def __init__(self, settings: Settings, db: Database):
         self.settings = settings
         self.db = db
+        # ScreenScraper assigns concurrency per account. A single request stream is
+        # valid for every account tier and prevents two queued jobs from overlapping.
+        self._scrape_lock = threading.Lock()
+        self._rate_lock = threading.Lock()
+        self._request_times: deque[float] = deque()
+        self._quota: dict[str, int] = {}
+        self._quota_day = date.today()
+        self._systems_cache: dict[str, int] | None = None
+        self._systems_cached_at = 0.0
 
     @property
     def configured(self) -> bool:
@@ -82,12 +107,15 @@ class ScreenScraperService:
             counts = connection.execute(
                 "SELECT COUNT(DISTINCT game_id) AS games,COUNT(*) AS assets FROM game_assets"
             ).fetchone()
+        with self._rate_lock:
+            quota = dict(self._quota)
         return {
             "configured": self.configured,
             "media_root": str(self.settings.media_root),
             "games_with_artwork": counts["games"],
             "assets": counts["assets"],
             "system_overrides": self.settings.screenscraper_system_map or {},
+            "quota": quota,
         }
 
     def _params(self, **extra) -> dict[str, object]:
@@ -104,26 +132,112 @@ class ScreenScraperService:
         params.update({key: value for key, value in extra.items() if value not in (None, "")})
         return params
 
-    def _request_json(self, endpoint: str, **params) -> dict:
+    @staticmethod
+    def _as_nonnegative_int(value: object) -> int | None:
+        try:
+            result = int(str(value).strip())
+        except (TypeError, ValueError):
+            return None
+        return result if result >= 0 else None
+
+    def _update_quota(self, data: object) -> None:
+        updates: dict[str, int] = {}
+        for node in _walk(data):
+            if not isinstance(node, dict):
+                continue
+            for raw_key, value in node.items():
+                canonical = QUOTA_FIELDS.get(str(raw_key).casefold())
+                parsed = self._as_nonnegative_int(value)
+                if canonical and parsed is not None:
+                    updates[canonical] = parsed
+        if not updates:
+            return
+        with self._rate_lock:
+            for key, value in updates.items():
+                # Our local counter includes requests made since the last server
+                # response, so never move a running count backwards.
+                if key in {"requests_today", "failed_requests_today"}:
+                    self._quota[key] = max(self._quota.get(key, 0), value)
+                else:
+                    self._quota[key] = value
+
+    def _before_request(self, cancel_check=None, *, may_miss: bool = False) -> None:
+        while True:
+            if cancel_check:
+                cancel_check()
+            now = time.monotonic()
+            with self._rate_lock:
+                if date.today() != self._quota_day:
+                    self._quota_day = date.today()
+                    self._quota.pop("requests_today", None)
+                    self._quota.pop("failed_requests_today", None)
+                    self._request_times.clear()
+                while self._request_times and self._request_times[0] <= now - 60:
+                    self._request_times.popleft()
+                requests_today = self._quota.get("requests_today")
+                daily_limit = self._quota.get("max_requests_per_day")
+                failed_today = self._quota.get("failed_requests_today")
+                failed_limit = self._quota.get("max_failed_requests_per_day")
+                if daily_limit and requests_today is not None and requests_today >= daily_limit:
+                    raise LibraryError(
+                        "ScreenScraper's daily request quota is exhausted; retry after its quota resets"
+                    )
+                if may_miss and failed_limit and failed_today is not None and failed_today >= failed_limit:
+                    raise LibraryError(
+                        "ScreenScraper's daily unmatched-ROM quota is exhausted; retry after its quota resets"
+                    )
+                minute_limit = self._quota.get("max_requests_per_minute")
+                if not minute_limit or len(self._request_times) < minute_limit:
+                    self._request_times.append(now)
+                    if requests_today is not None:
+                        self._quota["requests_today"] = requests_today + 1
+                    return
+                wait_for = max(self._request_times[0] + 60 - now, 0.05)
+            # Keep quota waits cancellable so a job can still be stopped promptly.
+            time.sleep(min(wait_for, 0.5))
+
+    @staticmethod
+    def _http_error(code: int) -> str:
+        return {
+            401: "ScreenScraper is temporarily overloaded or unavailable to this account tier",
+            403: "ScreenScraper rejected the developer credentials",
+            423: "ScreenScraper's API is temporarily closed",
+            426: "ScreenScraper has blocked this scraper; stop requests and contact ScreenScraper",
+            429: "ScreenScraper's request or concurrency limit was reached; wait before retrying",
+            430: "ScreenScraper's daily request quota is exhausted",
+            431: "ScreenScraper's daily unmatched-ROM quota is exhausted",
+        }.get(code, f"ScreenScraper rejected the request ({code})")
+
+    def _request_json(self, endpoint: str, *, cancel_check=None, **params) -> dict:
+        may_miss = endpoint in {"jeuInfos.php", "jeuRecherche.php"}
+        self._before_request(cancel_check, may_miss=may_miss)
         url = f"{API_ROOT}/{endpoint}?{urllib.parse.urlencode(self._params(**params))}"
         request = urllib.request.Request(url, headers={"User-Agent": "ROMmates/0.1"})
         try:
             with urllib.request.urlopen(request, timeout=45) as response:
                 body = response.read(8 * 1024 * 1024)
         except urllib.error.HTTPError as exc:
-            raise LibraryError(
-                f"ScreenScraper rejected the request ({exc.code}); check the credentials and account quota"
-            ) from exc
+            if exc.code == 404 and may_miss:
+                with self._rate_lock:
+                    if "failed_requests_today" in self._quota:
+                        self._quota["failed_requests_today"] += 1
+                return {}
+            raise LibraryError(self._http_error(exc.code)) from exc
         except (urllib.error.URLError, TimeoutError) as exc:
             raise LibraryError(f"ScreenScraper could not be reached: {exc}") from exc
         try:
-            return json.loads(body)
+            data = json.loads(body)
         except json.JSONDecodeError as exc:
             raise LibraryError("ScreenScraper returned an invalid response") from exc
+        self._update_quota(data)
+        return data
 
-    def _systems(self) -> dict[str, int]:
+    def _systems(self, cancel_check=None) -> dict[str, int]:
+        now = time.monotonic()
+        if self._systems_cache is not None and now - self._systems_cached_at < SYSTEM_LIST_TTL_SECONDS:
+            return dict(self._systems_cache)
         result = dict(self.settings.screenscraper_system_map or {})
-        data = self._request_json("systemesListe.php")
+        data = self._request_json("systemesListe.php", cancel_check=cancel_check)
         for node in _walk(data):
             if not isinstance(node, dict) or not str(node.get("id", "")).isdigit():
                 continue
@@ -140,6 +254,8 @@ class ScreenScraperService:
             for name in names:
                 if _normalized(name):
                     result.setdefault(_normalized(name), int(node["id"]))
+        self._systems_cache = dict(result)
+        self._systems_cached_at = now
         return result
 
     def _system_id(self, platform: str, systems: dict[str, int]) -> int | None:
@@ -213,14 +329,18 @@ class ScreenScraperService:
         rom_name = Path(game["primary_relpath"]).name
         if fingerprints:
             data = self._request_json(
-                "jeuInfos.php", systemeid=system_id, romtype="rom", romnom=rom_name,
+                "jeuInfos.php", cancel_check=cancel_check,
+                systemeid=system_id, romtype="rom", romnom=rom_name,
                 romtaille=game["size"], crc=fingerprints["crc32"],
                 md5=fingerprints["md5"], sha1=fingerprints["sha1"],
             )
             matched = self._game_node(data)
             if matched:
                 return matched, "hash"
-        data = self._request_json("jeuRecherche.php", systemeid=system_id, recherche=game["display_name"])
+        data = self._request_json(
+            "jeuRecherche.php", cancel_check=cancel_check,
+            systemeid=system_id, recherche=game["display_name"]
+        )
         response = data.get("response", data)
         games = response.get("jeux", []) if isinstance(response, dict) else []
         if isinstance(games, dict):
@@ -244,7 +364,33 @@ class ScreenScraperService:
             medias = medias.get("media") or []
         return [item for item in medias if isinstance(item, dict)] if isinstance(medias, list) else []
 
-    def _download_asset(self, game_id: int, kind: str, media: dict, overwrite: bool) -> bool:
+    def _read_media(self, response, cancel_check=None) -> bytes:
+        chunks: list[bytes] = []
+        completed = 0
+        started = time.monotonic()
+        while True:
+            if cancel_check:
+                cancel_check()
+            chunk = response.read(min(64 * 1024, MAX_MEDIA_BYTES + 1 - completed))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            completed += len(chunk)
+            if completed > MAX_MEDIA_BYTES:
+                break
+            with self._rate_lock:
+                speed_kbps = self._quota.get("max_download_speed", 0)
+            if speed_kbps:
+                target_elapsed = completed / (speed_kbps * 1024)
+                while time.monotonic() - started < target_elapsed:
+                    if cancel_check:
+                        cancel_check()
+                    time.sleep(min(target_elapsed - (time.monotonic() - started), 0.25))
+        return b"".join(chunks)
+
+    def _download_asset(
+        self, game_id: int, kind: str, media: dict, overwrite: bool, cancel_check=None
+    ) -> bool:
         url = str(media.get("url") or "")
         if not url.startswith("https://"):
             return False
@@ -254,12 +400,18 @@ class ScreenScraperService:
             ).fetchone()
         if existing and not overwrite:
             return False
+        self._before_request(cancel_check)
         request = urllib.request.Request(url, headers={"User-Agent": "ROMmates/0.1"})
-        with urllib.request.urlopen(request, timeout=60) as response:
-            content_type = response.headers.get_content_type()
-            if not content_type.startswith("image/"):
-                return False
-            data = response.read(MAX_MEDIA_BYTES + 1)
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                content_type = response.headers.get_content_type()
+                if not content_type.startswith("image/"):
+                    return False
+                data = self._read_media(response, cancel_check)
+        except urllib.error.HTTPError as exc:
+            raise LibraryError(self._http_error(exc.code)) from exc
+        except (urllib.error.URLError, TimeoutError) as exc:
+            raise LibraryError(f"ScreenScraper media could not be reached: {exc}") from exc
         if len(data) > MAX_MEDIA_BYTES:
             raise LibraryError(f"ScreenScraper {kind} exceeded the 20 MB safety limit")
         extension = {"image/png": ".png", "image/webp": ".webp"}.get(content_type, ".jpg")
@@ -287,10 +439,21 @@ class ScreenScraperService:
         return True
 
     def scrape(self, game_ids: list[int], missing_only: bool = True, *, progress_callback, cancel_check) -> dict[str, object]:
+        while not self._scrape_lock.acquire(timeout=0.25):
+            cancel_check()
+            progress_callback(0, "Waiting for the active ScreenScraper job")
+        try:
+            return self._scrape_locked(
+                game_ids, missing_only, progress_callback=progress_callback, cancel_check=cancel_check
+            )
+        finally:
+            self._scrape_lock.release()
+
+    def _scrape_locked(self, game_ids: list[int], missing_only: bool = True, *, progress_callback, cancel_check) -> dict[str, object]:
         if not self.configured:
             raise LibraryError("ScreenScraper is not configured. Add its developer credentials to Compose.")
         self.settings.media_root.mkdir(parents=True, exist_ok=True)
-        systems = self._systems()
+        systems = self._systems(cancel_check)
         matched = downloaded = skipped = 0
         issues: list[str] = []
         for index, game_id in enumerate(dict.fromkeys(game_ids)):
@@ -350,7 +513,9 @@ class ScreenScraperService:
             for kind, choices in ASSET_CHOICES.items():
                 candidates = [media for choice in choices for media in medias if str(media.get("type")) == choice]
                 candidates.sort(key=lambda item: (str(item.get("region") or "") not in {"us", "wor", "eu", "ss"},))
-                if candidates and self._download_asset(game_id, kind, candidates[0], not missing_only):
+                if candidates and self._download_asset(
+                    game_id, kind, candidates[0], not missing_only, cancel_check
+                ):
                     downloaded += 1
         self.db.activity("artwork", f"Matched {matched} games and downloaded {downloaded} visual assets")
         return {"requested": len(game_ids), "matched": matched, "downloaded": downloaded, "skipped": skipped, "issues": issues}

@@ -3,12 +3,13 @@ from __future__ import annotations
 import io
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest.mock import patch
 
 from app.config import Settings
 from app.db import Database
-from app.library import LibraryService
+from app.library import LibraryError, LibraryService
 from app.screenscraper import ScreenScraperService
 
 
@@ -104,6 +105,50 @@ class ScreenScraperTests(unittest.TestCase):
         self.assertEqual(len(fingerprint["sha1"]), 40)
         for asset in detail["assets"]:
             self.assertTrue((self.settings.media_root / asset["local_relpath"]).is_file())
+
+    def test_response_quota_is_enforced_before_another_request(self):
+        service = ScreenScraperService(self.settings, self.db)
+        service._update_quota({
+            "response": {"ssuser": {
+                "requeststoday": "50",
+                "maxrequestsperday": "50",
+                "requestskotoday": "4",
+                "maxrequestskoperday": "5",
+                "maxrequestspermin": "10",
+                "maxthreads": "2",
+            }}
+        })
+        with self.assertRaisesRegex(LibraryError, "daily request quota"):
+            service._before_request()
+        self.assertEqual(service.status()["quota"]["max_threads"], 2)
+
+    def test_unmatched_quota_only_blocks_match_requests(self):
+        service = ScreenScraperService(self.settings, self.db)
+        service._update_quota({
+            "requeststoday": 1,
+            "maxrequestsperday": 100,
+            "requestskotoday": 5,
+            "maxrequestskoperday": 5,
+        })
+        service._before_request(may_miss=False)
+        with self.assertRaisesRegex(LibraryError, "unmatched-ROM quota"):
+            service._before_request(may_miss=True)
+
+    def test_screen_scraper_limit_statuses_have_actionable_errors(self):
+        service = ScreenScraperService(self.settings, self.db)
+        error = urllib.error.HTTPError("https://api.example", 429, "limit", {}, None)
+        with patch("urllib.request.urlopen", side_effect=error):
+            with self.assertRaisesRegex(LibraryError, "concurrency limit"):
+                service._request_json("systemesListe.php")
+
+    def test_system_list_is_cached_for_subsequent_jobs(self):
+        service = ScreenScraperService(self.settings, self.db)
+        body = b'{"response":{"systemes":[{"id":"12","nom":"Game Boy Advance"}]}}'
+        with patch("urllib.request.urlopen", return_value=_Response(body)) as open_url:
+            first = service._systems()
+            second = service._systems()
+        self.assertEqual(first, second)
+        self.assertEqual(open_url.call_count, 1)
 
 
 if __name__ == "__main__":
