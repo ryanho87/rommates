@@ -81,6 +81,8 @@ class ApiIntegrationTests(unittest.TestCase):
         second = self.root / "roms/gba/Differently Named Copy.gba"
         usa = self.root / "roms/gba/Variant Game (USA).gba"
         europe = self.root / "roms/gba/Variant Game (Europe).gba"
+        device_first = self.root / "devices/handheld/roms/gba/Original Name.gba"
+        device_second = self.root / "devices/handheld/roms/gba/Differently Named Copy.gba"
         first.write_bytes(b"same-rom-content")
         second.write_bytes(b"same-rom-content")
         usa.write_bytes(b"usa-content")
@@ -88,6 +90,8 @@ class ApiIntegrationTests(unittest.TestCase):
         try:
             scan = self.client.post("/api/scan?confirm_prune=true", headers=self.headers)
             self.assertEqual(self.wait_for_job(scan.json()["job_id"])["status"], "complete")
+            device_first.parent.mkdir(parents=True, exist_ok=True)
+            device_first.write_bytes(b"same-rom-content")
             response = self.client.get(
                 "/api/duplicates?kind=exact&search=Original%20Name",
                 headers=self.headers,
@@ -103,6 +107,19 @@ class ApiIntegrationTests(unittest.TestCase):
             self.assertEqual(matching[0]["copies"], 2)
             self.assertEqual(matching[0]["kind"], "exact")
             self.assertEqual(len(matching[0]["key"]), 64)
+            original = next(
+                item for item in matching[0]["items"] if item["display_name"] == "Original Name"
+            )
+            self.assertEqual(matching[0]["recommended_keeper_id"], original["id"])
+            self.assertEqual(original["present_devices"], ["handheld"])
+            self.assertFalse(matching[0]["device_conflict"])
+            device_second.write_bytes(b"same-rom-content")
+            conflicted = self.client.get(
+                "/api/duplicates?kind=exact&search=Original%20Name",
+                headers=self.headers,
+            ).json()["items"][0]
+            self.assertIsNone(conflicted["recommended_keeper_id"])
+            self.assertTrue(conflicted["device_conflict"])
             possible = self.client.get(
                 "/api/duplicates?kind=possible&search=Variant%20Game",
                 headers=self.headers,
@@ -117,6 +134,8 @@ class ApiIntegrationTests(unittest.TestCase):
             second.unlink(missing_ok=True)
             usa.unlink(missing_ok=True)
             europe.unlink(missing_ok=True)
+            device_first.unlink(missing_ok=True)
+            device_second.unlink(missing_ok=True)
             scan = self.client.post("/api/scan?confirm_prune=true", headers=self.headers)
             self.assertEqual(self.wait_for_job(scan.json()["job_id"])["status"], "complete")
 

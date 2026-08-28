@@ -368,7 +368,7 @@ function gameRows(items, deviceMode = false) {
         <td class="checkbox-cell"><input type="checkbox" aria-label="Select ${escapeHtml(game.display_name)}" data-${deviceMode ? "device" : "row"}-select="${game.id}" ${checked ? "checked" : ""}></td>
         <td class="name-cell" title="${escapeHtml(game.primary_relpath)}"><strong>${escapeHtml(game.display_name)}</strong><span class="path-line">${escapeHtml(game.primary_relpath)}</span></td>
         <td>${escapeHtml(game.platform)}</td>
-        <td>${duplicateLabel(game.duplicate_status)}</td>
+        ${deviceMode ? "" : `<td>${duplicateLabel(game.duplicate_status)}</td>`}
         <td class="meta">${formatBytes(game.size)}</td>
         <td class="meta optional-column">${game.file_count} ${game.file_count === 1 ? "file" : "files"}</td>
         <td class="meta optional-column">${deviceMode ? deviceTargetState(game) : deviceSummary(game, true)}</td>
@@ -404,7 +404,7 @@ function gamesTable(data, deviceMode = false) {
       <table>
         <thead><tr>
           <th class="checkbox-cell"><input type="checkbox" aria-label="Select visible ROMs" data-select-all></th>
-          <th>Filename</th><th>Platform</th><th>Duplicate status</th><th>Size</th><th class="optional-column">Bundle</th><th class="optional-column">${deviceMode ? "Target state" : "Devices"}</th>${deviceMode ? "" : "<th>Actions</th>"}
+          <th>Filename</th><th>Platform</th>${deviceMode ? "" : "<th>Duplicate status</th>"}<th>Size</th><th class="optional-column">Bundle</th><th class="optional-column">${deviceMode ? "Target state" : "Devices"}</th>${deviceMode ? "" : "<th>Actions</th>"}
         </tr></thead>
         <tbody>${gameRows(data.items, deviceMode)}</tbody>
       </table>
@@ -497,20 +497,30 @@ function duplicateGroupHtml(group, index) {
   const signature = exact ? `Hash ${group.key.slice(0, 10)}` : "Filename match";
   const rows = group.items.map((game) => {
     const checked = keeper === game.id;
-    const devices = game.devices.length ? escapeHtml(game.devices.join(", ")) : "None";
-    return `<tr class="${checked ? "keeper-row" : ""}" data-duplicate-row="${game.id}">
-      <td class="keeper-cell"><label class="keeper-choice"><input type="radio" name="keeper-${index}" value="${game.id}" data-duplicate-keeper="${index}" ${checked ? "checked" : ""}><span>Keep</span></label></td>
+    const suggested = group.recommended_keeper_id === game.id;
+    const present = game.present_devices || [];
+    const selected = (game.selected_devices || []).filter((name) => !present.includes(name));
+    const deviceState = present.length || selected.length
+      ? `${present.length ? `<span class="device-presence"><strong>On device:</strong> ${escapeHtml(present.join(", "))}</span>` : ""}${selected.length ? `<span class="device-selection"><strong>Selected:</strong> ${escapeHtml(selected.join(", "))}</span>` : ""}`
+      : '<span class="device-empty">Not on a device</span>';
+    return `<tr class="${checked ? "keeper-row" : ""} ${suggested ? "suggested-keeper-row" : ""}" data-duplicate-row="${game.id}">
+      <td class="keeper-cell"><label class="keeper-choice"><input type="radio" name="keeper-${index}" value="${game.id}" data-duplicate-keeper="${index}" ${checked ? "checked" : ""}><span>Keep</span></label>${suggested ? '<span class="badge naming-exact keeper-suggestion">Suggested</span>' : ""}</td>
       <td class="name-cell" title="${escapeHtml(game.primary_relpath)}"><strong>${escapeHtml(game.display_name)}</strong><span class="path-line">${escapeHtml(game.primary_relpath)}</span></td>
       <td>${escapeHtml(game.platform)}</td>
       <td class="meta">${formatBytes(game.size)}</td>
       <td class="meta optional-column">${game.file_count} ${game.file_count === 1 ? "file" : "files"}</td>
-      <td class="meta optional-column" title="${devices}">${devices}</td>
+      <td class="meta optional-column"><span class="duplicate-device-state">${deviceState}</span></td>
     </tr>`;
   }).join("");
+  const deviceGuidance = group.device_conflict
+    ? '<p class="duplicate-conflict"><strong>Multiple copies are in use.</strong> Different device folders or pending selections point to different filenames, so ROMmates cannot recommend one keeper.</p>'
+    : group.recommended_keeper_id
+      ? `<p class="duplicate-recommendation"><strong>Suggested keeper:</strong> ${escapeHtml(group.recommendation_reason)}. Select its Keep option to accept.</p>`
+      : '<p>No device currently uses a copy from this set. Choose based on naming and folder organization.</p>';
   return `<section class="duplicate-group" data-duplicate-group="${index}">
     <div class="duplicate-group-head">
-      <div><div class="duplicate-group-title"><strong>${group.copies} ${exact ? "identical" : "similarly named"} ${group.copies === 1 ? "copy" : "copies"}</strong><span class="badge ${exact ? "exact" : "possible"}">${signature}</span></div><p>${exact ? `${formatBytes(group.bytes)} across this set. Only one copy is needed.` : "Content differs. Confirm the correct edition, region, or revision before removing anything."}</p></div>
-      <button class="button danger-subtle small" data-clean-duplicate="${index}" ${keeper ? "" : "disabled"}>Trash ${removeCount} other ${removeCount === 1 ? "copy" : "copies"}</button>
+      <div><div class="duplicate-group-title"><strong>${group.copies} ${exact ? "identical" : "similarly named"} ${group.copies === 1 ? "copy" : "copies"}</strong><span class="badge ${exact ? "exact" : "possible"}">${signature}</span></div><p>${exact ? `${formatBytes(group.bytes)} across this set. Only one copy is needed.` : "Content differs. Confirm the correct edition, region, or revision before removing anything."}</p>${deviceGuidance}</div>
+      <button class="button danger-subtle small" data-clean-duplicate="${index}" ${keeper && !group.device_conflict ? "" : "disabled"}>${group.device_conflict ? "Resolve device usage first" : `Trash ${removeCount} other ${removeCount === 1 ? "copy" : "copies"}`}</button>
     </div>
     <div class="duplicate-table-wrap"><table><thead><tr><th>Decision</th><th>Filename and path</th><th>Platform</th><th>Size</th><th class="optional-column">Bundle</th><th class="optional-column">Devices</th></tr></thead><tbody>${rows}</tbody></table></div>
   </section>`;
@@ -528,7 +538,7 @@ function bindDuplicateGroups(groups) {
     state.duplicateKeepers.set(group.key, Number(radio.value));
     const section = view.querySelector(`[data-duplicate-group="${index}"]`);
     section.querySelectorAll("[data-duplicate-row]").forEach((row) => row.classList.toggle("keeper-row", Number(row.dataset.duplicateRow) === Number(radio.value)));
-    section.querySelector("[data-clean-duplicate]").disabled = false;
+    section.querySelector("[data-clean-duplicate]").disabled = group.device_conflict;
   }));
   view.querySelectorAll("[data-clean-duplicate]").forEach((button) => button.addEventListener("click", () => cleanDuplicateGroup(groups[Number(button.dataset.cleanDuplicate)])));
   view.querySelectorAll("[data-duplicate-page]").forEach((button) => button.addEventListener("click", () => {
@@ -542,9 +552,13 @@ async function cleanDuplicateGroup(group) {
   const keeper = group.items.find((game) => game.id === keeperId);
   if (!keeper) return;
   const removals = group.items.filter((game) => game.id !== keeperId);
+  const affectedDevices = [...new Set(removals.flatMap((game) => [
+    ...(game.present_devices || []),
+    ...(game.selected_devices || []),
+  ]))];
   const confirmed = await confirmAction({
     title: `Keep “${keeper.display_name}” and trash ${removals.length} ${removals.length === 1 ? "copy" : "copies"}?`,
-    content: `<p class="warning-copy">Keeping <strong>${escapeHtml(keeper.primary_relpath)}</strong>. The following recoverable bundles will move to Trash, including their companion files and managed device copies.</p><ul class="confirm-list">${removals.map((game) => `<li>${escapeHtml(game.primary_relpath)} (${formatBytes(game.size)})</li>`).join("")}</ul>${group.kind === "possible" ? '<p class="issue-warning"><strong>Content is not identical.</strong> These files only have similar names.</p>' : ""}`,
+    content: `<p class="warning-copy">Keeping <strong>${escapeHtml(keeper.primary_relpath)}</strong>. The following recoverable bundles will move to Trash, including their companion files and managed device copies.</p><ul class="confirm-list">${removals.map((game) => `<li>${escapeHtml(game.primary_relpath)} (${formatBytes(game.size)})</li>`).join("")}</ul>${affectedDevices.length ? `<p class="issue-warning"><strong>Device impact:</strong> A removed copy is present or selected on ${escapeHtml(affectedDevices.join(", "))}. Keeping the suggested copy avoids this warning.</p>` : ""}${group.kind === "possible" ? '<p class="issue-warning"><strong>Content is not identical.</strong> These files only have similar names.</p>' : ""}`,
     confirmLabel: `Trash ${removals.length} ${removals.length === 1 ? "copy" : "copies"}`,
     cancelLabel: "Review again",
     danger: true,

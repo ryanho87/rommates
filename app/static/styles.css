@@ -404,6 +404,16 @@ input[type="checkbox"] { width: 15px; height: 15px; margin: 0; accent-color: var
 .keeper-choice input { width: 15px; height: 15px; margin: 0; accent-color: var(--accent); }
 .keeper-row > td { background: var(--success-soft); }
 .keeper-row .keeper-choice { color: var(--success); font-weight: 650; }
+.suggested-keeper-row:not(.keeper-row) > td { background: color-mix(in oklch, var(--success-soft), var(--surface) 58%); }
+.keeper-suggestion { min-height: 18px; margin-top: 4px; padding: 0 5px; font-size: 0.64rem; }
+.duplicate-group-head .duplicate-recommendation { color: var(--success); }
+.duplicate-group-head .duplicate-conflict { color: var(--warning); }
+.duplicate-group-head .duplicate-recommendation strong,
+.duplicate-group-head .duplicate-conflict strong { color: inherit; }
+.duplicate-device-state { display: grid; gap: 1px; font-size: 0.7rem; }
+.duplicate-device-state strong { color: var(--text); font-weight: 620; }
+.device-presence { color: var(--success); }
+.device-selection { color: var(--text-muted); }
 .duplicate-empty { min-height: 280px; }
 
 .job-report { margin-top: 12px; padding: 0 12px 12px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface); }

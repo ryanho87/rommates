@@ -659,17 +659,42 @@ def duplicate_groups(
             f"WHERE ds.game_id IN ({game_placeholders}) ORDER BY d.name COLLATE NOCASE",
             game_ids,
         ).fetchall()
+        devices = [dict(row) for row in connection.execute(
+            "SELECT id,name FROM devices ORDER BY name COLLATE NOCASE"
+        )]
     devices_by_game: dict[int, list[str]] = {game_id: [] for game_id in game_ids}
     for row in device_rows:
         devices_by_game[row["game_id"]].append(row["name"])
+    device_inventories = {
+        device["name"]: library.device_inventory(device["id"])
+        for device in devices
+    }
     items_by_group: dict[str, list[dict[str, object]]] = {key: [] for key in keys}
     for item in items:
-        item["devices"] = devices_by_game[item["id"]]
+        selected_devices = devices_by_game[item["id"]]
+        present_devices = [
+            name for name, inventory in device_inventories.items()
+            if item["primary_relpath"] in inventory
+        ]
+        item["devices"] = selected_devices
+        item["selected_devices"] = selected_devices
+        item["present_devices"] = present_devices
         items_by_group[item.pop("group_key")].append(item)
     groups = []
     for row in group_rows:
         key = row["group_key"]
         members = items_by_group[key]
+        in_use = [
+            member for member in members
+            if member["present_devices"] or member["selected_devices"]
+        ]
+        recommended = in_use[0] if len(in_use) == 1 else None
+        recommendation_reason = ""
+        if recommended:
+            if recommended["present_devices"]:
+                recommendation_reason = "Already present on " + ", ".join(recommended["present_devices"])
+            else:
+                recommendation_reason = "Selected for " + ", ".join(recommended["selected_devices"])
         groups.append(
             {
                 "key": key,
@@ -677,6 +702,9 @@ def duplicate_groups(
                 "label": row["sort_name"],
                 "copies": len(members),
                 "bytes": sum(member["size"] for member in members),
+                "recommended_keeper_id": recommended["id"] if recommended else None,
+                "recommendation_reason": recommendation_reason,
+                "device_conflict": len(in_use) > 1,
                 "items": members,
             }
         )
