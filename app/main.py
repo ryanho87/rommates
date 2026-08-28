@@ -437,6 +437,99 @@ def status():
     }
 
 
+@app.get("/api/dashboard")
+def dashboard():
+    with db.connect() as connection:
+        collection = dict(connection.execute(
+            "SELECT COUNT(*) AS games,COUNT(DISTINCT platform) AS platforms,"
+            "COALESCE(SUM(size),0) AS bytes,(SELECT COUNT(*) FROM game_files) AS files FROM games"
+        ).fetchone())
+        platform_rows = connection.execute(
+            "SELECT platform,COUNT(*) AS games,COALESCE(SUM(size),0) AS bytes "
+            "FROM games GROUP BY platform ORDER BY games DESC,platform COLLATE NOCASE"
+        ).fetchall()
+        duplicate_summary = dict(connection.execute(
+            "SELECT COUNT(*) AS groups,COALESCE(SUM(copies-1),0) AS extra_copies,"
+            "COALESCE(SUM(total_bytes-keep_bytes),0) AS reclaimable_bytes FROM ("
+            "SELECT COUNT(*) AS copies,SUM(size) AS total_bytes,MAX(size) AS keep_bytes "
+            "FROM games GROUP BY bundle_hash HAVING COUNT(*)>1)"
+        ).fetchone())
+        possible_groups = connection.execute(
+            "SELECT COUNT(*) AS count FROM (SELECT platform,normalized_name FROM games "
+            "WHERE normalized_name<>'' GROUP BY platform,normalized_name "
+            "HAVING COUNT(DISTINCT bundle_hash)>1)"
+        ).fetchone()["count"]
+        artwork = dict(connection.execute(
+            "SELECT COUNT(DISTINCT game_id) AS games,COUNT(*) AS assets,"
+            "COALESCE(SUM(size),0) AS bytes,"
+            "COUNT(DISTINCT CASE WHEN kind='cover' THEN game_id END) AS covers FROM game_assets"
+        ).fetchone())
+        devices = [dict(row) for row in connection.execute(
+            "SELECT d.id,d.name,"
+            "(SELECT COUNT(*) FROM device_selections ds WHERE ds.device_id=d.id) AS selected_games,"
+            "(SELECT COUNT(DISTINCT game_id) FROM deployments dp WHERE dp.device_id=d.id) AS deployed_games,"
+            "(SELECT COUNT(*) FROM device_selections ds JOIN game_files gf ON gf.game_id=ds.game_id "
+            " WHERE ds.device_id=d.id AND NOT EXISTS(SELECT 1 FROM deployments dp WHERE dp.device_id=d.id "
+            " AND dp.game_id=ds.game_id AND dp.relpath=gf.relpath)) AS additions,"
+            "(SELECT COUNT(*) FROM deployments dp WHERE dp.device_id=d.id AND NOT EXISTS("
+            " SELECT 1 FROM device_selections ds WHERE ds.device_id=dp.device_id AND ds.game_id=dp.game_id)) AS removals "
+            "FROM devices d ORDER BY d.name COLLATE NOCASE"
+        )]
+        recent_jobs = [job_payload(row) for row in connection.execute(
+            "SELECT j.*,(SELECT COUNT(*) FROM job_issues i WHERE i.job_id=j.id) AS issue_count "
+            "FROM jobs j ORDER BY j.id DESC LIMIT 5"
+        )]
+        last_scan_row = connection.execute(
+            "SELECT j.*,(SELECT COUNT(*) FROM job_issues i WHERE i.job_id=j.id) AS issue_count "
+            "FROM jobs j WHERE kind='scan' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        trash_count = connection.execute("SELECT COUNT(*) AS count FROM trash_items").fetchone()["count"]
+        catalog_count = connection.execute("SELECT COUNT(*) AS count FROM naming_catalogs").fetchone()["count"]
+        latest_snapshot = connection.execute(
+            "SELECT * FROM save_snapshots ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        snapshot_count = connection.execute(
+            "SELECT COUNT(*) AS count FROM save_snapshots"
+        ).fetchone()["count"]
+    try:
+        save_source = saves.source_summary()
+    except LibraryError as exc:
+        save_source = {
+            "available": False,
+            "files": 0,
+            "bytes": 0,
+            "save_files": 0,
+            "state_files": 0,
+            "latest_mtime_ns": 0,
+            "error": str(exc),
+        }
+    for job in recent_jobs:
+        job.pop("result_json", None)
+    last_scan = job_payload(last_scan_row) if last_scan_row else None
+    if last_scan:
+        last_scan.pop("result_json", None)
+    return {
+        "collection": collection,
+        "platforms": [dict(row) for row in platform_rows],
+        "cleanup": {
+            **duplicate_summary,
+            "possible_groups": possible_groups,
+            "trash": trash_count,
+            "naming_catalogs": catalog_count,
+        },
+        "artwork": artwork,
+        "screenscraper_configured": screenscraper.configured,
+        "devices": devices,
+        "saves": {
+            **save_source,
+            "snapshots": snapshot_count,
+            "latest_snapshot": dict(latest_snapshot) if latest_snapshot else None,
+        },
+        "last_scan": last_scan,
+        "recent_jobs": recent_jobs,
+    }
+
+
 @app.post("/api/scan", status_code=202)
 def start_scan(confirm_prune: bool = False):
     with db.write() as connection:

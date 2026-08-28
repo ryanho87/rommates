@@ -8,7 +8,7 @@
     <link rel="stylesheet" href="/static/styles.css">
   </head>
   <body>
-    <a class="skip-link" href="#main-content">Skip to library</a>
+    <a class="skip-link" href="#main-content">Skip to content</a>
     <div class="shell">
       <aside class="sidebar" aria-label="Primary navigation">
         <div class="brand">
@@ -16,7 +16,8 @@
           <span>ROMmates</span>
         </div>
         <nav id="navigation">
-          <button class="nav-item active" data-view="library">
+          <button class="nav-item active" data-view="overview"><span>Overview</span></button>
+          <button class="nav-item" data-view="library">
             <span>Library</span><span class="nav-count" id="nav-games">0</span>
           </button>
           <button class="nav-item" data-view="duplicates">
@@ -46,8 +47,8 @@
       <main id="main-content" tabindex="-1">
         <header class="topbar">
           <div>
-            <h1 id="page-title">Library</h1>
-            <p id="page-subtitle">Browse and clean the canonical collection.</p>
+            <h1 id="page-title">Overview</h1>
+            <p id="page-subtitle">Collection health and recent activity.</p>
           </div>
           <div class="topbar-actions">
             <span class="job-pill hidden" id="job-pill" role="status"></span>

@@ -358,6 +358,41 @@ class SaveSnapshotService:
             "available": self.available(),
         }
 
+    def source_summary(self) -> dict[str, object]:
+        """Return lightweight live-tree totals for the collection dashboard."""
+        if not self.available():
+            return {
+                "available": False,
+                "files": 0,
+                "bytes": 0,
+                "save_files": 0,
+                "state_files": 0,
+                "latest_mtime_ns": 0,
+            }
+        root = self.settings.saves_root
+        files = total_bytes = save_files = state_files = latest_mtime_ns = 0
+        for path in self._source_paths():
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            relpath = path.relative_to(root).as_posix().casefold()
+            files += 1
+            total_bytes += stat.st_size
+            latest_mtime_ns = max(latest_mtime_ns, stat.st_mtime_ns)
+            if relpath.startswith("saves/"):
+                save_files += 1
+            elif relpath.startswith("states/"):
+                state_files += 1
+        return {
+            "available": True,
+            "files": files,
+            "bytes": total_bytes,
+            "save_files": save_files,
+            "state_files": state_files,
+            "latest_mtime_ns": latest_mtime_ns,
+        }
+
     def snapshot_detail(
         self, snapshot_id: int, search: str = "", limit: int = 250, offset: int = 0
     ) -> dict[str, object]:

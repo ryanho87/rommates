@@ -4,6 +4,7 @@ ROMmates is a private, self-hosted web interface for cleaning a canonical ROM li
 
 The MVP supports:
 
+- At-a-glance collection dashboard with cleanup, device, save, artwork, and job health
 - Indexed search across platform folders, backed by SQLite
 - Compact filtering by platform and duplicate status
 - SHA-256 exact duplicate detection
@@ -23,6 +24,7 @@ The MVP supports:
 - Safe stop controls for scans and device deployment jobs
 - Detailed job reports with timing, structured results, and paginated unreadable-file paths
 - Deduplicated RetroArch save snapshots with scheduling, retention, historical downloads, and guarded full-state restore
+- ScreenScraper matching with locally cached covers, screenshots, and logos
 - Bearer-token protection for the private API
 - Browser/OS light and dark themes
 

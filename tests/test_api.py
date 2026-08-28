@@ -85,6 +85,22 @@ class ApiIntegrationTests(unittest.TestCase):
             self.assertEqual(response.status_code, 400)
             self.assertNotIn("password", response.text.casefold())
 
+    def test_dashboard_summarizes_collection_work_queues(self):
+        scan = self.client.post("/api/scan", headers=self.headers)
+        self.assertEqual(self.wait_for_job(scan.json()["job_id"])["status"], "complete")
+        response = self.client.get("/api/dashboard", headers=self.headers)
+        self.assertEqual(response.status_code, 200)
+        dashboard = response.json()
+        self.assertGreaterEqual(dashboard["collection"]["games"], 1)
+        self.assertGreaterEqual(dashboard["collection"]["files"], 1)
+        self.assertTrue(any(item["platform"] == "gba" for item in dashboard["platforms"]))
+        self.assertIn("reclaimable_bytes", dashboard["cleanup"])
+        self.assertIn("games", dashboard["artwork"])
+        self.assertIn("save_files", dashboard["saves"])
+        self.assertIsNotNone(dashboard["last_scan"])
+        self.assertGreaterEqual(len(dashboard["recent_jobs"]), 1)
+        self.assertNotIn("result_json", dashboard["recent_jobs"][0])
+
     def test_cross_site_mutation_is_rejected(self):
         response = self.client.post(
             "/api/scan",

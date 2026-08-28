@@ -1,5 +1,5 @@
 const state = {
-  view: "library",
+  view: "overview",
   status: null,
   platforms: [],
   devices: [],
@@ -514,6 +514,92 @@ function syncSelectAll() {
   const checked = boxes.filter((box) => box.checked).length;
   selectAll.checked = boxes.length > 0 && checked === boxes.length;
   selectAll.indeterminate = checked > 0 && checked < boxes.length;
+}
+
+function dashboardDate(value) {
+  if (!value) return "Never";
+  const date = new Date(value.includes?.("T") ? value : `${value.replace(" ", "T")}Z`);
+  if (!Number.isFinite(date.getTime())) return value;
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
+  }).format(date);
+}
+
+function coverageBar(value, total, label) {
+  const percent = total ? Math.round(value * 100 / total) : 0;
+  return `<div class="coverage-row"><div><span>${escapeHtml(label)}</span><strong>${value.toLocaleString()} of ${total.toLocaleString()}</strong></div><div class="coverage-track" role="progressbar" aria-label="${escapeHtml(label)}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent}"><span style="width:${percent}%"></span></div><small>${percent}%</small></div>`;
+}
+
+function dashboardJobBadge(job) {
+  const badge = job.status === "failed" ? "exact" : job.status === "complete" ? "unique" : job.status === "cancelled" ? "cancelled" : "possible";
+  return `<span class="badge ${badge}">${escapeHtml(job.status)}${["running", "cancelling"].includes(job.status) ? ` · ${job.progress}%` : ""}</span>`;
+}
+
+async function renderOverview() {
+  setHeading("Overview", "Collection health and recent activity.");
+  const data = await api("/api/dashboard");
+  const collection = data.collection;
+  const largestPlatform = Math.max(...data.platforms.map((item) => item.games), 1);
+  const visiblePlatforms = data.platforms.slice(0, 10);
+  const otherPlatforms = data.platforms.slice(10);
+  const platformRows = visiblePlatforms.map((item) => `<button class="platform-row" data-dashboard-view="library" data-dashboard-platform="${escapeHtml(item.platform)}"><span class="platform-name">${escapeHtml(item.platform)}</span><span class="platform-bar"><i style="width:${Math.max(2, item.games * 100 / largestPlatform)}%"></i></span><strong>${item.games.toLocaleString()}</strong><small>${formatBytes(item.bytes)}</small></button>`).join("");
+  const otherSummary = otherPlatforms.length
+    ? `<div class="platform-rest"><span>${otherPlatforms.length} more platforms</span><strong>${otherPlatforms.reduce((sum, item) => sum + item.games, 0).toLocaleString()} games</strong></div>`
+    : "";
+
+  const pendingDeviceFiles = data.devices.reduce((sum, device) => sum + device.additions + device.removals, 0);
+  const attention = [];
+  if (data.last_scan && ["failed", "cancelled"].includes(data.last_scan.status)) attention.push({ view: "jobs", label: `Last scan ${data.last_scan.status}`, detail: data.last_scan.detail, tone: "danger", job: data.last_scan.id });
+  if (data.cleanup.groups) attention.push({ view: "duplicates", label: `${data.cleanup.groups.toLocaleString()} exact duplicate groups`, detail: `${data.cleanup.extra_copies.toLocaleString()} extra copies · ${formatBytes(data.cleanup.reclaimable_bytes)} recoverable`, tone: "danger", duplicate: "exact" });
+  if (data.cleanup.possible_groups) attention.push({ view: "duplicates", label: `${data.cleanup.possible_groups.toLocaleString()} possible duplicate groups`, detail: "Similar filenames with different content", tone: "warning", duplicate: "possible" });
+  if (data.last_scan?.reported_issue_count) attention.push({ view: "jobs", label: `${data.last_scan.reported_issue_count.toLocaleString()} unreadable files`, detail: `From scan #${data.last_scan.id}`, tone: "warning", job: data.last_scan.id });
+  if (pendingDeviceFiles) attention.push({ view: "devices", label: `${pendingDeviceFiles.toLocaleString()} pending device file changes`, detail: "Selections have not been fully applied", tone: "accent" });
+  if (data.cleanup.trash) attention.push({ view: "trash", label: `${data.cleanup.trash.toLocaleString()} bundles in trash`, detail: "Recoverable until permanently purged", tone: "neutral" });
+  const missingArtwork = Math.max(0, collection.games - data.artwork.games);
+  if (missingArtwork) attention.push({ view: "library", label: `${missingArtwork.toLocaleString()} games without artwork`, detail: data.screenscraper_configured ? "Select games to scrape missing assets" : "ScreenScraper credentials are not configured", tone: "neutral" });
+  if (!data.cleanup.naming_catalogs) attention.push({ view: "naming", label: "No naming catalogs imported", detail: "Import a DAT for canonical filename matches", tone: "neutral" });
+  const attentionHtml = attention.length
+    ? `<div class="attention-list">${attention.slice(0, 7).map((item) => `<button class="attention-row ${item.tone}" data-dashboard-view="${item.view}" ${item.duplicate ? `data-dashboard-duplicate="${item.duplicate}"` : ""} ${item.job ? `data-dashboard-job="${item.job}"` : ""}><span class="attention-mark" aria-hidden="true"></span><span><strong>${escapeHtml(item.label)}</strong><small>${escapeHtml(item.detail)}</small></span><span aria-hidden="true">→</span></button>`).join("")}</div>`
+    : '<div class="dashboard-empty"><strong>Nothing needs immediate review</strong><span>Scans, devices, saves, and cleanup queues are current.</span></div>';
+
+  const devicesHtml = data.devices.length
+    ? `<div class="dashboard-table"><table><thead><tr><th>Device</th><th>Selected</th><th>Deployed</th><th>Pending files</th><th>Status</th></tr></thead><tbody>${data.devices.map((device) => {
+        const pending = device.additions + device.removals;
+        return `<tr><td><button class="text-button" data-dashboard-view="devices" data-dashboard-device="${device.id}">${escapeHtml(device.name)}</button></td><td>${device.selected_games.toLocaleString()}</td><td>${device.deployed_games.toLocaleString()}</td><td>${pending ? `<span class="dashboard-pending">+${device.additions} / −${device.removals}</span>` : "0"}</td><td>${pending ? '<span class="badge possible">Needs apply</span>' : '<span class="badge unique">Applied</span>'}</td></tr>`;
+      }).join("")}</tbody></table></div>`
+    : '<div class="dashboard-empty compact"><strong>No devices discovered</strong><span>Create a device ROM directory, then scan.</span></div>';
+
+  const savesUpdated = data.saves.latest_mtime_ns
+    ? dashboardDate(new Date(data.saves.latest_mtime_ns / 1e6).toISOString())
+    : "No cloud files";
+  const recentJobs = data.recent_jobs.length
+    ? `<div class="dashboard-table recent-jobs"><table><thead><tr><th>Job</th><th>Status</th><th>Detail</th><th>Started</th></tr></thead><tbody>${data.recent_jobs.map((job) => `<tr><td><button class="text-button" data-dashboard-view="jobs" data-dashboard-job="${job.id}">${escapeHtml(job.kind)}</button></td><td>${dashboardJobBadge(job)}</td><td class="name-cell">${escapeHtml(job.detail)}</td><td class="meta">${dashboardDate(job.created_at)}</td></tr>`).join("")}</tbody></table></div>`
+    : '<div class="dashboard-empty compact"><strong>No jobs yet</strong><span>Run a library scan to start collection history.</span></div>';
+
+  setViewHtml(`<div class="overview-strip" aria-label="Collection summary">
+    <div><span>Games</span><strong>${collection.games.toLocaleString()}</strong></div>
+    <div><span>Platforms</span><strong>${collection.platforms.toLocaleString()}</strong></div>
+    <div><span>Library size</span><strong>${formatBytes(collection.bytes)}</strong></div>
+    <div><span>Indexed files</span><strong>${collection.files.toLocaleString()}</strong></div>
+    <div class="scan-summary"><span>Last scan</span><strong>${data.last_scan ? dashboardDate(data.last_scan.completed_at || data.last_scan.created_at) : "Never"}</strong>${data.last_scan ? dashboardJobBadge(data.last_scan) : ""}</div>
+  </div>
+  <div class="dashboard-grid">
+    <section class="dashboard-panel platform-panel"><div class="dashboard-panel-head"><div><h2>Collection by platform</h2><p>Largest indexed sets by game count.</p></div><button class="text-button" data-dashboard-view="library">Open library</button></div><div class="platform-list">${platformRows}${otherSummary}</div></section>
+    <section class="dashboard-panel attention-panel"><div class="dashboard-panel-head"><div><h2>Needs attention</h2><p>Work that can change or improve the collection.</p></div></div>${attentionHtml}</section>
+    <section class="dashboard-panel device-panel"><div class="dashboard-panel-head"><div><h2>Device sync</h2><p>Desired games compared with managed deployments.</p></div><button class="text-button" data-dashboard-view="devices">Manage devices</button></div>${devicesHtml}</section>
+    <section class="dashboard-panel coverage-panel"><div class="dashboard-panel-head"><div><h2>Coverage</h2><p>Metadata and recovery readiness.</p></div></div>${coverageBar(data.artwork.games, collection.games, "Games with artwork")}${coverageBar(data.artwork.covers, collection.games, "Games with cover art")}<div class="coverage-facts"><div><span>Cached artwork</span><strong>${data.artwork.assets.toLocaleString()} assets · ${formatBytes(data.artwork.bytes)}</strong></div><div><span>Save snapshots</span><strong>${data.saves.snapshots.toLocaleString()}${data.saves.latest_snapshot ? ` · latest #${data.saves.latest_snapshot.id}` : ""}</strong></div></div></section>
+    <section class="dashboard-panel saves-panel"><div class="dashboard-panel-head"><div><h2>RetroArch cloud</h2><p>${data.saves.error ? escapeHtml(data.saves.error) : "Live files visible to ROMmates."}</p></div><button class="text-button" data-dashboard-view="saves">Open saves</button></div><dl class="save-facts"><div><dt>Battery saves</dt><dd>${data.saves.save_files.toLocaleString()}</dd></div><div><dt>Save states</dt><dd>${data.saves.state_files.toLocaleString()}</dd></div><div><dt>All cloud files</dt><dd>${data.saves.files.toLocaleString()} · ${formatBytes(data.saves.bytes)}</dd></div><div><dt>Last changed</dt><dd>${escapeHtml(savesUpdated)}</dd></div></dl></section>
+    <section class="dashboard-panel activity-panel"><div class="dashboard-panel-head"><div><h2>Recent jobs</h2><p>Latest filesystem and metadata work.</p></div><button class="text-button" data-dashboard-view="jobs">All jobs</button></div>${recentJobs}</section>
+  </div>`);
+
+  view.querySelectorAll("[data-dashboard-view]").forEach((button) => button.addEventListener("click", () => {
+    navigateTo(button.dataset.dashboardView, {
+      platform: button.dataset.dashboardPlatform || "",
+      duplicate: button.dataset.dashboardDuplicate,
+      jobId: Number(button.dataset.dashboardJob) || null,
+      deviceId: Number(button.dataset.dashboardDevice) || null,
+    });
+  }));
 }
 
 async function renderLibrary() {
@@ -1495,7 +1581,7 @@ async function offerPruneConfirmation(detail) {
 async function renderCurrentView() {
   view.setAttribute("aria-busy", "true");
   try {
-    const renderers = { library: renderLibrary, duplicates: renderDuplicates, naming: renderNaming, devices: renderDevices, saves: renderSaves, jobs: renderJobs, trash: renderTrash };
+    const renderers = { overview: renderOverview, library: renderLibrary, duplicates: renderDuplicates, naming: renderNaming, devices: renderDevices, saves: renderSaves, jobs: renderJobs, trash: renderTrash };
     await renderers[state.view]();
   } catch (error) {
     if (error.name === "AbortError") return;
@@ -1530,22 +1616,33 @@ function renderAuthentication() {
   document.querySelector("#access-token").focus();
 }
 
-document.querySelector("#navigation").addEventListener("click", (event) => {
-  const button = event.target.closest("[data-view]");
-  if (!button) return;
-  state.view = button.dataset.view;
+function navigateTo(viewName, options = {}) {
+  state.view = viewName;
   state.offset = 0;
   state.search = "";
-  state.platform = "";
-  state.duplicate = state.view === "duplicates" ? "exact" : "all";
+  state.platform = options.platform || "";
+  state.duplicate = options.duplicate || (state.view === "duplicates" ? "exact" : "all");
+  if (options.jobId) {
+    state.jobReportId = options.jobId;
+    state.jobIssueOffset = 0;
+  }
+  if (options.deviceId) state.deviceId = options.deviceId;
   state.selectedRows.clear();
   state.editingId = null;
   state.assigningId = null;
+  state.artworkId = null;
+  state.artworkDetail = null;
   state.assignmentDevices = [];
   if (state.view !== "naming") state.namingSelected.clear();
   if (state.view !== "saves") state.saveSnapshotId = null;
-  document.querySelectorAll(".nav-item").forEach((item) => item.classList.toggle("active", item === button));
+  document.querySelectorAll(".nav-item").forEach((item) => item.classList.toggle("active", item.dataset.view === viewName));
   renderCurrentView();
+}
+
+document.querySelector("#navigation").addEventListener("click", (event) => {
+  const button = event.target.closest("[data-view]");
+  if (!button) return;
+  navigateTo(button.dataset.view);
 });
 
 scanButton.addEventListener("click", () => startScan());
