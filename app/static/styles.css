@@ -610,6 +610,26 @@ dialog form { padding: 18px; }
 .artwork-empty { padding: 14px; border: 1px dashed var(--border-strong); border-radius: var(--radius-sm); color: var(--text-muted); }
 .artwork-empty p { margin: 3px 0 0; font-size: 0.74rem; }
 .pager { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 10px; color: var(--text-muted); font-size: 0.78rem; }
+.infinite-footer {
+  display: flex;
+  min-height: 58px;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--text-muted);
+  font-size: 0.76rem;
+}
+.infinite-state { color: var(--text-faint); }
+.issue-actions { display: flex; justify-content: flex-end; margin-top: 8px; }
+.infinite-footer[data-infinite-sentinel] .infinite-state::before {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  content: "";
+}
 
 .navigation-loading {
   display: grid;

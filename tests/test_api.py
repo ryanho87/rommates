@@ -231,6 +231,16 @@ class ApiIntegrationTests(unittest.TestCase):
         target.write_bytes(source.read_bytes())
         unknown.write_bytes(b"unknown")
         try:
+            library_game = next(
+                item for item in self.client.get(
+                    "/api/games?limit=1000", headers=self.headers
+                ).json()["items"]
+                if item["id"] == game["id"]
+            )
+            self.assertEqual(
+                library_game["devices"],
+                [{"id": device["id"], "name": device["name"], "state": "present"}],
+            )
             response = self.client.get(
                 f"/api/games?device_id={device['id']}&device_scope=on_device",
                 headers=self.headers,

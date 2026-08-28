@@ -8,6 +8,7 @@ import re
 import shlex
 import shutil
 import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,6 +20,7 @@ from .db import Database
 
 COPY_SUFFIX = ".rommates-copy"
 LEGACY_COPY_SUFFIX = ".rommanager-copy"
+DEVICE_INVENTORY_CACHE_SECONDS = 5.0
 
 CUE_FILE_RE = re.compile(r'^\s*FILE\s+"([^"]+)"', re.IGNORECASE)
 GDI_FILE_RE = re.compile(r'^(\s*\d+\s+\d+\s+\d+\s+\d+\s+)(?:"([^"]+)"|(\S+))(\s+\d+.*)$')
@@ -144,6 +146,7 @@ class LibraryService:
         self.settings = settings
         self.db = db
         self._operation_lock = threading.RLock()
+        self._device_inventory_cache: dict[int, tuple[float, frozenset[str]]] = {}
 
     def prepare_roots(self) -> None:
         if self.settings.require_existing_roots:
@@ -570,6 +573,7 @@ class LibraryService:
                 detail += f", skipped {len(skipped)} unreadable files"
             if removed_devices:
                 detail += f", removed device {', '.join(removed_devices)}"
+            self._device_inventory_cache.clear()
             self.db.activity("scan", detail)
             self.db.prune_history()
             return {
@@ -968,7 +972,7 @@ class LibraryService:
 
             inventory_paths: set[str] = set()
             for device_id in device_ids:
-                inventory_paths.update(self.device_inventory(device_id))
+                inventory_paths.update(self.device_inventory(device_id, refresh=True))
             present_ids = {
                 game_id for game_id, relpaths in files_by_game.items()
                 if any(relpath in inventory_paths for relpath in relpaths)
@@ -1114,8 +1118,11 @@ class LibraryService:
                     "DELETE FROM device_selections WHERE device_id=? AND game_id=?", (device_id, game_id)
                 )
 
-    def device_inventory(self, device_id: int) -> set[str]:
+    def device_inventory(self, device_id: int, *, refresh: bool = False) -> set[str]:
         """Return actual device ROM paths without treating them as managed copies."""
+        cached = self._device_inventory_cache.get(device_id)
+        if not refresh and cached and cached[0] > time.monotonic():
+            return set(cached[1])
         with self.db.connect() as connection:
             device = connection.execute("SELECT path FROM devices WHERE id=?", (device_id,)).fetchone()
         if not device:
@@ -1141,7 +1148,11 @@ class LibraryService:
                 except OSError:
                     continue
         except OSError:
-            return inventory
+            pass
+        self._device_inventory_cache[device_id] = (
+            time.monotonic() + DEVICE_INVENTORY_CACHE_SECONDS,
+            frozenset(inventory),
+        )
         return inventory
 
     def set_selections(self, device_id: int, game_ids: Iterable[int], selected: bool) -> int:
@@ -1274,6 +1285,7 @@ class LibraryService:
                         metadata.unlink()
                         metadata_removed += 1
             detail = f"Applied {device['name']}: {copied} copied, {removed} removed"
+            self._device_inventory_cache.pop(device_id, None)
             self.db.activity("device_apply", detail)
             return {
                 "copied": copied,

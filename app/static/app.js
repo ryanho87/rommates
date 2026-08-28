@@ -46,6 +46,8 @@ const state = {
   navigationCache: new Map(),
   prefetchStarted: false,
   navigationLoadingTimer: null,
+  infinitePages: new Map(),
+  infiniteObserver: null,
 };
 
 const view = document.querySelector("#view");
@@ -90,9 +92,85 @@ function restoreFocus(snapshot) {
 
 function setViewHtml(html) {
   clearTimeout(state.navigationLoadingTimer);
+  state.infiniteObserver?.disconnect();
   const snapshot = captureFocus();
   view.innerHTML = html;
   restoreFocus(snapshot);
+}
+
+function mergeInfinitePage(key, data, identity = (item) => item.id) {
+  let page = state.infinitePages.get(key);
+  if (!page || data.offset === 0) {
+    const namespace = key.split("\u001f", 1)[0];
+    for (const existingKey of state.infinitePages.keys()) {
+      if (existingKey !== key && existingKey.split("\u001f", 1)[0] === namespace) {
+        state.infinitePages.delete(existingKey);
+      }
+    }
+    page = { items: [], total: data.total };
+    state.infinitePages.set(key, page);
+  }
+  if (data.offset === 0) {
+    page.items = [...data.items];
+  } else {
+    const replaceCount = Math.min(
+      data.limit || data.items.length,
+      Math.max(0, page.items.length - data.offset),
+    );
+    page.items.splice(data.offset, replaceCount, ...data.items);
+    const seen = new Set();
+    page.items = page.items.filter((item) => {
+      const itemIdentity = identity(item);
+      if (seen.has(itemIdentity)) return false;
+      seen.add(itemIdentity);
+      return true;
+    });
+    if (page.items.length > data.total) {
+      page.items.length = data.total;
+    }
+  }
+  page.total = data.total;
+  return { ...data, items: page.items, offset: 0 };
+}
+
+function infiniteFooter(data, noun = "items") {
+  const loaded = data.items.length;
+  const more = loaded < data.total;
+  return `<div class="infinite-footer" ${more ? "data-infinite-sentinel" : ""}>
+    <span>${loaded.toLocaleString()} of ${data.total.toLocaleString()} ${escapeHtml(noun)}</span>
+    <span class="infinite-state">${more ? "Loading more…" : data.total ? "All loaded" : ""}</span>
+  </div>`;
+}
+
+function bindInfiniteScroll(data, callback, offsetSetter = (offset) => { state.offset = offset; }) {
+  const sentinel = view.querySelector("[data-infinite-sentinel]");
+  if (!sentinel || data.items.length >= data.total) return;
+  let loading = false;
+  const load = () => {
+    if (loading) return;
+    loading = true;
+    state.infiniteObserver?.disconnect();
+    offsetSetter(data.items.length);
+    Promise.resolve(callback()).catch((error) => {
+      loading = false;
+      const status = sentinel.querySelector(".infinite-state");
+      if (status) status.textContent = "Could not load more. Scroll away and back to retry.";
+      toast(error.message, "error");
+      if (sentinel.isConnected) state.infiniteObserver?.observe(sentinel);
+    });
+  };
+  if (!("IntersectionObserver" in window)) {
+    const fallback = document.createElement("button");
+    fallback.className = "button secondary small";
+    fallback.textContent = "Load more";
+    fallback.addEventListener("click", load);
+    sentinel.append(fallback);
+    return;
+  }
+  state.infiniteObserver = new IntersectionObserver((entries) => {
+    if (entries.some((entry) => entry.isIntersecting)) load();
+  }, { rootMargin: "600px 0px" });
+  state.infiniteObserver.observe(sentinel);
 }
 
 function beginPageRender() {
@@ -150,6 +228,7 @@ function storedAccessToken() {
 }
 
 const NAVIGATION_CACHE_TTL = 20_000;
+const INFINITE_CHUNK_SIZE = 250;
 
 function clearNavigationCache() {
   state.navigationCache.clear();
@@ -388,7 +467,7 @@ async function getGames(deviceId = null, deviceScope = "all") {
     search: state.search,
     platform: state.platform,
     duplicate: state.duplicate,
-    limit: state.limit,
+    limit: state.offset ? INFINITE_CHUNK_SIZE : state.limit,
     offset: state.offset,
   });
   if (deviceId) params.set("device_id", deviceId);
@@ -499,7 +578,6 @@ function gamesTable(data, deviceMode = false) {
     const noLibrary = state.status?.games === 0;
     return `<div class="empty-state"><div><h2>${noLibrary ? "Your library has not been indexed" : "No ROMs match these filters"}</h2><p>${noLibrary ? "Mount the platform folders at the configured library root, then scan to build the searchable catalog." : "Try a different title, platform, or duplicate status."}</p>${noLibrary ? '<button class="button" data-scan>Scan library</button>' : '<button class="button secondary" data-clear-filters>Clear filters</button>'}</div></div>`;
   }
-  const end = Math.min(data.offset + data.items.length, data.total);
   return `
     <div class="table-wrap">
       <table>
@@ -510,7 +588,7 @@ function gamesTable(data, deviceMode = false) {
         <tbody>${gameRows(data.items, deviceMode)}</tbody>
       </table>
     </div>
-    <div class="pager"><span>Showing ${data.offset + 1}–${end} of ${data.total.toLocaleString()}</span><div class="bulk-actions"><button class="button secondary small" data-page="previous" ${data.offset === 0 ? "disabled" : ""}>Previous</button><button class="button secondary small" data-page="next" ${end >= data.total ? "disabled" : ""}>Next</button></div></div>`;
+    ${infiniteFooter(data, data.total === 1 ? "game" : "games")}`;
 }
 
 function artworkThumb(game, interactive = true) {
@@ -704,13 +782,16 @@ async function renderOverview() {
 async function renderLibrary() {
   const renderVersion = beginPageRender();
   setHeading("Library", "Browse, rename, and clean the canonical collection.");
-  const data = await getGames();
+  const response = await getGames();
   if (!pageRenderIsCurrent(renderVersion, "library")) return;
+  const key = `library\u001f${state.search}\u001f${state.platform}\u001f${state.duplicate}`;
+  const data = mergeInfinitePage(key, response);
   setViewHtml(`${libraryToolbar(true)}${gamesTable(data)}<div id="bulk-bar-slot"></div>`);
   renderBulkBar();
   syncSelectAll();
   bindFilters(renderLibrary);
   bindGameEvents(data, false);
+  bindInfiniteScroll(data, renderLibrary);
   loadArtworkImages();
 }
 
@@ -725,12 +806,14 @@ async function renderDuplicates() {
     limit: 30,
     offset: state.offset,
   });
-  const data = await navigationApi(`/api/duplicates?${params}`);
+  const response = await navigationApi(`/api/duplicates?${params}`);
   if (!pageRenderIsCurrent(renderVersion, "duplicates")) return;
-  if (data.total > 0 && state.offset >= data.total) {
-    state.offset = Math.floor((data.total - 1) / 30) * 30;
+  if (response.total > 0 && state.offset >= response.total) {
+    state.offset = 0;
     return renderDuplicates();
   }
+  const key = `duplicates\u001f${state.duplicate}\u001f${state.search}\u001f${state.platform}`;
+  const data = mergeInfinitePage(key, response, (group) => `${group.kind}\u001f${group.key}`);
   const possible = state.duplicate === "possible";
   const content = data.items.length
     ? `<div class="duplicate-groups">${data.items.map((group, index) => duplicateGroupHtml(group, index)).join("")}</div>${duplicatePager(data)}`
@@ -738,6 +821,7 @@ async function renderDuplicates() {
   setViewHtml(`${libraryToolbar(true)}<div class="section-heading duplicate-heading"><div><h2>${possible ? "Possible duplicate groups" : "Exact duplicate groups"}</h2><p>${possible ? "Names normalize to the same title. Inspect paths and sizes before choosing what to keep." : "Every section contains complete bundles with the same content hash. Choose keepers, then move every reviewed non-keeper to Trash in one job."}</p></div><span class="meta">${data.total.toLocaleString()} ${data.total === 1 ? "group" : "groups"}</span></div>${duplicateBatchBarHtml(data)}${content}`);
   bindFilters(renderDuplicates);
   bindDuplicateGroups(data);
+  bindInfiniteScroll(data, renderDuplicates);
 }
 
 function duplicateReviewKey(group) {
@@ -798,8 +882,7 @@ function duplicateGroupHtml(group, index) {
 }
 
 function duplicatePager(data) {
-  const end = Math.min(data.offset + data.items.length, data.total);
-  return `<div class="pager"><span>Showing groups ${data.offset + 1}–${end} of ${data.total.toLocaleString()}</span><div class="bulk-actions"><button class="button secondary small" data-duplicate-page="previous" ${data.offset === 0 ? "disabled" : ""}>Previous</button><button class="button secondary small" data-duplicate-page="next" ${end >= data.total ? "disabled" : ""}>Next</button></div></div>`;
+  return infiniteFooter(data, data.total === 1 ? "group" : "groups");
 }
 
 function updateDuplicateReviewUi(data) {
@@ -856,10 +939,6 @@ function bindDuplicateGroups(data) {
     updateDuplicateReviewUi(data);
   });
   view.querySelector("[data-clean-duplicate-batch]")?.addEventListener("click", () => cleanDuplicateBatch());
-  view.querySelectorAll("[data-duplicate-page]").forEach((button) => button.addEventListener("click", () => {
-    state.offset = Math.max(0, state.offset + (button.dataset.duplicatePage === "next" ? 30 : -30));
-    renderDuplicates();
-  }));
 }
 
 async function cleanDuplicateBatch() {
@@ -1044,10 +1123,6 @@ function bindGameEvents(data, deviceMode) {
   }));
   view.querySelector("[data-clear-filters]")?.addEventListener("click", () => { state.search = ""; state.platform = ""; state.duplicate = state.view === "duplicates" ? "exact" : "all"; renderCurrentView(); });
   view.querySelector("[data-scan]")?.addEventListener("click", () => startScan());
-  view.querySelectorAll("[data-page]").forEach((button) => button.addEventListener("click", () => {
-    state.offset = Math.max(0, state.offset + (button.dataset.page === "next" ? state.limit : -state.limit));
-    renderCurrentView();
-  }));
 }
 
 async function scrapeArtwork(gameIds, label, missingOnly = true) {
@@ -1167,11 +1242,13 @@ async function renderDevices() {
   }
   const device = state.devices.find((item) => item.id === Number(state.deviceId)) || state.devices[0];
   state.deviceId = device.id;
-  const [data, preview] = await Promise.all([
+  const [response, preview] = await Promise.all([
     getGames(device.id, state.deviceScope),
     navigationApi(`/api/devices/${device.id}/preview`),
   ]);
   if (!pageRenderIsCurrent(renderVersion, "devices")) return;
+  const key = `devices\u001f${device.id}\u001f${state.deviceScope}\u001f${state.search}\u001f${state.platform}`;
+  const data = mergeInfinitePage(key, response);
   const inventory = data.device_inventory;
   const noFilters = !state.search && !state.platform;
   let table = gamesTable(data, true);
@@ -1245,6 +1322,7 @@ async function renderDevices() {
     } catch (error) { toast(error.message, "error"); }
   });
   bindGameEvents(data, true);
+  bindInfiniteScroll(data, renderDevices);
   loadArtworkImages();
 }
 
@@ -1308,7 +1386,6 @@ function saveMatchesHtml(data) {
   </div>`;
   if (!data.available) return `${toolbar}<div class="empty-state save-empty"><div><h2>Save source is not mounted</h2><p>ROMmates needs the live WebDAV directory to match saves against the ROM library.</p></div></div>`;
   if (!data.items.length) return `${toolbar}<div class="empty-state save-empty"><div><h2>No save matches need review</h2><p>${state.saveMatchSearch || state.saveMatchStatus !== "all" ? "Try broader filters." : "Every recognized save and state group has one exact ROM match."}</p></div></div>`;
-  const end = Math.min(data.offset + data.items.length, data.total);
   const rows = data.items.map((item, index) => {
     const candidates = item.games?.length
       ? item.games.map((game) => `${escapeHtml(game.name)} <span class="meta">(${escapeHtml(game.platform)})</span>`).join("<br>")
@@ -1316,7 +1393,7 @@ function saveMatchesHtml(data) {
     const paths = item.files.map((file) => `<li><code class="save-path">${escapeHtml(file.relpath)}</code></li>`).join("");
     return `<tr><td class="name-cell"><strong>${escapeHtml(item.content_name)}</strong><span class="path-line">${escapeHtml(item.core || "No core directory")}</span><details class="save-paths"><summary>${item.files.length} ${item.files.length === 1 ? "file" : "files"}</summary><ul>${paths}</ul></details></td><td><span class="badge ${saveMatchClass(item.status)}">${saveMatchLabel(item.status)}</span></td><td>${candidates}</td><td class="meta">${item.save_files} saves · ${item.state_files} states<br>${formatBytes(item.bytes)}</td><td class="meta">${new Date(Number(item.latest_mtime_ns) / 1e6).toLocaleString()}</td><td>${item.status === "orphan" ? `<button class="button danger-subtle small" data-delete-save-group="${index}">Review delete</button>` : '<span class="meta">Resolve match first</span>'}</td></tr>`;
   }).join("");
-  return `${toolbar}<p class="save-match-note">Exact filenames are matched first. Orphans can be deleted after ROMmates creates a full safety snapshot; possible and ambiguous matches remain protected.</p><div class="table-wrap"><table><thead><tr><th>RetroArch content name</th><th>Status</th><th>Candidate ROM</th><th>Files</th><th>Last changed</th><th>Action</th></tr></thead><tbody>${rows}</tbody></table></div><div class="pager"><span>Showing ${data.offset + 1}–${end} of ${data.total.toLocaleString()}</span><div class="bulk-actions"><button class="button secondary small" data-save-match-page="previous" ${data.offset === 0 ? "disabled" : ""}>Previous</button><button class="button secondary small" data-save-match-page="next" ${end >= data.total ? "disabled" : ""}>Next</button></div></div>`;
+  return `${toolbar}<p class="save-match-note">Exact filenames are matched first. Orphans can be deleted after ROMmates creates a full safety snapshot; possible and ambiguous matches remain protected.</p><div class="table-wrap"><table><thead><tr><th>RetroArch content name</th><th>Status</th><th>Candidate ROM</th><th>Files</th><th>Last changed</th><th>Action</th></tr></thead><tbody>${rows}</tbody></table></div>${infiniteFooter(data, data.total === 1 ? "save group" : "save groups")}`;
 }
 
 function saveHeader(overview) {
@@ -1336,8 +1413,7 @@ function currentSavesHtml(data) {
   if (!data.items.length) {
     return `${toolbar}<div class="empty-state save-empty"><div><h2>${state.saveSearch ? "No saves match this search" : "No save files found"}</h2><p>${state.saveSearch ? "Try part of the filename or relative directory." : "RetroArch has not uploaded anything to this WebDAV directory yet."}</p></div></div>`;
   }
-  const end = Math.min(data.offset + data.items.length, data.total);
-  return `${toolbar}<div class="table-wrap"><table><thead><tr><th>Save path</th><th>Size</th><th>Modified</th></tr></thead><tbody>${data.items.map((item) => `<tr><td class="name-cell"><code class="save-path">${escapeHtml(item.relpath)}</code></td><td class="meta">${formatBytes(item.size)}</td><td class="meta">${new Date(Number(item.mtime_ns) / 1e6).toLocaleString()}</td></tr>`).join("")}</tbody></table></div><div class="pager"><span>Showing ${data.offset + 1}–${end} of ${data.total.toLocaleString()}</span><div class="bulk-actions"><button class="button secondary small" data-save-page="previous" ${data.offset === 0 ? "disabled" : ""}>Previous</button><button class="button secondary small" data-save-page="next" ${end >= data.total ? "disabled" : ""}>Next</button></div></div>`;
+  return `${toolbar}<div class="table-wrap"><table><thead><tr><th>Save path</th><th>Size</th><th>Modified</th></tr></thead><tbody>${data.items.map((item) => `<tr><td class="name-cell"><code class="save-path">${escapeHtml(item.relpath)}</code></td><td class="meta">${formatBytes(item.size)}</td><td class="meta">${new Date(Number(item.mtime_ns) / 1e6).toLocaleString()}</td></tr>`).join("")}</tbody></table></div>${infiniteFooter(data, data.total === 1 ? "save file" : "save files")}`;
 }
 
 function snapshotChangeSummary(snapshot) {
@@ -1348,9 +1424,8 @@ function snapshotChangeSummary(snapshot) {
 function snapshotDetailHtml(detail, comparison) {
   const snapshot = detail.snapshot;
   const sourceAvailable = Boolean(comparison);
-  const end = Math.min(detail.offset + detail.files.length, detail.total);
   const files = detail.files.length
-    ? `<div class="table-wrap snapshot-files"><table><thead><tr><th>Historical file</th><th>Size</th><th>Action</th></tr></thead><tbody>${detail.files.map((item) => `<tr><td class="name-cell"><code class="save-path">${escapeHtml(item.relpath)}</code></td><td class="meta">${formatBytes(item.size)}</td><td><button class="button secondary small" data-download-save="${escapeHtml(item.relpath)}">Download</button></td></tr>`).join("")}</tbody></table></div><div class="pager"><span>Showing ${detail.offset + 1}–${end} of ${detail.total.toLocaleString()}</span><div class="bulk-actions"><button class="button secondary small" data-snapshot-file-page="previous" ${detail.offset === 0 ? "disabled" : ""}>Previous</button><button class="button secondary small" data-snapshot-file-page="next" ${end >= detail.total ? "disabled" : ""}>Next</button></div></div>`
+    ? `<div class="table-wrap snapshot-files"><table><thead><tr><th>Historical file</th><th>Size</th><th>Action</th></tr></thead><tbody>${detail.files.map((item) => `<tr><td class="name-cell"><code class="save-path">${escapeHtml(item.relpath)}</code></td><td class="meta">${formatBytes(item.size)}</td><td><button class="button secondary small" data-download-save="${escapeHtml(item.relpath)}">Download</button></td></tr>`).join("")}</tbody></table></div>${infiniteFooter({ items: detail.files, total: detail.total }, detail.total === 1 ? "historical file" : "historical files")}`
     : `<p class="report-empty">This snapshot contains no files.</p>`;
   const changes = comparison ? [
     ...comparison.restore.map((path) => ["Restore missing", path]),
@@ -1389,7 +1464,8 @@ async function renderSaves() {
   let matchData = null;
   if (state.saveTab === "current") {
     const params = new URLSearchParams({ search: state.saveSearch, limit: 250, offset: state.saveOffset });
-    currentData = await navigationApi(`/api/saves/current?${params}`);
+    const response = await navigationApi(`/api/saves/current?${params}`);
+    currentData = mergeInfinitePage(`saves-current\u001f${state.saveSearch}`, response, (item) => item.relpath);
     content = currentSavesHtml(currentData);
   } else if (state.saveTab === "snapshots") {
     snapshotData = await navigationApi("/api/saves/snapshots?limit=100");
@@ -1403,13 +1479,24 @@ async function renderSaves() {
       } else {
         snapshotDetail = await navigationApi(`/api/saves/snapshots/${state.saveSnapshotId}?${params}`);
       }
+      const files = mergeInfinitePage(
+        `snapshot-files\u001f${state.saveSnapshotId}\u001f${state.saveSnapshotSearch}`,
+        { items: snapshotDetail.files, total: snapshotDetail.total, offset: snapshotDetail.offset, limit: snapshotDetail.limit },
+        (item) => item.relpath,
+      );
+      snapshotDetail = { ...snapshotDetail, files: files.items, offset: 0 };
     } else {
       state.saveSnapshotId = null;
     }
     content = snapshotsHtml(snapshotData, snapshotDetail, comparison);
   } else if (state.saveTab === "matches") {
     const params = new URLSearchParams({ search: state.saveMatchSearch, status: state.saveMatchStatus, limit: 200, offset: state.saveMatchOffset });
-    matchData = await navigationApi(`/api/saves/unmatched?${params}`);
+    const response = await navigationApi(`/api/saves/unmatched?${params}`);
+    matchData = mergeInfinitePage(
+      `save-matches\u001f${state.saveMatchSearch}\u001f${state.saveMatchStatus}`,
+      response,
+      (item) => item.key,
+    );
     content = saveMatchesHtml(matchData);
   } else {
     content = saveSettingsHtml(overview.settings);
@@ -1448,10 +1535,6 @@ async function renderSaves() {
       renderSaves();
     }, 220);
   });
-  view.querySelectorAll("[data-save-page]").forEach((button) => button.addEventListener("click", () => {
-    state.saveOffset = Math.max(0, state.saveOffset + (button.dataset.savePage === "next" ? 250 : -250));
-    renderSaves();
-  }));
   const saveMatchSearch = view.querySelector("#save-match-search");
   let saveMatchSearchTimer;
   saveMatchSearch?.addEventListener("input", (event) => {
@@ -1467,10 +1550,6 @@ async function renderSaves() {
     state.saveMatchOffset = 0;
     renderSaves();
   });
-  view.querySelectorAll("[data-save-match-page]").forEach((button) => button.addEventListener("click", () => {
-    state.saveMatchOffset = Math.max(0, state.saveMatchOffset + (button.dataset.saveMatchPage === "next" ? 200 : -200));
-    renderSaves();
-  }));
   view.querySelectorAll("[data-delete-save-group]").forEach((button) => button.addEventListener("click", async () => {
     const group = matchData?.items[Number(button.dataset.deleteSaveGroup)];
     if (!group || group.status !== "orphan") return;
@@ -1523,10 +1602,6 @@ async function renderSaves() {
       await renderSaves();
     } catch (error) { toast(error.message, "error"); }
   }));
-  view.querySelectorAll("[data-snapshot-file-page]").forEach((button) => button.addEventListener("click", () => {
-    state.saveSnapshotOffset = Math.max(0, state.saveSnapshotOffset + (button.dataset.snapshotFilePage === "next" ? 250 : -250));
-    renderSaves();
-  }));
   view.querySelectorAll("[data-download-save]").forEach((button) => button.addEventListener("click", async () => {
     const relpath = button.dataset.downloadSave;
     const encoded = relpath.split("/").map(encodeURIComponent).join("/");
@@ -1577,6 +1652,17 @@ async function renderSaves() {
       await renderSaves();
     } catch (error) { toast(error.message, "error"); }
   });
+  if (state.saveTab === "current" && currentData) {
+    bindInfiniteScroll(currentData, renderSaves, (offset) => { state.saveOffset = offset; });
+  } else if (state.saveTab === "matches" && matchData) {
+    bindInfiniteScroll(matchData, renderSaves, (offset) => { state.saveMatchOffset = offset; });
+  } else if (state.saveTab === "snapshots" && snapshotDetail) {
+    bindInfiniteScroll(
+      { items: snapshotDetail.files, total: snapshotDetail.total },
+      renderSaves,
+      (offset) => { state.saveSnapshotOffset = offset; },
+    );
+  }
 }
 
 function namingConfidenceLabel(value) {
@@ -1598,11 +1684,13 @@ async function renderNaming() {
     platform: state.platform,
     confidence: state.namingConfidence,
     save_impact: state.namingSaveImpact,
-    limit: state.limit,
+    limit: state.offset ? INFINITE_CHUNK_SIZE : state.limit,
     offset: state.offset,
   });
-  const [data, catalogs] = await Promise.all([navigationApi(`/api/naming/suggestions?${params}`), navigationApi("/api/naming/catalogs")]);
+  const [response, catalogs] = await Promise.all([navigationApi(`/api/naming/suggestions?${params}`), navigationApi("/api/naming/catalogs")]);
   if (!pageRenderIsCurrent(renderVersion, "naming")) return;
+  const key = `naming\u001f${state.search}\u001f${state.platform}\u001f${state.namingConfidence}\u001f${state.namingSaveImpact}`;
+  const data = mergeInfinitePage(key, response, (item) => item.game_id);
   const platformChoices = state.platforms.map((item) => `<option value="${escapeHtml(item.platform)}">${escapeHtml(item.platform)}</option>`).join("");
   const catalogList = catalogs.length
     ? `<div class="catalog-list">${catalogs.map((catalog) => `<span class="catalog-chip"><span><strong>${escapeHtml(catalog.platform)}</strong> · ${escapeHtml(catalog.name)} · ${catalog.entry_count.toLocaleString()}</span><button class="icon-button compact" data-delete-catalog="${catalog.id}" aria-label="Remove ${escapeHtml(catalog.name)}">×</button></span>`).join("")}</div>`
@@ -1640,7 +1728,6 @@ async function renderNaming() {
   if (!data.items.length) {
     content = `<div class="empty-state naming-empty"><div><h2>No naming suggestions</h2><p>${state.search || state.platform || state.namingConfidence !== "all" || state.namingSaveImpact !== "all" ? "Try broader filters." : "Your current filenames do not need conservative cleanup. Import a DAT catalog to find canonical matches."}</p></div></div>`;
   } else {
-    const end = Math.min(data.offset + data.items.length, data.total);
     content = `<div class="table-wrap"><table><thead><tr><th class="checkbox-cell"><input type="checkbox" data-naming-select-all aria-label="Select visible suggestions without matched saves"></th><th>Current filename</th><th>Suggested filename</th><th>Confidence</th><th>Save impact</th><th>Source</th></tr></thead><tbody>${data.items.map((item) => {
       const checked = state.namingSelected.has(item.game_id);
       return `<tr class="${item.collision ? "collision-row" : ""}">
@@ -1651,7 +1738,7 @@ async function renderNaming() {
         <td>${saveImpactHtml(item.save_impact)}</td>
         <td class="meta">${escapeHtml(item.source)}</td>
       </tr>`;
-    }).join("")}</tbody></table></div><div class="pager"><span>Showing ${data.offset + 1}–${end} of ${data.total.toLocaleString()}</span><div class="bulk-actions"><button class="button secondary small" data-page="previous" ${data.offset === 0 ? "disabled" : ""}>Previous</button><button class="button secondary small" data-page="next" ${end >= data.total ? "disabled" : ""}>Next</button></div></div>`;
+    }).join("")}</tbody></table></div>${infiniteFooter(data, data.total === 1 ? "suggestion" : "suggestions")}`;
   }
   const selectedCount = state.namingSelected.size;
   const bulk = selectedCount ? `<div class="bulk-bar"><div><strong>${selectedCount} selected</strong><span class="meta"> · bundle-aware rename</span></div><div class="bulk-actions"><button class="button secondary" data-clear-naming>Clear</button><button class="button" data-apply-naming>Review and apply</button></div></div>` : "";
@@ -1708,7 +1795,7 @@ async function renderNaming() {
       await refreshStatus(); await loadReferenceData(); await renderNaming();
     } catch (error) { toast(error.message, "error"); }
   });
-  view.querySelectorAll("[data-page]").forEach((button) => button.addEventListener("click", () => { state.offset = Math.max(0, state.offset + (button.dataset.page === "next" ? state.limit : -state.limit)); renderNaming(); }));
+  bindInfiniteScroll(data, renderNaming);
 }
 
 async function renderJobs() {
@@ -1719,10 +1806,16 @@ async function renderJobs() {
   let report = null;
   let issues = null;
   if (state.jobReportId) {
-    [report, issues] = await Promise.all([
+    const [jobReport, issueResponse] = await Promise.all([
       api(`/api/jobs/${state.jobReportId}`),
       api(`/api/jobs/${state.jobReportId}/issues?limit=250&offset=${state.jobIssueOffset}`),
     ]);
+    report = jobReport;
+    issues = mergeInfinitePage(
+      `job-issues\u001f${state.jobReportId}`,
+      issueResponse,
+      (item) => item.id,
+    );
   }
   if (!pageRenderIsCurrent(renderVersion, "jobs")) return;
   const jobsHtml = jobs.length ? `<div class="table-wrap"><table><thead><tr><th>Job</th><th>Status</th><th>Detail</th><th>Started</th><th>Finished</th><th>Action</th></tr></thead><tbody>${jobs.map((job) => `<tr${state.jobReportId === job.id ? ` class="selected-row"` : ""}><td>${escapeHtml(job.kind)}</td><td><span class="badge ${job.status === "failed" ? "exact" : job.status === "complete" ? "unique" : job.status === "cancelled" ? "cancelled" : "possible"}">${escapeHtml(job.status)}${["running", "cancelling"].includes(job.status) ? ` · ${job.progress}%` : ""}</span></td><td class="name-cell">${escapeHtml(job.detail)}</td><td class="meta">${escapeHtml(job.created_at)}</td><td class="meta">${escapeHtml(job.completed_at || "In progress")}</td><td><div class="bulk-actions"><button class="button secondary small" data-job-report="${job.id}" aria-expanded="${state.jobReportId === job.id}">${state.jobReportId === job.id ? "Close" : "Report"}${job.reported_issue_count ? ` · ${job.reported_issue_count} issues` : ""}</button>${job.cancellable ? `<button class="button danger-subtle small" data-cancel-job="${job.id}" ${job.status === "cancelling" ? "disabled" : ""}>${job.status === "cancelling" ? "Stopping…" : "Stop"}</button>` : ""}</div></td></tr>`).join("")}</tbody></table></div>` : `<div class="empty-state"><div><h2>No jobs yet</h2><p>Library scans will appear here.</p></div></div>`;
@@ -1736,10 +1829,6 @@ async function renderJobs() {
     state.jobIssueOffset = 0;
     renderJobs();
   }));
-  view.querySelectorAll("[data-issue-page]").forEach((button) => button.addEventListener("click", () => {
-    state.jobIssueOffset = Math.max(0, state.jobIssueOffset + (button.dataset.issuePage === "next" ? 250 : -250));
-    renderJobs();
-  }));
   view.querySelector("[data-copy-issues]")?.addEventListener("click", async () => {
     try {
       await navigator.clipboard.writeText(issues.items.map((item) => item.detail).join("\n"));
@@ -1748,6 +1837,9 @@ async function renderJobs() {
       toast("The browser could not copy the issue list", "error");
     }
   });
+  if (issues) {
+    bindInfiniteScroll(issues, renderJobs, (offset) => { state.jobIssueOffset = offset; });
+  }
 }
 
 function resultLabel(key) {
@@ -1784,7 +1876,7 @@ function renderJobReport(job, issues) {
     ? `<p class="issue-warning" role="note">This older scan reported <strong>${issues.reported_total.toLocaleString()}</strong> unreadable files, but retained details for only <strong>${issues.total.toLocaleString()}</strong>. Run a new scan to capture the complete list; unchanged ROM hashes will be reused.</p>`
     : "";
   const issueRows = issues?.items.length
-    ? `<div class="table-wrap issue-table"><table><thead><tr><th>Unreadable file and reason</th></tr></thead><tbody>${issues.items.map((item) => `<tr><td><code class="issue-path">${escapeHtml(item.detail)}</code></td></tr>`).join("")}</tbody></table></div><div class="pager"><span>Showing ${(issues.offset + 1).toLocaleString()}–${Math.min(issues.offset + issues.items.length, issues.total).toLocaleString()} of ${issues.total.toLocaleString()} captured</span><div class="bulk-actions"><button class="button secondary small" data-copy-issues>Copy page</button><button class="button secondary small" data-issue-page="previous" ${issues.offset === 0 ? "disabled" : ""}>Previous</button><button class="button secondary small" data-issue-page="next" ${issues.offset + issues.limit >= issues.total ? "disabled" : ""}>Next</button></div></div>`
+    ? `<div class="table-wrap issue-table"><table><thead><tr><th>Unreadable file and reason</th></tr></thead><tbody>${issues.items.map((item) => `<tr><td><code class="issue-path">${escapeHtml(item.detail)}</code></td></tr>`).join("")}</tbody></table></div><div class="issue-actions"><button class="button secondary small" data-copy-issues>Copy loaded issues</button></div>${infiniteFooter(issues, issues.total === 1 ? "captured issue" : "captured issues")}`
     : `<p class="report-empty">No unreadable files were recorded for this job.</p>`;
   const scanIssues = job.kind === "scan"
     ? `<div class="report-section"><div class="report-section-head"><div><h3>Unreadable files</h3><p>${issues.reported_total ? `${issues.reported_total.toLocaleString()} reported by this scan.` : "Paths and reasons captured during scanning."}</p></div></div>${captureWarning}${issueRows}</div>`

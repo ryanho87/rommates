@@ -594,7 +594,7 @@ def games(
 ):
     if device_scope != "all" and device_id is None:
         raise HTTPException(status_code=400, detail="A device is required for this view")
-    present_relpaths = library.device_inventory(device_id) if device_id is not None else set()
+    present_relpaths = library.device_inventory(device_id, refresh=True) if device_id is not None else set()
     where = ["1=1"]
     params: list[object] = []
     if search.strip():
@@ -636,6 +636,8 @@ def games(
     else:
         params_for_select = []
     where_sql = " AND ".join(where)
+    actual_devices: list[dict[str, object]] = []
+    page_files: dict[int, list[str]] = {}
     with db.connect() as connection:
         if device_id is not None:
             connection.execute("CREATE TEMP TABLE device_present(relpath TEXT PRIMARY KEY)")
@@ -706,6 +708,16 @@ def games(
                         else "pending_add" if item["selected"]
                         else "available"
                     )
+            if device_id is None:
+                actual_devices = [dict(row) for row in connection.execute(
+                    "SELECT id,name FROM devices ORDER BY name COLLATE NOCASE"
+                )]
+                page_files = {game_id: [] for game_id in game_ids}
+                for row in connection.execute(
+                    f"SELECT game_id,relpath FROM game_files WHERE game_id IN ({placeholders})",
+                    game_ids,
+                ):
+                    page_files[row["game_id"]].append(row["relpath"])
         device_inventory = None
         if device_id is not None:
             present_games = connection.execute(
@@ -724,6 +736,32 @@ def games(
                 "unmatched_files": unmatched_files,
                 "files": len(present_relpaths),
             }
+    if items and device_id is None and actual_devices:
+        inventories = {
+            int(device["id"]): library.device_inventory(int(device["id"]), refresh=offset == 0)
+            for device in actual_devices
+        }
+        for item in items:
+            relpaths = page_files[item["id"]]
+            states_by_device = {device["id"]: device for device in item["devices"]}
+            for device in actual_devices:
+                device_key = int(device["id"])
+                if not any(relpath in inventories[device_key] for relpath in relpaths):
+                    continue
+                existing = states_by_device.get(device_key)
+                if existing:
+                    if existing["state"] == "pending_add":
+                        existing["state"] = "present"
+                else:
+                    present = {
+                        "id": device_key,
+                        "name": device["name"],
+                        "state": "present",
+                    }
+                    item["devices"].append(present)
+                    states_by_device[device_key] = present
+            item["devices"].sort(key=lambda device: str(device["name"]).casefold())
+            item["device_count"] = len(item["devices"])
     return {
         "items": items,
         "total": total,
@@ -813,7 +851,7 @@ def duplicate_groups(
     for row in device_rows:
         devices_by_game[row["game_id"]].append(row["name"])
     device_inventories = {
-        device["name"]: library.device_inventory(device["id"])
+        device["name"]: library.device_inventory(device["id"], refresh=True)
         for device in devices
     }
     files_by_game: dict[int, list[str]] = {game_id: [] for game_id in game_ids}

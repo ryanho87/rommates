@@ -35,13 +35,14 @@ The MVP supports:
 - Recoverable deletion, restoration, and explicit permanent deletion
 - Cross-page duplicate keeper review with one confirmed batch move to recoverable Trash
 - Per-device desired game selections and previewed reconciliation
-- Actual device-directory inventory with On device, Pending changes, and Browse library views
+- Actual device-directory inventory shown in device views and on each Library game row
 - Per-game device assignment directly from the Library screen
 - Inline device status tags showing synced, pending-add, and pending-remove assignments
 - Automatic cleanup of `._*` and `.DS_Store` inside device ROM folders during apply
 - Background jobs for scans, copies, renames, delete, restore, and purge operations
 - Safe stop controls for scans and device deployment jobs
-- Detailed job reports with timing, structured results, and paginated unreadable-file paths
+- Automatic infinite loading across library, device, duplicate, naming, save, snapshot, and job-issue results
+- Detailed job reports with timing, structured results, and scroll-loaded unreadable-file paths
 - Deduplicated RetroArch save snapshots with scheduling, retention, historical downloads, and guarded full-state restore
 - Read-only RetroArch save-to-ROM matching, orphan detection, and rename impact warnings
 - Snapshot-backed deletion of confirmed orphan save groups
