@@ -25,6 +25,7 @@ The MVP supports:
 - Detailed job reports with timing, structured results, and paginated unreadable-file paths
 - Deduplicated RetroArch save snapshots with scheduling, retention, historical downloads, and guarded full-state restore
 - Read-only RetroArch save-to-ROM matching, orphan detection, and rename impact warnings
+- Snapshot-backed deletion of confirmed orphan save groups
 - ScreenScraper matching with locally cached covers, screenshots, and logos
 - Bearer-token protection for the private API
 - Browser/OS light and dark themes
@@ -102,6 +103,7 @@ The **Saves** screen provides:
 
 - Searchable current WebDAV files
 - A Save matching review queue for orphaned, normalized-name, and ambiguous ROM matches
+- Recoverable orphan cleanup that forces a full safety snapshot before deletion
 - Manual snapshots with optional notes
 - Scheduled snapshots and tiered recent, daily, weekly, and monthly retention
 - Pinned snapshots that retention never removes
@@ -230,11 +232,14 @@ The Naming screen always offers conservative cleanup for obvious pack prefixes s
 language, revision, and disc metadata.
 
 Import a No-Intro, Redump, or other Logiqx-style XML DAT and assign it to the matching
-ROMmates platform for canonical suggestions. Suggestions have three confidence levels:
+ROMmates platform for canonical suggestions. Suggestions have four confidence levels:
 
 - **Exact DAT match:** a DAT-provided SHA-256 matches an indexed content file.
 - **Strong name match:** the normalized current name uniquely matches one DAT entry for the platform and extension.
+- **ScreenScraper title:** cached ScreenScraper metadata provides a localized canonical title.
 - **Cleanup only:** only deterministic local formatting rules were applied.
+
+DAT matches take precedence over ScreenScraper titles when both are available.
 
 Many DAT files publish CRC, MD5, or SHA-1 but not SHA-256. Those catalogs still provide
 strong filename matches; ROMmates does not label them exact without a verifiable SHA-256.
@@ -249,6 +254,11 @@ platforms when possible. Normalized-name matches are explicitly marked as possib
 ambiguous. Save matching is read-only: a ROM rename never silently renames or deletes save
 data. “Select all” on the Naming screen skips games with matched save data by default;
 individual affected games can still be selected after reviewing the warning.
+
+The Save matching screen permits deletion only for groups with no ROM candidate. ROMmates
+revalidates the match and filesystem metadata in the background, publishes a forced safety
+snapshot, then removes the live files. Possible and ambiguous groups cannot be deleted.
+Duplicate and ROM trash confirmations list matching save filenames that would be orphaned.
 
 ## Configuration
 

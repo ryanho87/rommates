@@ -205,6 +205,7 @@ main { min-width: 0; }
 .badge.cancelled { background: var(--surface-raised); color: var(--text-muted); }
 .badge.naming-exact { border-color: color-mix(in oklch, var(--success), var(--border) 55%); background: var(--success-soft); color: var(--success); }
 .badge.naming-strong { border-color: color-mix(in oklch, var(--accent), var(--border) 55%); background: var(--accent-soft); color: var(--accent); }
+.badge.naming-metadata { border-color: color-mix(in oklch, var(--accent), var(--border) 70%); background: var(--accent-soft); color: var(--accent); }
 .badge.naming-cleanup { background: var(--surface-raised); color: var(--text-muted); }
 
 #view { padding: 16px 24px 88px; }

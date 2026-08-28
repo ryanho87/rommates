@@ -21,7 +21,7 @@ from .screenscraper import ScreenScraperService
 
 
 MINIMUM_TOKEN_LENGTH = 16
-CANCELLABLE_JOB_KINDS = frozenset({"scan", "device_apply", "save_snapshot", "save_restore", "artwork_scrape"})
+CANCELLABLE_JOB_KINDS = frozenset({"scan", "device_apply", "save_snapshot", "save_restore", "save_delete", "artwork_scrape"})
 
 settings = Settings.from_env()
 
@@ -109,6 +109,11 @@ def job_result_detail(kind: str, result: object, fallback: str) -> str:
     if kind == "save_restore":
         return (
             f"Restored save snapshot #{result.get('snapshot_id')}: {result.get('files', 0)} files; "
+            f"safety snapshot #{result.get('safety_snapshot_id')}"
+        )
+    if kind == "save_delete":
+        return (
+            f"Deleted {result.get('files', 0)} orphan save files for {result.get('group', 'save group')}; "
             f"safety snapshot #{result.get('safety_snapshot_id')}"
         )
     if kind == "artwork_scrape":
@@ -347,6 +352,14 @@ class SaveSettingsRequest(BaseModel):
 
 class SavePinRequest(BaseModel):
     pinned: bool
+
+
+class SaveImpactRequest(BaseModel):
+    game_ids: list[int] = Field(min_length=1, max_length=500)
+
+
+class SaveOrphanDeleteRequest(BaseModel):
+    group_key: str = Field(min_length=1, max_length=1000)
 
 
 class ArtworkScrapeRequest(BaseModel):
@@ -791,6 +804,7 @@ def duplicate_groups(
     files_by_game: dict[int, list[str]] = {game_id: [] for game_id in game_ids}
     for row in file_rows:
         files_by_game[row["game_id"]].append(row["relpath"])
+    save_impacts = saves.save_impacts(game_ids)
     items_by_group: dict[str, list[dict[str, object]]] = {key: [] for key in keys}
     for item in items:
         selected_devices = devices_by_game[item["id"]]
@@ -801,6 +815,10 @@ def duplicate_groups(
         item["devices"] = selected_devices
         item["selected_devices"] = selected_devices
         item["present_devices"] = present_devices
+        item["save_impact"] = save_impacts.get(
+            item["id"],
+            {"status": "none", "groups": 0, "files": 0, "save_files": 0, "state_files": 0, "paths": [], "content_names": []},
+        )
         items_by_group[item.pop("group_key")].append(item)
     groups = []
     for row in group_rows:
@@ -917,7 +935,7 @@ def delete_naming_catalog(catalog_id: int):
 def naming_suggestions(
     search: str = "",
     platform: str = "",
-    confidence: str = Query("all", pattern="^(all|exact|strong|cleanup)$"),
+    confidence: str = Query("all", pattern="^(all|exact|strong|metadata|cleanup)$"),
     save_impact: str = Query("all", pattern="^(all|has_saves|no_saves|review)$"),
     limit: int = Query(200, ge=1, le=1000),
     offset: int = Query(0, ge=0),
@@ -1043,6 +1061,22 @@ def unmatched_saves(
     offset: int = Query(0, ge=0),
 ):
     return saves.unmatched_groups(search, status, limit, offset)
+
+
+@app.post("/api/saves/impacts")
+def save_impacts(payload: SaveImpactRequest):
+    return {"items": saves.save_impacts(payload.game_ids)}
+
+
+@app.post("/api/saves/orphans/delete", status_code=202)
+def delete_orphan_saves(payload: SaveOrphanDeleteRequest):
+    job_id = enqueue_job(
+        "save_delete",
+        "Creating safety snapshot before deleting orphan saves",
+        saves.delete_orphan_group,
+        payload.group_key,
+    )
+    return {"job_id": job_id}
 
 
 @app.get("/api/saves/settings")

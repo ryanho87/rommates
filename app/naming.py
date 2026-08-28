@@ -109,6 +109,13 @@ class NamingService:
                 f"{where} GROUP BY g.id ORDER BY g.display_name COLLATE NOCASE",
                 params,
             ).fetchall()
+            screenscraper_titles = {
+                row["game_id"]: dict(row)
+                for row in connection.execute(
+                    "SELECT game_id,title,match_method FROM game_metadata "
+                    "WHERE source='screenscraper' AND TRIM(title)<>''"
+                )
+            }
 
         exact_map: dict[tuple[str, str, str], list[object]] = defaultdict(list)
         name_map: dict[tuple[str, str, str], list[object]] = defaultdict(list)
@@ -149,6 +156,11 @@ class NamingService:
             if matched is not None:
                 suggested_name = Path(matched["canonical_name"]).stem
                 source = matched["source"]
+            elif game["id"] in screenscraper_titles:
+                metadata = screenscraper_titles[game["id"]]
+                suggested_name = str(metadata["title"]).strip()
+                source = f"ScreenScraper · {metadata['match_method']} match"
+                matched_confidence = "metadata"
             else:
                 suggested_name = cleanup_name(game["display_name"])
                 source = "Filename cleanup"
@@ -186,7 +198,7 @@ class NamingService:
             results = [item for item in results if item["save_impact"]["status"] == "none"]
         elif save_impact == "review":
             results = [item for item in results if item["save_impact"]["status"] in {"possible", "ambiguous"}]
-        rank = {"exact": 0, "strong": 1, "cleanup": 2}
+        rank = {"exact": 0, "strong": 1, "metadata": 2, "cleanup": 3}
         results.sort(key=lambda item: (rank[item["confidence"]], item["platform"].casefold(), item["current_name"].casefold()))
         page = results[offset : offset + limit]
         if self.library:

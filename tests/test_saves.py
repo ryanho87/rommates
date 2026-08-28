@@ -90,6 +90,36 @@ class SaveSnapshotTests(unittest.TestCase):
         self.assertEqual(impacts[gba_id]["status"], "exact")
         self.assertEqual(impacts[snes_id]["status"], "none")
 
+    def test_orphan_delete_creates_safety_snapshot_and_removes_only_the_group(self):
+        orphan = self.write("saves/mGBA/Old Game.srm", b"old-save")
+        state = self.write("states/mGBA/Old Game.state", b"old-state")
+        unrelated = self.write("saves/mGBA/Keep Me.srm", b"keep")
+        group = next(
+            item for item in self.service.unmatched_groups()["items"]
+            if item["content_name"] == "Old Game"
+        )
+
+        result = self.service.delete_orphan_group(group["key"])
+
+        self.assertFalse(orphan.exists())
+        self.assertFalse(state.exists())
+        self.assertTrue(unrelated.exists())
+        self.assertEqual(result["files"], 2)
+        snapshot = self.service.snapshot_detail(result["safety_snapshot_id"])
+        self.assertEqual(snapshot["snapshot"]["trigger"], "pre_save_delete")
+        self.assertEqual(snapshot["total"], 3)
+
+    def test_orphan_delete_refuses_a_group_that_matches_a_rom(self):
+        self.add_game("gba", "Protected Game", "gba/Protected Game.gba")
+        self.write("saves/mGBA/Protected Game.srm", b"save")
+        groups, _ = self.service._matched_save_groups()
+        group = next(item for item in groups if item["content_name"] == "Protected Game")
+
+        with self.assertRaisesRegex(LibraryError, "Only save groups with no ROM match"):
+            self.service.delete_orphan_group(group["key"])
+
+        self.assertTrue((self.saves / "saves/mGBA/Protected Game.srm").exists())
+
     def test_snapshots_deduplicate_and_report_changes(self):
         self.write("saves/Pokemon.srm", b"first")
         first = self.service.create_snapshot()

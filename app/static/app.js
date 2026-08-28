@@ -175,6 +175,7 @@ const JOB_LABELS = {
   purge: "Deleting permanently…",
   save_snapshot: "Snapshotting saves…",
   save_restore: "Restoring saves…",
+  save_delete: "Deleting orphan saves…",
   artwork_scrape: "Scraping artwork…",
 };
 
@@ -664,6 +665,7 @@ function duplicateGroupHtml(group, index) {
       <td class="meta">${formatBytes(game.size)}</td>
       <td class="meta optional-column">${game.file_count} ${game.file_count === 1 ? "file" : "files"}</td>
       <td class="meta optional-column"><span class="duplicate-device-state">${deviceState}</span></td>
+      <td>${saveImpactHtml(game.save_impact)}</td>
     </tr>`;
   }).join("");
   const deviceGuidance = group.device_conflict
@@ -676,7 +678,7 @@ function duplicateGroupHtml(group, index) {
       <div><div class="duplicate-group-title"><strong>${group.copies} ${exact ? "identical" : "similarly named"} ${group.copies === 1 ? "copy" : "copies"}</strong><span class="badge ${exact ? "exact" : "possible"}">${signature}</span></div><p>${exact ? `${formatBytes(group.bytes)} across this set. Only one copy is needed.` : "Content differs. Confirm the correct edition, region, or revision before removing anything."}</p>${deviceGuidance}</div>
       <button class="button danger-subtle small" data-clean-duplicate="${index}" ${keeper && !group.device_conflict ? "" : "disabled"}>${group.device_conflict ? "Resolve device usage first" : `Trash ${removeCount} other ${removeCount === 1 ? "copy" : "copies"}`}</button>
     </div>
-    <div class="duplicate-table-wrap"><table><thead><tr><th>Decision</th><th>Filename and path</th><th>Platform</th><th>Size</th><th class="optional-column">Bundle</th><th class="optional-column">Devices</th></tr></thead><tbody>${rows}</tbody></table></div>
+    <div class="duplicate-table-wrap"><table><thead><tr><th>Decision</th><th>Filename and path</th><th>Platform</th><th>Size</th><th class="optional-column">Bundle</th><th class="optional-column">Devices</th><th>Save impact</th></tr></thead><tbody>${rows}</tbody></table></div>
   </section>`;
 }
 
@@ -710,9 +712,13 @@ async function cleanDuplicateGroup(group) {
     ...(game.present_devices || []),
     ...(game.selected_devices || []),
   ]))];
+  const saveAffected = removals.filter((game) => game.save_impact?.status && game.save_impact.status !== "none");
+  const saveImpactWarning = saveAffected.length
+    ? `<p class="issue-warning"><strong>${saveAffected.length} ${saveAffected.length === 1 ? "copy has" : "copies have"} matching RetroArch save data.</strong> Removing these ROM filenames can orphan the saves below. ROMmates will not delete or rename the save files.</p><ul class="confirm-list">${saveAffected.flatMap((game) => (game.save_impact.paths || []).slice(0, 5).map((path) => `<li><code>${escapeHtml(path)}</code> matched ${escapeHtml(game.primary_relpath)}</li>`)).join("")}</ul>`
+    : "";
   const confirmed = await confirmAction({
     title: `Keep “${keeper.display_name}” and trash ${removals.length} ${removals.length === 1 ? "copy" : "copies"}?`,
-    content: `<p class="warning-copy">Keeping <strong>${escapeHtml(keeper.primary_relpath)}</strong>. The following recoverable bundles will move to Trash, including their companion files and managed device copies.</p><ul class="confirm-list">${removals.map((game) => `<li>${escapeHtml(game.primary_relpath)} (${formatBytes(game.size)})</li>`).join("")}</ul>${affectedDevices.length ? `<p class="issue-warning"><strong>Device impact:</strong> A removed copy is present or selected on ${escapeHtml(affectedDevices.join(", "))}. Keeping the suggested copy avoids this warning.</p>` : ""}${group.kind === "possible" ? '<p class="issue-warning"><strong>Content is not identical.</strong> These files only have similar names.</p>' : ""}`,
+    content: `<p class="warning-copy">Keeping <strong>${escapeHtml(keeper.primary_relpath)}</strong>. The following recoverable bundles will move to Trash, including their companion files and managed device copies.</p><ul class="confirm-list">${removals.map((game) => `<li>${escapeHtml(game.primary_relpath)} (${formatBytes(game.size)})</li>`).join("")}</ul>${saveImpactWarning}${affectedDevices.length ? `<p class="issue-warning"><strong>Device impact:</strong> A removed copy is present or selected on ${escapeHtml(affectedDevices.join(", "))}. Keeping the suggested copy avoids this warning.</p>` : ""}${group.kind === "possible" ? '<p class="issue-warning"><strong>Content is not identical.</strong> These files only have similar names.</p>' : ""}`,
     confirmLabel: `Trash ${removals.length} ${removals.length === 1 ? "copy" : "copies"}`,
     cancelLabel: "Review again",
     danger: true,
@@ -924,9 +930,13 @@ async function deleteOne(id, name) {
   try {
     const detail = await api(`/api/games/${id}`);
     const selectedDevices = detail.devices.filter((item) => item.selected).map((item) => item.name);
+    const impact = detail.save_impact;
+    const saveWarning = impact?.status && impact.status !== "none"
+      ? `<p class="issue-warning"><strong>${escapeHtml(saveMatchLabel(impact.status))}: ${impact.files} RetroArch ${impact.files === 1 ? "file matches" : "files match"} this ROM filename.</strong> Moving the ROM to Trash will leave the saves in place, where they may become orphans.</p><ul class="confirm-list">${(impact.paths || []).slice(0, 8).map((path) => `<li><code>${escapeHtml(path)}</code></li>`).join("")}</ul>`
+      : "";
     const confirmed = await confirmAction({
       title: `Move “${name}” to trash?`,
-      content: `<p class="warning-copy">This moves all <strong>${detail.files.length} bundle ${detail.files.length === 1 ? "file" : "files"}</strong> out of the canonical library.${selectedDevices.length ? ` Deployed copies on <strong>${escapeHtml(selectedDevices.join(", "))}</strong> will be removed.` : ""} You can restore the bundle from Trash.</p>`,
+      content: `<p class="warning-copy">This moves all <strong>${detail.files.length} bundle ${detail.files.length === 1 ? "file" : "files"}</strong> out of the canonical library.${selectedDevices.length ? ` Deployed copies on <strong>${escapeHtml(selectedDevices.join(", "))}</strong> will be removed.` : ""} You can restore the bundle from Trash.</p>${saveWarning}`,
       confirmLabel: "Move bundle to trash",
       cancelLabel: "Keep ROM",
       danger: true,
@@ -949,9 +959,28 @@ async function deleteSelected() {
   const names = entries.map(([, game]) => `${game.display_name}${game.platform ? ` (${game.platform})` : ""}`);
   const preview = names.slice(0, 12).map((name) => `<li>${escapeHtml(name)}</li>`).join("");
   const overflow = count > 12 ? `<p class="meta">…and ${count - 12} more.</p>` : "";
+  const impactChunks = [];
+  for (let index = 0; index < entries.length; index += 500) {
+    impactChunks.push(entries.slice(index, index + 500).map(([id]) => id));
+  }
+  let impactResponses;
+  try {
+    impactResponses = await Promise.all(impactChunks.map((game_ids) => api("/api/saves/impacts", {
+      method: "POST",
+      body: JSON.stringify({ game_ids }),
+    })));
+  } catch (error) {
+    toast(`Could not check save impact: ${error.message}`, "error");
+    return;
+  }
+  const impacts = Object.values(Object.assign({}, ...impactResponses.map((response) => response.items)));
+  const saveAffected = impacts.filter((impact) => impact.status !== "none");
+  const saveWarning = saveAffected.length
+    ? `<p class="issue-warning"><strong>${saveAffected.length} selected ${saveAffected.length === 1 ? "game has" : "games have"} matching save data.</strong> The saves will stay in place and may become orphans. Review Save matching after cleanup.</p>`
+    : "";
   const confirmed = await confirmAction({
     title: `Move ${count} ${count === 1 ? "bundle" : "bundles"} to trash?`,
-    content: `<p class="warning-copy">Each selected game and every file in its bundle will move to recoverable trash. Deployed copies managed by this app will be removed.</p><ul class="confirm-list">${preview}</ul>${overflow}`,
+    content: `<p class="warning-copy">Each selected game and every file in its bundle will move to recoverable trash. Deployed copies managed by this app will be removed.</p>${saveWarning}<ul class="confirm-list">${preview}</ul>${overflow}`,
     confirmLabel: `Move ${count} ${count === 1 ? "bundle" : "bundles"} to trash`,
     cancelLabel: "Keep selected ROMs",
     danger: true,
@@ -1117,14 +1146,14 @@ function saveMatchesHtml(data) {
   if (!data.available) return `${toolbar}<div class="empty-state save-empty"><div><h2>Save source is not mounted</h2><p>ROMmates needs the live WebDAV directory to match saves against the ROM library.</p></div></div>`;
   if (!data.items.length) return `${toolbar}<div class="empty-state save-empty"><div><h2>No save matches need review</h2><p>${state.saveMatchSearch || state.saveMatchStatus !== "all" ? "Try broader filters." : "Every recognized save and state group has one exact ROM match."}</p></div></div>`;
   const end = Math.min(data.offset + data.items.length, data.total);
-  const rows = data.items.map((item) => {
+  const rows = data.items.map((item, index) => {
     const candidates = item.games?.length
       ? item.games.map((game) => `${escapeHtml(game.name)} <span class="meta">(${escapeHtml(game.platform)})</span>`).join("<br>")
       : '<span class="meta">None</span>';
     const paths = item.files.map((file) => `<li><code class="save-path">${escapeHtml(file.relpath)}</code></li>`).join("");
-    return `<tr><td class="name-cell"><strong>${escapeHtml(item.content_name)}</strong><span class="path-line">${escapeHtml(item.core || "No core directory")}</span><details class="save-paths"><summary>${item.files.length} ${item.files.length === 1 ? "file" : "files"}</summary><ul>${paths}</ul></details></td><td><span class="badge ${saveMatchClass(item.status)}">${saveMatchLabel(item.status)}</span></td><td>${candidates}</td><td class="meta">${item.save_files} saves · ${item.state_files} states<br>${formatBytes(item.bytes)}</td><td class="meta">${new Date(Number(item.latest_mtime_ns) / 1e6).toLocaleString()}</td></tr>`;
+    return `<tr><td class="name-cell"><strong>${escapeHtml(item.content_name)}</strong><span class="path-line">${escapeHtml(item.core || "No core directory")}</span><details class="save-paths"><summary>${item.files.length} ${item.files.length === 1 ? "file" : "files"}</summary><ul>${paths}</ul></details></td><td><span class="badge ${saveMatchClass(item.status)}">${saveMatchLabel(item.status)}</span></td><td>${candidates}</td><td class="meta">${item.save_files} saves · ${item.state_files} states<br>${formatBytes(item.bytes)}</td><td class="meta">${new Date(Number(item.latest_mtime_ns) / 1e6).toLocaleString()}</td><td>${item.status === "orphan" ? `<button class="button danger-subtle small" data-delete-save-group="${index}">Review delete</button>` : '<span class="meta">Resolve match first</span>'}</td></tr>`;
   }).join("");
-  return `${toolbar}<p class="save-match-note">Matching is read-only. Exact filenames are matched first; normalized names are suggestions and ambiguous results always require review.</p><div class="table-wrap"><table><thead><tr><th>RetroArch content name</th><th>Status</th><th>Candidate ROM</th><th>Files</th><th>Last changed</th></tr></thead><tbody>${rows}</tbody></table></div><div class="pager"><span>Showing ${data.offset + 1}–${end} of ${data.total.toLocaleString()}</span><div class="bulk-actions"><button class="button secondary small" data-save-match-page="previous" ${data.offset === 0 ? "disabled" : ""}>Previous</button><button class="button secondary small" data-save-match-page="next" ${end >= data.total ? "disabled" : ""}>Next</button></div></div>`;
+  return `${toolbar}<p class="save-match-note">Exact filenames are matched first. Orphans can be deleted after ROMmates creates a full safety snapshot; possible and ambiguous matches remain protected.</p><div class="table-wrap"><table><thead><tr><th>RetroArch content name</th><th>Status</th><th>Candidate ROM</th><th>Files</th><th>Last changed</th><th>Action</th></tr></thead><tbody>${rows}</tbody></table></div><div class="pager"><span>Showing ${data.offset + 1}–${end} of ${data.total.toLocaleString()}</span><div class="bulk-actions"><button class="button secondary small" data-save-match-page="previous" ${data.offset === 0 ? "disabled" : ""}>Previous</button><button class="button secondary small" data-save-match-page="next" ${end >= data.total ? "disabled" : ""}>Next</button></div></div>`;
 }
 
 function saveHeader(overview) {
@@ -1193,6 +1222,7 @@ async function renderSaves() {
   let snapshotData = null;
   let snapshotDetail = null;
   let comparison = null;
+  let matchData = null;
   if (state.saveTab === "current") {
     const params = new URLSearchParams({ search: state.saveSearch, limit: 250, offset: state.saveOffset });
     currentData = await api(`/api/saves/current?${params}`);
@@ -1215,7 +1245,8 @@ async function renderSaves() {
     content = snapshotsHtml(snapshotData, snapshotDetail, comparison);
   } else if (state.saveTab === "matches") {
     const params = new URLSearchParams({ search: state.saveMatchSearch, status: state.saveMatchStatus, limit: 200, offset: state.saveMatchOffset });
-    content = saveMatchesHtml(await api(`/api/saves/unmatched?${params}`));
+    matchData = await api(`/api/saves/unmatched?${params}`);
+    content = saveMatchesHtml(matchData);
   } else {
     content = saveSettingsHtml(overview.settings);
   }
@@ -1274,6 +1305,30 @@ async function renderSaves() {
   view.querySelectorAll("[data-save-match-page]").forEach((button) => button.addEventListener("click", () => {
     state.saveMatchOffset = Math.max(0, state.saveMatchOffset + (button.dataset.saveMatchPage === "next" ? 200 : -200));
     renderSaves();
+  }));
+  view.querySelectorAll("[data-delete-save-group]").forEach((button) => button.addEventListener("click", async () => {
+    const group = matchData?.items[Number(button.dataset.deleteSaveGroup)];
+    if (!group || group.status !== "orphan") return;
+    const paths = group.files.map((file) => `<li><code>${escapeHtml(file.relpath)}</code> (${formatBytes(file.size)})</li>`).join("");
+    const confirmed = await confirmAction({
+      title: `Delete orphan saves for “${group.content_name}”?`,
+      content: `<p class="warning-copy">ROMmates will create a full safety snapshot, then delete <strong>${group.files.length} ${group.files.length === 1 ? "file" : "files"}</strong> from the live RetroArch WebDAV directory. Restoring the safety snapshot restores the complete cloud state, not only this group.</p><ul class="confirm-list">${paths}</ul>`,
+      confirmLabel: `Snapshot and delete ${group.files.length}`,
+      cancelLabel: "Keep saves",
+      danger: true,
+    });
+    if (!confirmed) return;
+    button.disabled = true;
+    try {
+      const result = await requestJob(
+        "/api/saves/orphans/delete",
+        { method: "POST", body: JSON.stringify({ group_key: group.key }) },
+        "Creating safety snapshot",
+      );
+      toast(`Deleted ${result.files} orphan save files; safety snapshot #${result.safety_snapshot_id} is available`);
+      await refreshStatus();
+      await renderSaves();
+    } catch (error) { toast(error.message, "error"); button.disabled = false; }
   }));
   view.querySelectorAll("[data-open-snapshot]").forEach((button) => button.addEventListener("click", () => {
     state.saveSnapshotId = Number(button.dataset.openSnapshot);
@@ -1360,7 +1415,7 @@ async function renderSaves() {
 }
 
 function namingConfidenceLabel(value) {
-  return { exact: "Exact DAT match", strong: "Strong name match", cleanup: "Cleanup only" }[value] || value;
+  return { exact: "Exact DAT match", strong: "Strong name match", metadata: "ScreenScraper title", cleanup: "Cleanup only" }[value] || value;
 }
 
 function saveImpactHtml(impact) {
@@ -1404,6 +1459,7 @@ async function renderNaming() {
       <option value="all" ${state.namingConfidence === "all" ? "selected" : ""}>All suggestions</option>
       <option value="exact" ${state.namingConfidence === "exact" ? "selected" : ""}>Exact DAT matches</option>
       <option value="strong" ${state.namingConfidence === "strong" ? "selected" : ""}>Strong name matches</option>
+      <option value="metadata" ${state.namingConfidence === "metadata" ? "selected" : ""}>ScreenScraper titles</option>
       <option value="cleanup" ${state.namingConfidence === "cleanup" ? "selected" : ""}>Cleanup only</option>
     </select></label>
     <label><span class="sr-only">Save impact</span><select id="naming-save-impact">

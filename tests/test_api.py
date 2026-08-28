@@ -290,6 +290,29 @@ class ApiIntegrationTests(unittest.TestCase):
         overview = self.client.get("/api/saves", headers=self.headers).json()
         self.assertGreaterEqual(overview["snapshot_count"], 2)
 
+    def test_orphan_save_cleanup_is_snapshot_backed(self):
+        orphan = self.root / "saves/saves/mGBA/Abandoned Game.srm"
+        orphan.parent.mkdir(parents=True, exist_ok=True)
+        orphan.write_bytes(b"orphan")
+        report = self.client.get(
+            "/api/saves/unmatched?status=orphan&search=Abandoned%20Game",
+            headers=self.headers,
+        ).json()
+        self.assertEqual(report["total"], 1)
+
+        response = self.client.post(
+            "/api/saves/orphans/delete",
+            headers=self.headers,
+            json={"group_key": report["items"][0]["key"]},
+        )
+        self.assertEqual(response.status_code, 202)
+        job = self.wait_for_job(response.json()["job_id"])
+
+        self.assertEqual(job["status"], "complete")
+        self.assertEqual(job["result"]["files"], 1)
+        self.assertIn("safety_snapshot_id", job["result"])
+        self.assertFalse(orphan.exists())
+
     def test_scan_report_lists_every_unreadable_path(self):
         outside = self.root / "outside.gba"
         outside.write_bytes(b"outside")

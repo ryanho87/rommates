@@ -580,6 +580,82 @@ class SaveSnapshotService:
             "available": self.available(),
         }
 
+    def delete_orphan_group(
+        self,
+        group_key: str,
+        progress_callback: ProgressCallback | None = None,
+        cancel_check: CancelCheck | None = None,
+    ) -> dict[str, object]:
+        """Remove one revalidated orphan group after publishing a full safety snapshot."""
+        with self._operation_lock:
+            groups, _ = self._matched_save_groups()
+            group = next((item for item in groups if item["key"] == group_key), None)
+            if not group:
+                raise LibraryError("The save group no longer exists; refresh Save matching")
+            if group["status"] != "orphan":
+                raise LibraryError("Only save groups with no ROM match can be deleted")
+            if progress_callback:
+                progress_callback(1, "Creating a safety snapshot before deleting saves")
+            snapshot = self.create_snapshot(
+                trigger="pre_save_delete",
+                note=f"Before deleting orphan saves for {group['content_name']}",
+                force_record=True,
+                progress_callback=(
+                    (lambda progress, detail: progress_callback(min(90, progress), detail))
+                    if progress_callback else None
+                ),
+                cancel_check=cancel_check,
+            )
+            snapshot_id = int(snapshot["snapshot_id"])
+            root = self.settings.saves_root.resolve()
+            expected = {item["relpath"]: item for item in group["files"]}
+            targets: list[tuple[Path, dict[str, object]]] = []
+            for relpath, item in expected.items():
+                target = (root / relpath).resolve()
+                if target != root and root not in target.parents:
+                    raise LibraryError("A save path escaped the configured source root")
+                try:
+                    stat = target.stat()
+                except OSError as exc:
+                    raise LibraryError(f"Could not revalidate {relpath}: {exc}") from exc
+                if stat.st_size != item["size"] or stat.st_mtime_ns != item["mtime_ns"]:
+                    raise LibraryError(f"{relpath} changed after review; refresh Save matching")
+                targets.append((target, item))
+            with self.db.connect() as connection:
+                snapshot_files = {
+                    row["relpath"]: dict(row)
+                    for row in connection.execute(
+                        "SELECT relpath,size,mtime_ns,sha256 FROM save_snapshot_files "
+                        "WHERE snapshot_id=? AND relpath IN (%s)" % ",".join("?" for _ in expected),
+                        [snapshot_id, *expected],
+                    )
+                }
+            if len(snapshot_files) != len(expected):
+                raise LibraryError("The safety snapshot did not capture every selected save file")
+            deleted: list[tuple[Path, dict[str, object]]] = []
+            try:
+                for target, item in targets:
+                    target.unlink()
+                    deleted.append((target, snapshot_files[str(item["relpath"])]))
+            except Exception as exc:
+                for target, snapshot_file in deleted:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(self._blob_path(str(snapshot_file["sha256"])), target)
+                    os.utime(target, ns=(int(snapshot_file["mtime_ns"]), int(snapshot_file["mtime_ns"])))
+                raise LibraryError(f"Could not delete the complete save group; deleted files were restored: {exc}") from exc
+            if progress_callback:
+                progress_callback(100, f"Deleted {len(deleted)} orphan save files")
+            self.db.activity(
+                "save_delete",
+                f"Deleted {len(deleted)} orphan save files for {group['content_name']} after snapshot #{snapshot_id}",
+            )
+            return {
+                "group": group["content_name"],
+                "files": len(deleted),
+                "bytes": sum(int(item["size"]) for _, item in targets),
+                "safety_snapshot_id": snapshot_id,
+            }
+
     def snapshot_detail(
         self, snapshot_id: int, search: str = "", limit: int = 250, offset: int = 0
     ) -> dict[str, object]:

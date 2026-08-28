@@ -81,6 +81,23 @@ class NamingServiceTests(unittest.TestCase):
             cached = connection.execute("SELECT relpath FROM file_cache").fetchone()["relpath"]
         self.assertEqual(cached, "gba/Metroid Fusion (USA).gba")
 
+    def test_screenscraper_title_is_offered_when_no_dat_match_exists(self):
+        self.write("gba/042_pokemon_emerald.gba", b"pokemon")
+        self.library.scan()
+        with self.db.write() as connection:
+            game_id = connection.execute("SELECT id FROM games").fetchone()["id"]
+            connection.execute(
+                "INSERT INTO game_metadata(game_id,source,source_game_id,source_system_id,match_method,title) "
+                "VALUES(?,'screenscraper','123',12,'hash','Pokémon Emerald')",
+                (game_id,),
+            )
+
+        suggestion = self.naming.suggestions(confidence="metadata")["items"][0]
+
+        self.assertEqual(suggestion["suggested_name"], "Pokémon Emerald")
+        self.assertEqual(suggestion["confidence"], "metadata")
+        self.assertEqual(suggestion["source"], "ScreenScraper · hash match")
+
     def test_dat_rejects_entity_declarations(self):
         with self.assertRaisesRegex(LibraryError, "DTD or entity"):
             self.naming.import_dat("unsafe.dat", "gba", '<!DOCTYPE x [<!ENTITY x "bad">]><datafile/>')
