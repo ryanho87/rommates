@@ -467,8 +467,8 @@ function setHeading(title, subtitle) {
   document.title = title === "Overview" ? "ROMmates" : `${title} · ROMmates`;
 }
 
-function platformOptions() {
-  return `<option value="">All platforms</option>${state.platforms.map((item) => `<option value="${escapeHtml(item.platform)}" ${state.platform === item.platform ? "selected" : ""}>${escapeHtml(item.platform)} (${item.count})</option>`).join("")}`;
+function platformOptions(items = state.platforms, countSuffix = "") {
+  return `<option value="">All platforms</option>${items.map((item) => `<option value="${escapeHtml(item.platform)}" ${state.platform === item.platform ? "selected" : ""}>${escapeHtml(item.platform)} (${Number(item.count).toLocaleString()}${escapeHtml(countSuffix)})</option>`).join("")}`;
 }
 
 function duplicateLabel(status) {
@@ -509,7 +509,7 @@ async function getGames(deviceId = null, deviceScope = "all") {
   return navigationApi(`/api/games?${params}`, { signal: state.gamesController.signal });
 }
 
-function libraryToolbar(includeDuplicate = true) {
+function libraryToolbar(includeDuplicate = true, platformItems = state.platforms, countSuffix = "") {
   const duplicateOptions = state.view === "duplicates"
     ? `<option value="exact" ${state.duplicate === "exact" ? "selected" : ""}>Exact content</option><option value="possible" ${state.duplicate === "possible" ? "selected" : ""}>Similar filenames</option>`
     : `<option value="all" ${state.duplicate === "all" ? "selected" : ""}>All statuses</option><option value="exact" ${state.duplicate === "exact" ? "selected" : ""}>Exact duplicates</option><option value="possible" ${state.duplicate === "possible" ? "selected" : ""}>Possible duplicates</option><option value="unique" ${state.duplicate === "unique" ? "selected" : ""}>Unique</option>`;
@@ -531,7 +531,7 @@ function libraryToolbar(includeDuplicate = true) {
       </label>
       <label>
         <span class="sr-only">Platform</span>
-        <select id="platform-filter">${platformOptions()}</select>
+        <select id="platform-filter">${platformOptions(platformItems, countSuffix)}</select>
       </label>
       ${includeDuplicate ? `<label><span class="sr-only">Duplicate status</span><select id="duplicate-filter">${duplicateOptions}</select></label>` : ""}
       ${state.view !== "duplicates" ? `<label><span class="sr-only">Sort games</span><select id="sort-filter">
@@ -1531,6 +1531,12 @@ async function deleteSelected() {
   await renderCurrentView();
 }
 
+function deviceMetric(value, label, explanation) {
+  const count = Number(value).toLocaleString();
+  const accessibleLabel = `${count} ${label}. ${explanation}`;
+  return `<span class="device-metric" tabindex="0" aria-label="${escapeHtml(accessibleLabel)}" data-tooltip="${escapeHtml(explanation)}"><strong>${count}</strong> ${escapeHtml(label)} <span class="metric-info" aria-hidden="true">ⓘ</span></span>`;
+}
+
 async function renderDevices() {
   const renderVersion = beginPageRender();
   setHeading("Devices", "See what is present now, then choose what changes next.");
@@ -1549,6 +1555,18 @@ async function renderDevices() {
   const key = `devices\u001f${device.id}\u001f${state.deviceScope}\u001f${state.search}\u001f${state.platform}\u001f${state.sort}`;
   const data = mergeInfinitePage(key, response);
   const inventory = data.device_inventory;
+  const scopedPlatformCounts = new Map(
+    (inventory.platforms || []).map((item) => [item.platform, Number(item.count)]),
+  );
+  const platformItems = state.platforms.map((item) => ({
+    ...item,
+    count: state.deviceScope === "all" ? item.count : scopedPlatformCounts.get(item.platform) || 0,
+  }));
+  const platformCountSuffix = state.deviceScope === "on_device"
+    ? " on device"
+    : state.deviceScope === "changes"
+      ? " pending"
+      : " in library";
   const noFilters = !state.search && !state.platform;
   let table = gamesTable(data, true);
   if (!data.items.length && noFilters && state.deviceScope === "on_device") {
@@ -1560,15 +1578,26 @@ async function renderDevices() {
     <div class="device-strip">
       <label class="field"><span>Target device</span><select id="device-select">${state.devices.map((item) => `<option value="${item.id}" ${item.id === device.id ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("")}</select></label>
       <label class="field"><span>Deployment storage</span><select id="deployment-mode"><option value="copy" ${device.deployment_mode === "copy" ? "selected" : ""}>Independent copies</option><option value="hardlink" ${device.deployment_mode === "hardlink" ? "selected" : ""}>Prefer hardlinks</option></select></label>
-      <div class="device-summary"><span title="Measured from the current source and device file inodes"><strong>${preview.hardlinked}</strong> hardlinked</span><span title="Measured from the current source and device file inodes"><strong>${preview.copied}</strong> copied</span>${preview.missing ? `<span><strong>${preview.missing}</strong> managed files missing</span>` : ""}${preview.unknown ? `<span><strong>${preview.unknown}</strong> storage states unknown</span>` : ""}<span><strong>${inventory.present_games}</strong> currently on device</span><span><strong>${preview.games}</strong> desired</span><span><strong>${preview.additions}</strong> files to add/update</span>${preview.conversions ? `<span><strong>${preview.conversions}</strong> copies to convert</span>` : ""}<span><strong>${preview.removals}</strong> files to remove</span><button class="button" id="apply-device" ${preview.additions === 0 && preview.removals === 0 && preview.conversions === 0 ? "disabled" : ""}>Review and apply</button></div>
+      <div class="device-summary">
+        ${deviceMetric(preview.hardlinked, "hardlinked", "Individual device files that share storage with their canonical library files on the NUC.")}
+        ${deviceMetric(preview.copied, "copied", "Individual managed device files stored as independent copies on the NUC.")}
+        ${preview.missing ? deviceMetric(preview.missing, "managed files missing", "Files recorded as deployed by ROMmates that are no longer present in the device directory.") : ""}
+        ${preview.unknown ? deviceMetric(preview.unknown, "storage states unknown", "Managed files whose source or device storage identity could not be inspected.") : ""}
+        ${deviceMetric(inventory.present_games, "currently on device", "Library game bundles matched to files currently present in this device directory. Unmatched files are counted separately below.")}
+        ${deviceMetric(preview.games, "desired", "Game bundles currently selected in ROMmates for this device.")}
+        ${deviceMetric(preview.additions, "files to add/update", "Individual files ROMmates will create or replace the next time changes are applied.")}
+        ${preview.conversions ? deviceMetric(preview.conversions, "copies to convert", "Existing managed copies eligible to be replaced with space-saving hardlinks.") : ""}
+        ${deviceMetric(preview.removals, "files to remove", "Managed files ROMmates will remove because their games are no longer selected.")}
+        <button class="button" id="apply-device" ${preview.additions === 0 && preview.removals === 0 && preview.conversions === 0 ? "disabled" : ""}>Review and apply</button>
+      </div>
     </div>
     <div class="device-scope" role="group" aria-label="Device ROM view">
       <button class="scope-button ${state.deviceScope === "on_device" ? "active" : ""}" data-device-scope="on_device" aria-pressed="${state.deviceScope === "on_device"}">On device <span>${inventory.present_games.toLocaleString()}</span></button>
       <button class="scope-button ${state.deviceScope === "changes" ? "active" : ""}" data-device-scope="changes" aria-pressed="${state.deviceScope === "changes"}">Pending changes <span>${inventory.changes.toLocaleString()}</span></button>
       <button class="scope-button ${state.deviceScope === "all" ? "active" : ""}" data-device-scope="all" aria-pressed="${state.deviceScope === "all"}">Browse library</button>
     </div>
-    ${inventory.unmatched_files ? `<p class="device-inventory-note"><strong>${inventory.unmatched_files.toLocaleString()}</strong> ${inventory.unmatched_files === 1 ? "file does" : "files do"} not match a bundle in the current library index.</p>` : ""}
-    ${libraryToolbar(false)}${table}`);
+    ${inventory.unmatched_files ? `<p class="device-inventory-note">${deviceMetric(inventory.unmatched_files, inventory.unmatched_files === 1 ? "file does not match a library bundle" : "files do not match library bundles", "These physical files exist in the device directory, but ROMmates cannot associate their paths with games in the current library index.")}</p>` : ""}
+    ${libraryToolbar(false, platformItems, platformCountSuffix)}${table}`);
   bindFilters(renderDevices);
   document.querySelector("#device-select").addEventListener("change", (event) => {
     state.deviceId = Number(event.target.value);

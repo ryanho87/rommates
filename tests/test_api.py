@@ -436,6 +436,10 @@ class ApiIntegrationTests(unittest.TestCase):
             self.assertEqual(data["items"][0]["device_state"], "unmanaged")
             self.assertEqual(data["device_inventory"]["present_games"], 1)
             self.assertEqual(data["device_inventory"]["unmatched_files"], 1)
+            self.assertEqual(
+                data["device_inventory"]["platforms"],
+                [{"platform": "gba", "count": 1}],
+            )
 
             selected = self.client.put(
                 f"/api/devices/{device['id']}/selection",
@@ -449,6 +453,14 @@ class ApiIntegrationTests(unittest.TestCase):
             ).json()
             self.assertEqual(updated["items"][0]["device_state"], "pending_update")
             self.assertEqual(updated["device_inventory"]["changes"], 1)
+            pending = self.client.get(
+                f"/api/games?device_id={device['id']}&device_scope=changes",
+                headers=self.headers,
+            ).json()
+            self.assertEqual(
+                pending["device_inventory"]["platforms"],
+                [{"platform": "gba", "count": 1}],
+            )
         finally:
             self.client.put(
                 f"/api/devices/{device['id']}/selection",

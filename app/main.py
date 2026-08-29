@@ -843,6 +843,11 @@ def games(
                     page_files[row["game_id"]].append(row["relpath"])
         device_inventory = None
         if device_id is not None:
+            scope_expr = {
+                "on_device": present_expr,
+                "changes": f"({selected_expr}) != ({synced_expr})",
+                "all": "1=1",
+            }[device_scope]
             present_games = connection.execute(
                 f"SELECT COUNT(*) AS count FROM games g WHERE {present_expr}"
             ).fetchone()["count"]
@@ -858,6 +863,14 @@ def games(
                 "changes": changes,
                 "unmatched_files": unmatched_files,
                 "files": len(present_relpaths),
+                "platforms": [
+                    dict(row)
+                    for row in connection.execute(
+                        f"SELECT g.platform,COUNT(*) AS count FROM games g "
+                        f"WHERE {scope_expr} GROUP BY g.platform "
+                        "ORDER BY g.platform COLLATE NOCASE"
+                    )
+                ],
             }
     if items and device_id is None and actual_devices:
         inventories = {
