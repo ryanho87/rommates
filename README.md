@@ -290,6 +290,43 @@ You can build the desired set in either direction:
 
 Library assignments update the desired selections only. Open Devices and apply a target when you want ROMmates to change its filesystem.
 
+## MCP server
+
+ROMmates exposes an authenticated Streamable HTTP MCP endpoint at `/mcp/`. When the UI is
+available at `https://rommates.example.com`, configure an MCP host to connect to:
+
+```text
+https://rommates.example.com/mcp/
+```
+
+Send the existing access token as an HTTP header:
+
+```text
+Authorization: Bearer YOUR_ROMMATES_ACCESS_TOKEN
+```
+
+The endpoint uses the same container, port, Traefik router, and token as the browser API;
+it does not require another Compose service or published port. Keep the token in the MCP
+host's secret or environment configuration rather than placing it in the URL or committing
+it to a client configuration file.
+
+The initial tool surface can search and inspect games, list duplicate groups, inspect
+devices, preview device changes, read job reports and live scan telemetry, start safe scans,
+change device selections, apply reviewed device plans, and stop cancellable jobs. It does
+not expose shell execution, caller-provided filesystem paths, ROM deletion, trash purging,
+save restoration, or uploads.
+
+Applying a device plan is a two-step operation. `preview_device_changes` returns a
+`preview_token`; `apply_device_changes` requires that exact token and revalidates it when
+the serialized filesystem worker starts. If selections, library files, deployments, device
+inventory, or deployment mode changed while the job waited, it fails without applying the
+stale plan.
+
+All MCP filesystem operations use the normal job queue and return a `job_id`. MCP-requested
+mutations are also recorded in Activity. `ROMMATES_ALLOW_ANONYMOUS=true` disables token
+checks for MCP as well as the browser API, so use it only when the reverse proxy protects
+the complete host.
+
 ## Scan safety
 
 A scan reconciles the catalog with the filesystem, and removing a game also removes the
@@ -394,7 +431,7 @@ Duplicate and ROM trash confirmations list matching save filenames that would be
 | `ROMMATES_DATABASE_PATH` | `/data/rommates.db` | SQLite catalog and selections |
 | `ROMMATES_SCAN_ON_START` | `true` | Start a background scan at boot |
 | `ROMMATES_REQUIRE_EXISTING_ROOTS` | `true` in Compose | Fail startup instead of silently creating missing mounts |
-| `ROMMATES_ACCESS_TOKEN` | **required** | Token entered in the browser and sent as a Bearer credential. Startup fails if it is missing or under 16 characters |
+| `ROMMATES_ACCESS_TOKEN` | **required** | Bearer credential used by the browser API and `/mcp/`. Startup fails if it is missing or under 16 characters |
 | `ROMMATES_ALLOW_ANONYMOUS` | `false` | Disables the token check. Only for instances already behind an authenticated reverse proxy |
 | `ROMMATES_SCAN_PRUNE_LIMIT` | `0.5` | Largest share of the catalog one scan may delete without confirmation |
 | `ROMMATES_EXTENSIONS` | built-in list | Optional comma-separated extension override |

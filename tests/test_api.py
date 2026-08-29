@@ -73,6 +73,31 @@ class ApiIntegrationTests(unittest.TestCase):
         self.assertIn("frame-ancestors 'none'", unauthorized.headers["content-security-policy"])
         self.assertEqual(self.client.get("/api/health").status_code, 200)
 
+        mcp_unauthorized = self.client.post("/mcp/", json={})
+        self.assertEqual(mcp_unauthorized.status_code, 401)
+        self.assertEqual(mcp_unauthorized.headers["cache-control"], "no-store")
+
+        mcp_authorized = self.client.post(
+            "/mcp/",
+            headers={
+                **self.headers,
+                "Accept": "application/json, text/event-stream",
+                "Content-Type": "application/json",
+            },
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-11-25",
+                    "capabilities": {},
+                    "clientInfo": {"name": "rommates-test", "version": "1"},
+                },
+            },
+        )
+        self.assertEqual(mcp_authorized.status_code, 200, mcp_authorized.text)
+        self.assertEqual(mcp_authorized.json()["result"]["serverInfo"]["name"], "ROMmates")
+
     def test_ui_pages_support_direct_navigation(self):
         for path in (
             "/",

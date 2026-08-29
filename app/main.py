@@ -12,11 +12,13 @@ from urllib.parse import quote
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import BaseModel, Field, ValidationError
 
 from .config import Settings
 from .db import Database
 from .library import JobCancelled, LibraryError, LibraryService
+from .mcp_server import RommatesMCPService, create_mcp_server
 from .naming import NamingService
 from .rankings import RankingService
 from .saves import SaveSnapshotService
@@ -334,6 +336,86 @@ def enqueue_job(kind: str, detail: str, operation, *args, coalesce: bool = False
     return job_id
 
 
+def queue_scan_job() -> dict[str, object]:
+    """Queue a protected scan without allowing an MCP caller to override prune safety."""
+    with db.write() as connection:
+        active = connection.execute(
+            "SELECT id FROM jobs WHERE kind='scan' AND status IN ('queued','running','cancelling') "
+            "ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        if active:
+            return {"job_id": active["id"], "already_running": True}
+    job_id = enqueue_job("scan", "Indexing library", library.scan, False)
+    return {"job_id": job_id, "already_running": False}
+
+
+def queue_device_apply_job(device_id: int) -> dict[str, object]:
+    with db.connect() as connection:
+        if not connection.execute("SELECT 1 FROM devices WHERE id=?", (device_id,)).fetchone():
+            raise LibraryError("Device was not found")
+    job_id = enqueue_job(
+        "device_apply", f"Applying device {device_id}", library.apply_device, device_id
+    )
+    return {"job_id": job_id}
+
+
+def queue_reviewed_device_apply_job(device_id: int, preview_token: str) -> dict[str, object]:
+    with db.connect() as connection:
+        if not connection.execute("SELECT 1 FROM devices WHERE id=?", (device_id,)).fetchone():
+            raise LibraryError("Device was not found")
+    job_id = enqueue_job(
+        "device_apply",
+        f"Applying reviewed MCP plan for device {device_id}",
+        mcp_service.execute_reviewed_device_apply,
+        device_id,
+        preview_token,
+    )
+    return {"job_id": job_id}
+
+
+def request_job_cancel(job_id: int) -> dict[str, object]:
+    with db.connect() as connection:
+        row = connection.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+    if not row:
+        raise LibraryError("Job was not found")
+    if row["status"] in {"complete", "failed", "cancelled"}:
+        return {"job_id": job_id, "status": row["status"], "already_finished": True}
+    if row["status"] != "queued" and row["kind"] not in CANCELLABLE_JOB_KINDS:
+        raise LibraryError("This filesystem operation is too short or atomic to stop safely")
+    with job_cancellations_lock:
+        cancellation = job_cancellations.get(job_id)
+        if cancellation:
+            cancellation.set()
+    if not cancellation:
+        raise LibraryError("The job is no longer running")
+    with db.write() as connection:
+        connection.execute(
+            "UPDATE jobs SET status='cancelling',detail='Stopping safely at the next checkpoint' "
+            "WHERE id=? AND status IN ('queued','running','paused')",
+            (job_id,),
+        )
+    return {"job_id": job_id, "status": "cancelling", "already_finished": False}
+
+
+mcp_service = RommatesMCPService(
+    db,
+    library,
+    queue_scan_job,
+    queue_reviewed_device_apply_job,
+    request_job_cancel,
+)
+mcp_server = create_mcp_server(mcp_service)
+mcp_http_app = mcp_server.streamable_http_app(
+    streamable_http_path="/",
+    stateless_http=True,
+    json_response=True,
+    # ROMmates already authenticates every MCP request and rejects cross-origin
+    # writes. Traefik owns the public Host header, so a second static host allowlist
+    # would make custom domains needlessly brittle.
+    transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
+)
+
+
 def save_scheduler(stop: threading.Event) -> None:
     while not stop.wait(30):
         try:
@@ -391,7 +473,8 @@ async def lifespan(_: FastAPI):
     if settings.scan_on_start:
         enqueue_job("scan", "Indexing library", library.scan)
     try:
-        yield
+        async with mcp_server.session_manager.run():
+            yield
     finally:
         scheduler_stop.set()
         scheduler_thread.join(timeout=2)
@@ -407,6 +490,7 @@ app = FastAPI(
 )
 STATIC_DIR = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+app.mount("/mcp", mcp_http_app, name="mcp")
 
 
 class RenameRequest(BaseModel):
@@ -518,11 +602,8 @@ async def protect_private_api(request: Request, call_next):
         request.url.path.startswith("/api/downloads/")
         and request.method in {"GET", "HEAD"}
     )
-    if (
-        request.url.path.startswith("/api/")
-        and request.url.path != "/api/health"
-        and not public_download
-    ):
+    private_path = request.url.path.startswith("/api/") or request.url.path.startswith("/mcp")
+    if private_path and request.url.path != "/api/health" and not public_download:
         if settings.access_token:
             authorization = request.headers.get("authorization", "")
             expected = f"Bearer {settings.access_token}"
@@ -546,7 +627,7 @@ async def add_security_headers(request: Request, call_next):
     )
     response.headers["Referrer-Policy"] = "no-referrer"
     response.headers["X-Content-Type-Options"] = "nosniff"
-    if request.url.path.startswith("/api/"):
+    if request.url.path.startswith(("/api/", "/mcp")):
         response.headers["Cache-Control"] = "no-store"
     return response
 
@@ -715,6 +796,8 @@ def dashboard():
 
 @app.post("/api/scan", status_code=202)
 def start_scan(confirm_prune: bool = False):
+    if not confirm_prune:
+        return queue_scan_job()
     with db.write() as connection:
         active = connection.execute(
             "SELECT id FROM jobs WHERE kind='scan' AND status IN ('queued','running','cancelling') ORDER BY id DESC LIMIT 1"
@@ -1411,8 +1494,7 @@ def device_preview(device_id: int):
 
 @app.post("/api/devices/{device_id}/apply", status_code=202)
 def apply_device(device_id: int):
-    job_id = enqueue_job("device_apply", f"Applying device {device_id}", library.apply_device, device_id)
-    return {"job_id": job_id}
+    return queue_device_apply_job(device_id)
 
 
 @app.get("/api/trash")
@@ -1752,30 +1834,11 @@ def job_issues(
 
 @app.post("/api/jobs/{job_id}/cancel", status_code=202)
 def cancel_job(job_id: int):
-    with db.connect() as connection:
-        row = connection.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
-    if not row:
-        raise HTTPException(status_code=404, detail="Job was not found")
-    if row["status"] in {"complete", "failed", "cancelled"}:
-        return {"job_id": job_id, "status": row["status"], "already_finished": True}
-    if row["status"] != "queued" and row["kind"] not in CANCELLABLE_JOB_KINDS:
-        raise HTTPException(
-            status_code=409,
-            detail="This filesystem operation is too short or atomic to stop safely",
-        )
-    with job_cancellations_lock:
-        cancellation = job_cancellations.get(job_id)
-        if cancellation:
-            cancellation.set()
-    if not cancellation:
-        raise HTTPException(status_code=409, detail="The job is no longer running")
-    with db.write() as connection:
-        connection.execute(
-            "UPDATE jobs SET status='cancelling',detail='Stopping safely at the next checkpoint' "
-            "WHERE id=? AND status IN ('queued','running','paused')",
-            (job_id,),
-        )
-    return {"job_id": job_id, "status": "cancelling", "already_finished": False}
+    try:
+        return request_job_cancel(job_id)
+    except LibraryError as exc:
+        status_code = 404 if str(exc) == "Job was not found" else 409
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
 
 
 @app.get("/api/activity")
