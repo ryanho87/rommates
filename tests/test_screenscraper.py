@@ -182,6 +182,22 @@ class ScreenScraperTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertEqual(open_url.call_count, 1)
 
+    def test_current_system_name_object_is_mapped(self):
+        service = ScreenScraperService(self.settings, self.db)
+        body = (
+            b'{"response":{"systemes":[{"id":1,"noms":{'
+            b'"nom_eu":"Megadrive","nom_us":"Genesis",'
+            b'"nom_retropie":"genesis,megadrive",'
+            b'"noms_commun":"Sega Megadrive,Sega Genesis"}}]}}'
+        )
+        with patch("urllib.request.urlopen", return_value=_Response(body)):
+            systems = service._systems()
+
+        self.assertEqual(systems["megadrive"], 1)
+        self.assertEqual(systems["genesis"], 1)
+        self.assertEqual(systems["sega megadrive"], 1)
+        self.assertEqual(systems["sega genesis"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

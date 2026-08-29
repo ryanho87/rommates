@@ -85,6 +85,27 @@ def _localized(items: object, preferred=("us", "wor", "eu", "ss", "en", "fr")) -
     return str((values[0].get("text") or values[0].get("nom") or "")) if values else ""
 
 
+def _system_names(value: object) -> list[str]:
+    """Return aliases from both legacy and current ScreenScraper name shapes."""
+    if isinstance(value, str):
+        return [name.strip() for name in value.split(",") if name.strip()]
+    if isinstance(value, list):
+        names: list[str] = []
+        for item in value:
+            if isinstance(item, dict):
+                names.extend(_system_names(item.get("text") or item.get("nom")))
+            else:
+                names.extend(_system_names(item))
+        return names
+    if isinstance(value, dict):
+        names: list[str] = []
+        for key, item in value.items():
+            if str(key).casefold().startswith("nom"):
+                names.extend(_system_names(item))
+        return names
+    return []
+
+
 class ScreenScraperService:
     def __init__(self, settings: Settings, db: Database):
         self.settings = settings
@@ -244,14 +265,7 @@ class ScreenScraperService:
                 continue
             names: list[str] = []
             for key in ("noms", "nom", "nomcourt", "shortname"):
-                value = node.get(key)
-                if isinstance(value, str):
-                    names.append(value)
-                elif isinstance(value, list):
-                    names.extend(
-                        str(item.get("text") or item.get("nom") or "")
-                        for item in value if isinstance(item, dict)
-                    )
+                names.extend(_system_names(node.get(key)))
             for name in names:
                 if _normalized(name):
                     result.setdefault(_normalized(name), int(node["id"]))
