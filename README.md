@@ -196,6 +196,11 @@ path below them. Unknown or custom platform folders are preserved instead of gue
 
 Each deployment is recorded as it lands, so an apply that fails or is interrupted partway leaves every file it already wrote under management. That record is an ownership boundary—not a cached claim that a file is a copy or hardlink. ROMmates derives the storage relationship from the source and destination inodes whenever it renders the device preview. Re-running the apply finishes the job, and unselecting a game still removes what was deployed.
 
+Opening a device reconciles its actual ROM directory and publishes that inventory to the
+database. Library and duplicate pages reuse the persisted inventory instead of recursively
+walking every device directory during navigation. Use **Refresh** on the Devices page after
+making files outside ROMmates when you need those external changes reflected immediately.
+
 Within `roms/switch`, packages in `update`, `updates`, `dlc`, `cheats`, `mods`, or
 `firmware` trees are deliberately excluded from the game catalog. Root-level packages
 whose Nintendo title ID ends in `800`, plus packages explicitly named `Update` or `UPD`,

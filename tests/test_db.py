@@ -61,7 +61,23 @@ class DatabaseMigrationTests(unittest.TestCase):
                 versions = {row["version"] for row in upgraded.execute("SELECT version FROM schema_migrations")}
             self.assertIn("result_json", columns)
             self.assertIn("progress_json", columns)
-            self.assertEqual(versions, {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12})
+            self.assertEqual(versions, {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13})
+            with db.connect() as upgraded:
+                tables = {
+                    row["name"]
+                    for row in upgraded.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'"
+                    )
+                }
+                indexes = {
+                    row["name"]
+                    for row in upgraded.execute(
+                        "SELECT name FROM sqlite_master WHERE type='index'"
+                    )
+                }
+            self.assertIn("device_inventory_files", tables)
+            self.assertIn("idx_device_selections_game", indexes)
+            self.assertIn("idx_deployments_game", indexes)
 
     def test_screenscraper_ratings_are_backfilled_from_cached_metadata(self):
         with tempfile.TemporaryDirectory() as directory:

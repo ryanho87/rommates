@@ -324,11 +324,9 @@ function prefetchNavigationData() {
     "/api/activity",
     "/api/trash",
   ];
-  if (state.devices.length) {
-    const deviceId = state.deviceId || state.devices[0].id;
-    paths.push(`/api/devices/${deviceId}/preview`);
-    paths.push(`/api/games?${new URLSearchParams({ search: "", platform: "", duplicate: "all", limit: state.limit, offset: 0, device_id: deviceId, device_scope: "on_device" })}`);
-  }
+  // Device views intentionally are not prefetched. Reconciling actual device
+  // files and storage relationships is useful when opened, but should never
+  // compete with Library navigation for mergerfs I/O.
   const warm = async () => {
     for (const path of paths) {
       try { await navigationApi(path); } catch { /* Prefetch must never affect the active page. */ }

@@ -356,6 +356,8 @@ class ApiIntegrationTests(unittest.TestCase):
 
             device_first.parent.mkdir(parents=True, exist_ok=True)
             device_first.write_bytes(b"same-rom-content")
+            device = self.client.get("/api/devices", headers=self.headers).json()[0]
+            self.main.library.device_inventory(device["id"], refresh=True)
             response = self.client.get(
                 "/api/duplicates?kind=exact&search=Original%20Name",
                 headers=self.headers,
@@ -378,6 +380,7 @@ class ApiIntegrationTests(unittest.TestCase):
             self.assertEqual(original["present_devices"], ["handheld"])
             self.assertFalse(matching[0]["device_conflict"])
             device_second.write_bytes(b"same-rom-content")
+            self.main.library.device_inventory(device["id"], refresh=True)
             conflicted = self.client.get(
                 "/api/duplicates?kind=exact&search=Original%20Name",
                 headers=self.headers,
@@ -462,22 +465,31 @@ class ApiIntegrationTests(unittest.TestCase):
         target.write_bytes(source.read_bytes())
         unknown.write_bytes(b"unknown")
         try:
-            library_game = next(
-                item for item in self.client.get(
-                    "/api/games?limit=1000", headers=self.headers
-                ).json()["items"]
-                if item["id"] == game["id"]
-            )
-            self.assertEqual(
-                library_game["devices"],
-                [{"id": device["id"], "name": device["name"], "state": "present"}],
-            )
+            # Explicit device inspection refreshes and persists actual filesystem
+            # presence. General Library reads reuse that inventory without walking
+            # every device directory in the request path.
             response = self.client.get(
                 f"/api/games?device_id={device['id']}&device_scope=on_device",
                 headers=self.headers,
             )
             self.assertEqual(response.status_code, 200)
             data = response.json()
+            with patch.object(
+                self.main.library,
+                "device_inventory",
+                wraps=self.main.library.device_inventory,
+            ) as inventory:
+                library_game = next(
+                    item for item in self.client.get(
+                        "/api/games?limit=1000", headers=self.headers
+                    ).json()["items"]
+                    if item["id"] == game["id"]
+                )
+            inventory.assert_not_called()
+            self.assertEqual(
+                library_game["devices"],
+                [{"id": device["id"], "name": device["name"], "state": "present"}],
+            )
             self.assertEqual(data["total"], 1)
             self.assertEqual(data["items"][0]["device_state"], "unmanaged")
             self.assertEqual(data["device_inventory"]["present_games"], 1)

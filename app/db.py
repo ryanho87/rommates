@@ -176,6 +176,7 @@ CREATE TABLE IF NOT EXISTS device_selections (
     game_id INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
     PRIMARY KEY(device_id, game_id)
 );
+CREATE INDEX IF NOT EXISTS idx_device_selections_game ON device_selections(game_id, device_id);
 
 CREATE TABLE IF NOT EXISTS deployments (
     device_id INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
@@ -183,6 +184,15 @@ CREATE TABLE IF NOT EXISTS deployments (
     relpath TEXT NOT NULL,
     PRIMARY KEY(device_id, game_id, relpath)
 );
+CREATE INDEX IF NOT EXISTS idx_deployments_game ON deployments(game_id, device_id);
+
+CREATE TABLE IF NOT EXISTS device_inventory_files (
+    device_id INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    relpath TEXT NOT NULL,
+    observed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY(device_id, relpath)
+);
+CREATE INDEX IF NOT EXISTS idx_device_inventory_relpath ON device_inventory_files(relpath, device_id);
 
 CREATE TABLE IF NOT EXISTS trash_items (
     id INTEGER PRIMARY KEY,
@@ -403,6 +413,7 @@ class Database:
                 )
             connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(11)")
             connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(12)")
+            connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(13)")
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:

@@ -1660,8 +1660,23 @@ class LibraryService:
             return set(cached[1])
         with self.db.connect() as connection:
             device = connection.execute("SELECT path FROM devices WHERE id=?", (device_id,)).fetchone()
+            persisted = {
+                row["relpath"]
+                for row in connection.execute(
+                    "SELECT relpath FROM device_inventory_files WHERE device_id=?", (device_id,)
+                )
+            }
         if not device:
             raise LibraryError("Device was not found")
+        # Read paths such as the Library page must never block on a recursive
+        # filesystem walk. Explicit device inspection passes refresh=True and
+        # publishes a new inventory for every other view to reuse.
+        if not refresh:
+            self._device_inventory_cache[device_id] = (
+                time.monotonic() + DEVICE_INVENTORY_CACHE_SECONDS,
+                frozenset(persisted),
+            )
+            return persisted
         device_root = _inside(
             self.settings.devices_root,
             self.settings.devices_root / device["path"] / "roms",
@@ -1684,6 +1699,12 @@ class LibraryService:
                     continue
         except OSError:
             pass
+        with self.db.write() as connection:
+            connection.execute("DELETE FROM device_inventory_files WHERE device_id=?", (device_id,))
+            connection.executemany(
+                "INSERT INTO device_inventory_files(device_id,relpath) VALUES(?,?)",
+                ((device_id, relpath) for relpath in sorted(inventory)),
+            )
         self._device_inventory_cache[device_id] = (
             time.monotonic() + DEVICE_INVENTORY_CACHE_SECONDS,
             frozenset(inventory),
@@ -1934,6 +1955,17 @@ class LibraryService:
                 f"Applied {device['name']}: {linked} linked, {converted} converted, "
                 f"{copied} copied, {removed} removed"
             )
+            with self.db.write() as connection:
+                connection.executemany(
+                    "INSERT OR REPLACE INTO device_inventory_files(device_id,relpath,observed_at) "
+                    "VALUES(?,?,CURRENT_TIMESTAMP)",
+                    ((device_id, relpath) for _, relpath in desired),
+                )
+                removed_relpaths = [relpath for _, relpath in existing - set(desired)]
+                connection.executemany(
+                    "DELETE FROM device_inventory_files WHERE device_id=? AND relpath=?",
+                    ((device_id, relpath) for relpath in removed_relpaths),
+                )
             self._device_inventory_cache.pop(device_id, None)
             self.db.activity("device_apply", detail)
             return {
