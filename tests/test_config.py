@@ -21,6 +21,8 @@ class ConfigurationCompatibilityTests(unittest.TestCase):
                 "ROMMATES_SAVE_SNAPSHOT_INTERVAL_MINUTES": "90",
                 "ROMMATES_FOLDER_BUNDLE_PLATFORMS": "ps3,wiiu",
                 "ROMMATES_RAWG_API_KEY": "prefixed-key",
+                "ROMMATES_UPLOAD_ROOT": "/srv/rommates-uploads",
+                "ROMMATES_UPLOAD_MAX_BYTES": "2048",
                 "RAWG_API_KEY": "fallback-key",
             },
             clear=True,
@@ -33,6 +35,8 @@ class ConfigurationCompatibilityTests(unittest.TestCase):
         self.assertEqual(settings.save_snapshot_interval_minutes, 90)
         self.assertEqual(settings.folder_bundle_platforms, frozenset({"ps3", "wiiu"}))
         self.assertEqual(settings.rawg_api_key, "prefixed-key")
+        self.assertEqual(str(settings.upload_root), "/srv/rommates-uploads")
+        self.assertEqual(settings.upload_max_bytes, 2048)
 
     def test_rawg_api_key_alias_is_supported(self):
         with patch.dict(os.environ, {"RAWG_API_KEY": "rawg-key"}, clear=True):

@@ -73,6 +73,11 @@ class Settings:
     save_retention_weekly: int = 12
     save_retention_monthly: int = 12
     media_root: Path = Path("/data/media")
+    upload_root: Path = Path("/emulation/.rommates-uploads")
+    upload_max_bytes: int = 128 * 1024 * 1024 * 1024
+    upload_chunk_bytes: int = 8 * 1024 * 1024
+    upload_expiry_hours: int = 24
+    download_ticket_seconds: int = 300
     screenscraper_dev_id: str = ""
     screenscraper_dev_password: str = ""
     screenscraper_softname: str = "ROMmates"
@@ -110,10 +115,13 @@ class Settings:
                     }
             except (ValueError, TypeError, json.JSONDecodeError):
                 system_map = {}
+        library_root = Path(_env("ROMMATES_LIBRARY_ROOT", "ROM_LIBRARY_ROOT", "/roms"))
+        devices_root = Path(_env("ROMMATES_DEVICES_ROOT", "ROM_DEVICES_ROOT", "/devices"))
+        trash_root = Path(_env("ROMMATES_TRASH_ROOT", "ROM_TRASH_ROOT", "/trash"))
         return cls(
-            library_root=Path(_env("ROMMATES_LIBRARY_ROOT", "ROM_LIBRARY_ROOT", "/roms")),
-            devices_root=Path(_env("ROMMATES_DEVICES_ROOT", "ROM_DEVICES_ROOT", "/devices")),
-            trash_root=Path(_env("ROMMATES_TRASH_ROOT", "ROM_TRASH_ROOT", "/trash")),
+            library_root=library_root,
+            devices_root=devices_root,
+            trash_root=trash_root,
             database_path=Path(_env("ROMMATES_DATABASE_PATH", "ROM_DATABASE_PATH", "/data/rommates.db")),
             scan_on_start=_bool_env("ROMMATES_SCAN_ON_START", "ROM_SCAN_ON_START", True),
             access_token=_env("ROMMATES_ACCESS_TOKEN", "ROM_ACCESS_TOKEN", "").strip(),
@@ -137,6 +145,19 @@ class Settings:
             save_retention_weekly=_int_env("ROMMATES_SAVE_RETENTION_WEEKLY", 12, 0, 520),
             save_retention_monthly=_int_env("ROMMATES_SAVE_RETENTION_MONTHLY", 12, 0, 240),
             media_root=Path(os.getenv("ROMMATES_MEDIA_ROOT", "/data/media")),
+            upload_root=Path(
+                os.getenv("ROMMATES_UPLOAD_ROOT", str(trash_root.parent / ".rommates-uploads"))
+            ),
+            upload_max_bytes=_int_env(
+                "ROMMATES_UPLOAD_MAX_BYTES", 128 * 1024 * 1024 * 1024, 1, 8 * 1024**5
+            ),
+            upload_chunk_bytes=_int_env(
+                "ROMMATES_UPLOAD_CHUNK_BYTES", 8 * 1024 * 1024, 1024 * 1024, 64 * 1024 * 1024
+            ),
+            upload_expiry_hours=_int_env("ROMMATES_UPLOAD_EXPIRY_HOURS", 24, 1, 168),
+            download_ticket_seconds=_int_env(
+                "ROMMATES_DOWNLOAD_TICKET_SECONDS", 300, 30, 3600
+            ),
             screenscraper_dev_id=os.getenv("ROMMATES_SCREENSCRAPER_DEV_ID", "").strip(),
             screenscraper_dev_password=os.getenv(
                 "ROMMATES_SCREENSCRAPER_DEV_PASSWORD", ""

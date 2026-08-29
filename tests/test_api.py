@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import importlib
+import io
 import os
 import tempfile
 import threading
 import time
 import unittest
+import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -28,6 +30,8 @@ class ApiIntegrationTests(unittest.TestCase):
                 "ROMMATES_LIBRARY_ROOT": str(root / "roms"),
                 "ROMMATES_DEVICES_ROOT": str(root / "devices"),
                 "ROMMATES_TRASH_ROOT": str(root / "trash"),
+                "ROMMATES_UPLOAD_ROOT": str(root / "uploads"),
+                "ROMMATES_UPLOAD_CHUNK_BYTES": "4",
                 "ROMMATES_DATABASE_PATH": str(root / "data/rommates.db"),
                 "ROMMATES_SAVES_ROOT": str(root / "saves"),
                 "ROMMATES_SNAPSHOTS_ROOT": str(root / "snapshots"),
@@ -68,6 +72,119 @@ class ApiIntegrationTests(unittest.TestCase):
         self.assertEqual(unauthorized.headers["cache-control"], "no-store")
         self.assertIn("frame-ancestors 'none'", unauthorized.headers["content-security-policy"])
         self.assertEqual(self.client.get("/api/health").status_code, 200)
+
+    def test_upload_resumes_finalizes_and_downloads_without_bearer_token(self):
+        manifest = {
+            "platform": "gba",
+            "bundle_name": "",
+            "folder_mode": False,
+            "files": [{"relative_path": "Uploaded Game.gba", "size": 11}],
+        }
+        created = self.client.post("/api/uploads", headers=self.headers, json=manifest)
+        self.assertEqual(created.status_code, 201, created.text)
+        session = created.json()
+        first = self.client.put(
+            f"/api/uploads/{session['id']}/files/0",
+            headers={**self.headers, "Upload-Offset": "0", "Content-Type": "application/octet-stream"},
+            content=b"upld",
+        )
+        self.assertEqual(first.status_code, 200, first.text)
+        resumed = self.client.post("/api/uploads", headers=self.headers, json=manifest)
+        self.assertEqual(resumed.json()["files"][0]["received_size"], 4)
+        for offset, chunk in ((4, b"-rom"), (8, b"-ok")):
+            response = self.client.put(
+                f"/api/uploads/{session['id']}/files/0",
+                headers={**self.headers, "Upload-Offset": str(offset), "Content-Type": "application/octet-stream"},
+                content=chunk,
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+        finalized = self.client.post(f"/api/uploads/{session['id']}/finalize", headers=self.headers)
+        job = self.wait_for_job(finalized.json()["job_id"])
+        self.assertEqual(job["status"], "complete", job)
+        self.assertEqual((self.root / "roms/gba/Uploaded Game.gba").read_bytes(), b"upld-rom-ok")
+        games = self.client.get("/api/games?search=Uploaded%20Game", headers=self.headers).json()["items"]
+        self.assertEqual(len(games), 1)
+        ticket = self.client.post(
+            f"/api/games/{games[0]['id']}/download-ticket", headers=self.headers
+        )
+        self.assertEqual(ticket.status_code, 200, ticket.text)
+        download = self.client.get(ticket.json()["url"])
+        self.assertEqual(download.status_code, 200)
+        self.assertEqual(download.content, b"upld-rom-ok")
+        self.assertEqual(self.client.get(ticket.json()["url"]).status_code, 200)
+
+    def test_upload_rejects_path_traversal(self):
+        response = self.client.post(
+            "/api/uploads",
+            headers=self.headers,
+            json={
+                "platform": "gba",
+                "bundle_name": "",
+                "folder_mode": False,
+                "files": [{"relative_path": "../escape.gba", "size": 1}],
+            },
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_multifile_download_is_a_streamed_zip(self):
+        cue = b'FILE "Track 01.bin" BINARY\n  TRACK 01 MODE1/2352\n'
+        track = b"disc-track"
+        manifest = {
+            "platform": "gba",
+            "bundle_name": "Disc Upload",
+            "folder_mode": True,
+            "files": [
+                {"relative_path": "Disc Upload.cue", "size": len(cue)},
+                {"relative_path": "Track 01.bin", "size": len(track)},
+            ],
+        }
+        session = self.client.post("/api/uploads", headers=self.headers, json=manifest).json()
+        for index, content in enumerate((cue, track)):
+            response = self.client.put(
+                f"/api/uploads/{session['id']}/files/{index}",
+                headers={**self.headers, "Upload-Offset": "0", "Content-Type": "application/octet-stream"},
+                content=content,
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+        queued = self.client.post(f"/api/uploads/{session['id']}/finalize", headers=self.headers)
+        self.assertEqual(self.wait_for_job(queued.json()["job_id"])["status"], "complete")
+        game = self.client.get("/api/games?search=Disc%20Upload", headers=self.headers).json()["items"][0]
+        ticket = self.client.post(f"/api/games/{game['id']}/download-ticket", headers=self.headers).json()
+        self.assertTrue(ticket["archive"])
+        response = self.client.get(ticket["url"])
+        self.assertEqual(response.status_code, 200, response.text)
+        with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+            self.assertEqual(set(archive.namelist()), {"Disc Upload/Disc Upload.cue", "Disc Upload/Track 01.bin"})
+            self.assertEqual(archive.read("Disc Upload/Track 01.bin"), track)
+        for path in (self.root / "roms/gba/Disc Upload").iterdir():
+            path.unlink()
+        (self.root / "roms/gba/Disc Upload").rmdir()
+        scan = self.client.post("/api/scan?confirm_prune=true", headers=self.headers)
+        self.assertEqual(self.wait_for_job(scan.json()["job_id"])["status"], "complete")
+
+    def test_multiple_trash_items_are_purged_in_one_job(self):
+        paths = [
+            self.root / "roms/gba/Bulk Purge One.gba",
+            self.root / "roms/gba/Bulk Purge Two.gba",
+        ]
+        for index, path in enumerate(paths):
+            path.write_bytes(f"purge-{index}".encode())
+        scan = self.client.post("/api/scan?confirm_prune=true", headers=self.headers)
+        self.assertEqual(self.wait_for_job(scan.json()["job_id"])["status"], "complete")
+        games = self.client.get("/api/games?search=Bulk%20Purge", headers=self.headers).json()["items"]
+        self.assertEqual(len(games), 2)
+        for game in games:
+            queued = self.client.delete(f"/api/games/{game['id']}", headers=self.headers)
+            self.assertEqual(self.wait_for_job(queued.json()["job_id"])["status"], "complete")
+        trash = self.client.get("/api/trash", headers=self.headers).json()
+        selected = [item["id"] for item in trash if item["game_name"].startswith("Bulk Purge")]
+        self.assertEqual(len(selected), 2)
+        queued = self.client.post(
+            "/api/trash/purge", headers=self.headers, json={"trash_ids": selected}
+        )
+        job = self.wait_for_job(queued.json()["job_id"])
+        self.assertEqual(job["status"], "complete", job)
+        self.assertEqual(job["result"]["purged"], 2)
 
     def test_artwork_api_reports_missing_credentials_without_exposing_secrets(self):
         status = self.client.get("/api/artwork/status", headers=self.headers)

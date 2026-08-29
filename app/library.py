@@ -353,6 +353,12 @@ class LibraryService:
             for path in platform_dir.rglob("*"):
                 if cancel_check:
                     cancel_check()
+                try:
+                    relative_parts = path.relative_to(platform_dir).parts
+                except ValueError:
+                    relative_parts = ()
+                if any(part.startswith(".rommates-upload-") for part in relative_parts):
+                    continue
                 platform_paths.append(path)
             claimed: set[Path] = set()
             bundle_paths: dict[Path, tuple[Path, ...]] = {}
@@ -360,7 +366,10 @@ class LibraryService:
 
             if platform_dir.name.casefold() in self.settings.folder_bundle_platforms:
                 for folder in sorted(
-                    (path for path in platform_dir.iterdir() if path.is_dir()),
+                    (
+                        path for path in platform_dir.iterdir()
+                        if path.is_dir() and not path.name.startswith(".rommates-upload-")
+                    ),
                     key=lambda path: path.name.casefold(),
                 ):
                     files: list[Path] = []
@@ -1222,6 +1231,26 @@ class LibraryService:
                 connection.execute("DELETE FROM trash_items WHERE id=?", (trash_id,))
             self.db.activity("purge", f"Permanently deleted {row['game_name']}")
             return {"purged": row["game_name"], "files": removed}
+
+    def bulk_purge_trash(self, trash_ids: list[int]) -> dict[str, object]:
+        unique_ids = list(dict.fromkeys(int(trash_id) for trash_id in trash_ids))
+        if not unique_ids or len(unique_ids) > 1000 or any(trash_id <= 0 for trash_id in unique_ids):
+            raise LibraryError("Choose between 1 and 1,000 valid trash items")
+        with self._operation_lock:
+            placeholders = ",".join("?" for _ in unique_ids)
+            with self.db.connect() as connection:
+                existing = connection.execute(
+                    f"SELECT id FROM trash_items WHERE id IN ({placeholders})", unique_ids
+                ).fetchall()
+            if len(existing) != len(unique_ids):
+                raise LibraryError("One or more selected trash items no longer exist")
+            removed_files = 0
+            for trash_id in unique_ids:
+                removed_files += int(self.purge_trash(trash_id)["files"])
+            self.db.activity(
+                "bulk_purge", f"Permanently deleted {len(unique_ids)} trashed bundles"
+            )
+            return {"purged": len(unique_ids), "files": removed_files}
 
     def set_selection(self, device_id: int, game_id: int, selected: bool) -> None:
         with self.db.write() as connection:

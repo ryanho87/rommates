@@ -50,6 +50,11 @@ const state = {
   navigationLoadingTimer: null,
   infinitePages: new Map(),
   infiniteObserver: null,
+  uploadSelection: null,
+  uploadSessions: [],
+  uploadPlatform: "",
+  uploadProgress: null,
+  trashSelected: new Map(),
 };
 
 const view = document.querySelector("#view");
@@ -343,6 +348,8 @@ const JOB_LABELS = {
   device_apply: "Applying device changes…",
   restore: "Restoring from trash…",
   purge: "Deleting permanently…",
+  bulk_purge: "Deleting selected trash…",
+  upload_finalize: "Adding uploaded ROM…",
   save_snapshot: "Snapshotting saves…",
   save_restore: "Restoring saves…",
   save_delete: "Deleting orphan saves…",
@@ -548,6 +555,143 @@ function bindFilters(callback) {
   });
 }
 
+function uploadPanel() {
+  const selection = state.uploadSelection;
+  const sessions = state.uploadSessions.filter((item) => ["uploading", "finalizing"].includes(item.status));
+  const fileSummary = selection
+    ? `<div class="upload-selection"><strong>${escapeHtml(selection.bundleName || selection.files[0]?.name || "Selected ROM")}</strong><span>${selection.files.length.toLocaleString()} ${selection.files.length === 1 ? "file" : "files"} · ${formatBytes(selection.files.reduce((sum, file) => sum + file.size, 0))}</span></div>`
+    : `<p class="meta">Choose one ROM file, a related multi-file set, or an entire game folder. Archives are stored as-is and are never extracted.</p>`;
+  const progress = state.uploadProgress
+    ? `<div class="upload-progress"><div><strong>${escapeHtml(state.uploadProgress.label)}</strong><span>${state.uploadProgress.percent}%</span></div><progress max="100" value="${state.uploadProgress.percent}"></progress></div>`
+    : "";
+  const active = sessions.length
+    ? `<div class="upload-sessions"><strong>Resumable uploads</strong>${sessions.map((session) => `<div><span>${escapeHtml(session.bundle_name)} · ${formatBytes(session.received_size)} of ${formatBytes(session.total_size)}</span><button class="text-button" data-cancel-upload="${session.id}">Cancel</button></div>`).join("")}</div>`
+    : "";
+  return `<section class="upload-panel" aria-label="Upload ROMs">
+    <div class="upload-head"><div><h2>Add ROMs to the library</h2><p>Uploads are staged, checked, then moved into the selected platform without overwriting existing files.</p></div></div>
+    <form id="upload-form" class="upload-form">
+      <label class="field"><span>Platform</span><select id="upload-platform" required><option value="">Choose platform</option>${state.platforms.map((item) => `<option value="${escapeHtml(item.platform)}" ${(state.uploadPlatform || state.platform) === item.platform ? "selected" : ""}>${escapeHtml(item.platform)}</option>`).join("")}</select></label>
+      <label class="field"><span>Bundle name</span><input class="input" id="upload-bundle-name" maxlength="255" value="${escapeHtml(selection?.bundleName || "")}" placeholder="Filled from your selection"></label>
+      <div class="upload-pickers"><label class="button secondary file-picker">Choose files<input id="upload-files" type="file" multiple></label><label class="button secondary file-picker">Choose game folder<input id="upload-folder" type="file" webkitdirectory multiple></label></div>
+      ${fileSummary}${progress}
+      <button class="button" type="submit" ${selection && !state.uploadProgress ? "" : "disabled"}>Upload to library</button>
+    </form>${active}
+  </section>`;
+}
+
+function selectUploadFiles(fileList, folderMode) {
+  const files = [...fileList];
+  if (!files.length) return;
+  const firstPath = files[0].webkitRelativePath || files[0].name;
+  const rootName = folderMode && firstPath.includes("/") ? firstPath.split("/")[0] : "";
+  const relativePath = (file) => {
+    const path = file.webkitRelativePath || file.name;
+    return rootName && path.startsWith(`${rootName}/`) ? path.slice(rootName.length + 1) : path;
+  };
+  const baseName = rootName || files[0].name.replace(/\.[^.]+$/, "");
+  state.uploadSelection = {
+    files,
+    folderMode: folderMode || files.length > 1,
+    bundleName: baseName,
+    relativePath,
+  };
+  renderTransfers();
+}
+
+function setUploadProgress(label, uploaded, total) {
+  const percent = total ? Math.min(100, Math.floor(uploaded * 100 / total)) : 100;
+  state.uploadProgress = { label, percent };
+  const panel = view.querySelector(".upload-progress");
+  if (!panel) return;
+  panel.querySelector("strong").textContent = label;
+  panel.querySelector("span").textContent = `${percent}%`;
+  panel.querySelector("progress").value = percent;
+}
+
+async function refreshTransfersIfActive() {
+  if (state.view === "transfers") await renderTransfers();
+}
+
+async function runUpload(form) {
+  const selection = state.uploadSelection;
+  if (!selection) return;
+  const platform = form.querySelector("#upload-platform").value;
+  const bundleName = form.querySelector("#upload-bundle-name").value.trim() || selection.bundleName;
+  state.uploadPlatform = platform;
+  const manifest = selection.files.map((file) => ({
+    relative_path: selection.relativePath(file),
+    size: file.size,
+  }));
+  const total = selection.files.reduce((sum, file) => sum + file.size, 0);
+  let uploaded = 0;
+  state.uploadProgress = { label: "Preparing secure upload", percent: 0 };
+  await refreshTransfersIfActive();
+  const session = await api("/api/uploads", {
+    method: "POST",
+    body: JSON.stringify({
+      platform,
+      bundle_name: bundleName,
+      folder_mode: selection.folderMode,
+      files: manifest,
+    }),
+  });
+  const chunkBytes = Number(session.chunk_bytes);
+  for (let index = 0; index < selection.files.length; index += 1) {
+    const file = selection.files[index];
+    let offset = Number(session.files[index].received_size || 0);
+    uploaded += offset;
+    while (offset < file.size) {
+      const end = Math.min(file.size, offset + chunkBytes);
+      setUploadProgress(`Uploading ${file.name}`, uploaded, total);
+      await api(`/api/uploads/${encodeURIComponent(session.id)}/files/${index}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/octet-stream", "Upload-Offset": String(offset) },
+        body: file.slice(offset, end),
+      });
+      uploaded += end - offset;
+      offset = end;
+    }
+  }
+  setUploadProgress("Adding ROM to the library", total, total);
+  const result = await requestJob(
+    `/api/uploads/${encodeURIComponent(session.id)}/finalize`,
+    { method: "POST" },
+    "Upload complete; indexing the new ROM",
+  );
+  state.uploadSelection = null;
+  state.uploadProgress = null;
+  state.uploadSessions = [];
+  toast(`Added ${result.files.toLocaleString()} ${result.files === 1 ? "file" : "files"} to ${platform}`);
+  await refreshStatus();
+  await loadReferenceData();
+  await refreshTransfersIfActive();
+}
+
+function bindUploadEvents() {
+  view.querySelector("#upload-files")?.addEventListener("change", (event) => selectUploadFiles(event.target.files, false));
+  view.querySelector("#upload-folder")?.addEventListener("change", (event) => selectUploadFiles(event.target.files, true));
+  view.querySelector("#upload-platform")?.addEventListener("change", (event) => { state.uploadPlatform = event.target.value; });
+  view.querySelector("#upload-bundle-name")?.addEventListener("input", (event) => {
+    if (state.uploadSelection) state.uploadSelection.bundleName = event.target.value;
+  });
+  view.querySelector("#upload-form")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    try { await runUpload(event.currentTarget); }
+    catch (error) {
+      state.uploadProgress = null;
+      toast(error.message, "error");
+      await refreshTransfersIfActive();
+    }
+  });
+  view.querySelectorAll("[data-cancel-upload]").forEach((button) => button.addEventListener("click", async () => {
+    try {
+      await api(`/api/uploads/${encodeURIComponent(button.dataset.cancelUpload)}`, { method: "DELETE" });
+      toast("Upload cancelled and staged data removed");
+      await refreshTransfersIfActive();
+    } catch (error) { toast(error.message, "error"); }
+  }));
+}
+
 async function fetchMissingRatings() {
   const platform = state.platforms.find((item) => item.platform === state.platform);
   if (!platform) return;
@@ -655,6 +799,7 @@ function gameRows(items, deviceMode = false) {
         <td class="meta optional-column">${game.file_count} ${game.file_count === 1 ? "file" : "files"}</td>
         <td class="meta optional-column">${deviceMode ? deviceTargetState(game) : deviceSummary(game, true)}</td>
         ${deviceMode ? "" : `<td class="nowrap">
+          <button class="button secondary small" data-download="${game.id}" data-name="${escapeHtml(game.display_name)}">Download</button>
           <button class="button secondary small" data-rename="${game.id}" ${deviceMode ? "disabled" : ""}>Rename</button>
           <button class="button danger-subtle small" data-delete="${game.id}" data-name="${escapeHtml(game.display_name)}" ${deviceMode ? "disabled" : ""}>Trash</button>
         </td>`}
@@ -899,6 +1044,16 @@ async function renderLibrary() {
   bindGameEvents(data, false);
   bindInfiniteScroll(data, renderLibrary);
   loadArtworkImages();
+}
+
+async function renderTransfers() {
+  const renderVersion = beginPageRender();
+  setHeading("Transfers", "Upload ROMs securely and resume interrupted transfers.");
+  const response = await api("/api/uploads");
+  if (!pageRenderIsCurrent(renderVersion, "transfers")) return;
+  state.uploadSessions = response.items;
+  setViewHtml(`${uploadPanel()}<section class="transfer-guidance"><h2>Downloads</h2><p>Open Library and use Download on any game. Multi-file games are streamed as a ZIP without building a temporary archive on the server.</p></section>`);
+  bindUploadEvents();
 }
 
 async function renderDuplicates() {
@@ -1155,6 +1310,20 @@ function bindGameEvents(data, deviceMode) {
     } catch (error) { toast(error.message, "error"); }
   }));
   view.querySelectorAll("[data-delete]").forEach((button) => button.addEventListener("click", () => deleteOne(Number(button.dataset.delete), button.dataset.name)));
+  view.querySelectorAll("[data-download]").forEach((button) => button.addEventListener("click", async () => {
+    button.disabled = true;
+    try {
+      const ticket = await api(`/api/games/${button.dataset.download}/download-ticket`, { method: "POST" });
+      const anchor = document.createElement("a");
+      anchor.href = ticket.url;
+      anchor.download = ticket.filename;
+      document.body.append(anchor);
+      anchor.click();
+      anchor.remove();
+      toast(ticket.files > 1 ? `Streaming ${ticket.files} files as ${ticket.filename}` : `Downloading ${ticket.filename}`);
+    } catch (error) { toast(error.message, "error"); }
+    finally { button.disabled = false; }
+  }));
   view.querySelectorAll("[data-artwork-view]").forEach((button) => button.addEventListener("click", async () => {
     const gameId = Number(button.dataset.artworkView);
     if (Number(button.dataset.artworkExisting) === 0) {
@@ -1438,13 +1607,69 @@ async function renderTrash() {
   const items = await navigationApi("/api/trash");
   if (!pageRenderIsCurrent(renderVersion, "trash")) return;
   if (!items.length) {
+    state.trashSelected.clear();
     setViewHtml(`<div class="empty-state"><div><h2>Trash is empty</h2><p>Deleted ROM bundles remain recoverable here until you permanently delete them.</p></div></div>`);
     return;
   }
-  setViewHtml(`<div class="table-wrap"><table><thead><tr><th>Game</th><th>Platform</th><th>Files</th><th>Deleted</th><th>Actions</th></tr></thead><tbody>${items.map((item) => `<tr><td class="name-cell"><strong>${escapeHtml(item.game_name)}</strong><span class="path-line">${escapeHtml(item.original_relpath)}</span></td><td>${escapeHtml(item.platform)}</td><td class="meta">${item.file_count}</td><td class="meta">${escapeHtml(item.deleted_at)} UTC</td><td><button class="button secondary small" data-restore="${item.id}">Restore</button> <button class="button danger-subtle small" data-purge="${item.id}" data-name="${escapeHtml(item.game_name)}">Delete permanently</button></td></tr>`).join("")}</tbody></table></div>`);
+  const available = new Set(items.map((item) => item.id));
+  for (const id of state.trashSelected.keys()) if (!available.has(id)) state.trashSelected.delete(id);
+  setViewHtml(`<div class="table-wrap"><table><thead><tr><th class="checkbox-cell"><input type="checkbox" aria-label="Select all trash" data-trash-select-all></th><th>Game</th><th>Platform</th><th>Files</th><th>Deleted</th><th>Actions</th></tr></thead><tbody>${items.map((item) => `<tr><td class="checkbox-cell"><input type="checkbox" aria-label="Select ${escapeHtml(item.game_name)}" data-trash-select="${item.id}" ${state.trashSelected.has(item.id) ? "checked" : ""}></td><td class="name-cell"><strong>${escapeHtml(item.game_name)}</strong><span class="path-line">${escapeHtml(item.original_relpath)}</span></td><td>${escapeHtml(item.platform)}</td><td class="meta">${item.file_count}</td><td class="meta">${escapeHtml(item.deleted_at)} UTC</td><td><button class="button secondary small" data-restore="${item.id}">Restore</button> <button class="button danger-subtle small" data-purge="${item.id}" data-name="${escapeHtml(item.game_name)}">Delete permanently</button></td></tr>`).join("")}</tbody></table></div><div id="trash-bulk-slot"></div>`);
+  const renderTrashBulk = () => {
+    const slot = view.querySelector("#trash-bulk-slot");
+    if (!slot) return;
+    const count = state.trashSelected.size;
+    slot.innerHTML = count ? `<div class="bulk-bar"><div><strong>${count.toLocaleString()} ${count === 1 ? "bundle" : "bundles"} selected</strong><span class="meta"> · permanent deletion cannot be undone</span></div><div class="bulk-actions"><button class="button secondary" data-clear-trash-selection>Clear selection</button><button class="button danger" data-purge-selected>Delete ${count.toLocaleString()} permanently</button></div></div>` : "";
+    slot.querySelector("[data-clear-trash-selection]")?.addEventListener("click", () => {
+      state.trashSelected.clear();
+      view.querySelectorAll("[data-trash-select]").forEach((box) => { box.checked = false; });
+      const all = view.querySelector("[data-trash-select-all]");
+      if (all) all.checked = false;
+      renderTrashBulk();
+    });
+    slot.querySelector("[data-purge-selected]")?.addEventListener("click", async () => {
+      const selected = [...state.trashSelected.values()];
+      const names = selected.slice(0, 12).map((item) => `<li>${escapeHtml(item.game_name)} <span class="meta">${escapeHtml(item.platform)}</span></li>`).join("");
+      const confirmed = await confirmAction({
+        title: `Permanently delete ${selected.length.toLocaleString()} trashed ${selected.length === 1 ? "bundle" : "bundles"}?`,
+        content: `<p class="warning-copy">This erases every selected bundle in one job and cannot be undone.</p><ul class="confirm-list">${names}${selected.length > 12 ? `<li>and ${(selected.length - 12).toLocaleString()} more</li>` : ""}</ul>`,
+        confirmLabel: `Delete ${selected.length.toLocaleString()} permanently`,
+        cancelLabel: "Keep in trash",
+        danger: true,
+      });
+      if (!confirmed) return;
+      try {
+        const result = await requestJob("/api/trash/purge", { method: "POST", body: JSON.stringify({ trash_ids: selected.map((item) => item.id) }) }, "Permanent deletion queued");
+        state.trashSelected.clear();
+        toast(`Permanently deleted ${result.purged.toLocaleString()} ${result.purged === 1 ? "bundle" : "bundles"}`);
+        await refreshStatus();
+        await renderTrash();
+      } catch (error) { toast(error.message, "error"); }
+    });
+  };
+  const syncTrashSelectAll = () => {
+    const boxes = [...view.querySelectorAll("[data-trash-select]")];
+    const checked = boxes.filter((box) => box.checked).length;
+    const all = view.querySelector("[data-trash-select-all]");
+    if (all) { all.checked = boxes.length > 0 && checked === boxes.length; all.indeterminate = checked > 0 && checked < boxes.length; }
+  };
+  view.querySelectorAll("[data-trash-select]").forEach((box) => box.addEventListener("change", () => {
+    const id = Number(box.dataset.trashSelect);
+    const item = items.find((candidate) => candidate.id === id);
+    if (box.checked) state.trashSelected.set(id, item); else state.trashSelected.delete(id);
+    syncTrashSelectAll();
+    renderTrashBulk();
+  }));
+  view.querySelector("[data-trash-select-all]")?.addEventListener("change", (event) => {
+    items.forEach((item) => { if (event.target.checked) state.trashSelected.set(item.id, item); else state.trashSelected.delete(item.id); });
+    view.querySelectorAll("[data-trash-select]").forEach((box) => { box.checked = event.target.checked; });
+    renderTrashBulk();
+  });
+  syncTrashSelectAll();
+  renderTrashBulk();
   view.querySelectorAll("[data-restore]").forEach((button) => button.addEventListener("click", async () => {
     try {
       const result = await requestJob(`/api/trash/${button.dataset.restore}/restore`, { method: "POST" }, "Restore queued");
+      state.trashSelected.delete(Number(button.dataset.restore));
       toast(`Restored ${result.restored}`);
       await refreshStatus(); await loadReferenceData(); await renderTrash();
     } catch (error) { toast(error.message, "error"); }
@@ -1454,6 +1679,7 @@ async function renderTrash() {
     if (!confirmed) return;
     try {
       const result = await requestJob(`/api/trash/${button.dataset.purge}`, { method: "DELETE" }, "Permanent deletion queued");
+      state.trashSelected.delete(Number(button.dataset.purge));
       toast(`Permanently deleted ${result.purged}`);
       await refreshStatus(); await renderTrash();
     } catch (error) { toast(error.message, "error"); }
@@ -2092,7 +2318,7 @@ async function renderCurrentView() {
   const requestedView = state.view;
   let renderVersion = state.renderVersion;
   try {
-    const renderers = { overview: renderOverview, library: renderLibrary, duplicates: renderDuplicates, naming: renderNaming, devices: renderDevices, saves: renderSaves, jobs: renderJobs, trash: renderTrash };
+    const renderers = { overview: renderOverview, library: renderLibrary, transfers: renderTransfers, duplicates: renderDuplicates, naming: renderNaming, devices: renderDevices, saves: renderSaves, jobs: renderJobs, trash: renderTrash };
     const renderPromise = renderers[requestedView]();
     renderVersion = state.renderVersion;
     await renderPromise;
@@ -2152,6 +2378,7 @@ function navigateTo(viewName, options = {}) {
   state.assignmentDevices = [];
   if (state.view !== "naming") state.namingSelected.clear();
   if (state.view !== "saves") state.saveSnapshotId = null;
+  if (state.view !== "trash") state.trashSelected.clear();
   document.querySelectorAll(".nav-item").forEach((item) => item.classList.toggle("active", item.dataset.view === viewName));
   renderCurrentView();
   scheduleNavigationLoading(state.renderVersion);

@@ -108,6 +108,40 @@ CREATE TABLE IF NOT EXISTS platform_rankings (
 );
 CREATE INDEX IF NOT EXISTS idx_platform_rankings_platform ON platform_rankings(platform, rank);
 
+CREATE TABLE IF NOT EXISTS upload_sessions (
+    id TEXT PRIMARY KEY,
+    platform TEXT NOT NULL,
+    bundle_name TEXT NOT NULL DEFAULT '',
+    folder_mode INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'uploading',
+    total_size INTEGER NOT NULL,
+    received_size INTEGER NOT NULL DEFAULT 0,
+    file_count INTEGER NOT NULL,
+    manifest_hash TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_upload_sessions_status ON upload_sessions(status, updated_at);
+
+CREATE TABLE IF NOT EXISTS upload_files (
+    session_id TEXT NOT NULL REFERENCES upload_sessions(id) ON DELETE CASCADE,
+    file_index INTEGER NOT NULL,
+    relative_path TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    received_size INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(session_id, file_index),
+    UNIQUE(session_id, relative_path)
+);
+
+CREATE TABLE IF NOT EXISTS download_tickets (
+    token_hash TEXT PRIMARY KEY,
+    game_id INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+    expires_at INTEGER NOT NULL,
+    used_at INTEGER,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_download_tickets_expiry ON download_tickets(expires_at);
+
 CREATE TABLE IF NOT EXISTS naming_catalogs (
     id INTEGER PRIMARY KEY,
     name TEXT NOT NULL,
@@ -329,6 +363,7 @@ class Database:
             )
             connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(8)")
             connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(9)")
+            connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(10)")
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:

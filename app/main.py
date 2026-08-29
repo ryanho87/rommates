@@ -4,13 +4,15 @@ import json
 import secrets
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from .config import Settings
 from .db import Database
@@ -19,10 +21,11 @@ from .naming import NamingService
 from .rankings import RankingService
 from .saves import SaveSnapshotService
 from .screenscraper import ScreenScraperService
+from .transfers import MAX_MANIFEST_BYTES, TransferError, TransferService
 
 
 MINIMUM_TOKEN_LENGTH = 16
-CANCELLABLE_JOB_KINDS = frozenset({"scan", "device_apply", "save_snapshot", "save_restore", "save_delete", "artwork_scrape", "rating_scrape", "ranking_refresh"})
+CANCELLABLE_JOB_KINDS = frozenset({"scan", "device_apply", "save_snapshot", "save_restore", "save_delete", "artwork_scrape", "rating_scrape", "ranking_refresh", "upload_finalize"})
 
 settings = Settings.from_env()
 
@@ -57,11 +60,13 @@ saves = SaveSnapshotService(settings, db)
 naming = NamingService(db, settings.library_root, library, saves)
 screenscraper = ScreenScraperService(settings, db)
 ranking_service = RankingService(settings, db)
+transfers = TransferService(settings, db, library)
 job_cancellations: dict[int, threading.Event] = {}
 job_cancellations_lock = threading.Lock()
 library_job_lock = threading.Lock()
+job_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="rommates-job")
 LIBRARY_JOB_KINDS = frozenset(
-    {"scan", "rename", "bulk_rename", "delete", "bulk_delete", "device_apply", "restore", "purge"}
+    {"scan", "rename", "bulk_rename", "delete", "bulk_delete", "device_apply", "restore", "purge", "bulk_purge", "upload_finalize"}
 )
 
 
@@ -159,6 +164,13 @@ def job_result_detail(kind: str, result: object, fallback: str) -> str:
         )
     if kind == "ranking_refresh":
         return f"Cached RAWG's top {result.get('games', 0)} games for {result.get('platform', 'platform')}"
+    if kind == "upload_finalize":
+        detail = f"Added {result.get('destination', 'uploaded bundle')}"
+        if result.get("scan_error"):
+            detail += "; upload is safe but indexing needs a manual scan"
+        return detail
+    if kind == "bulk_purge":
+        return f"Permanently deleted {result.get('purged', 0)} trashed bundles"
     if kind == "restore":
         return f"Restored {result.get('restored', 'trash item')}"
     if kind == "purge":
@@ -220,7 +232,7 @@ def run_job(
                 )
             elif kind == "device_apply":
                 result = operation(*args, cancel_check=check_cancelled)
-            elif kind in {"save_snapshot", "save_restore", "artwork_scrape", "rating_scrape", "ranking_refresh"}:
+            elif kind in {"save_snapshot", "save_restore", "artwork_scrape", "rating_scrape", "ranking_refresh", "upload_finalize"}:
                 result = operation(
                     *args, progress_callback=report_progress, cancel_check=check_cancelled
                 )
@@ -268,6 +280,11 @@ def enqueue_job(kind: str, detail: str, operation, *args, coalesce: bool = False
             ).fetchone()
             if active:
                 return active["id"]
+        active_count = connection.execute(
+            "SELECT COUNT(*) AS count FROM jobs WHERE status IN ('queued','running','cancelling')"
+        ).fetchone()["count"]
+        if active_count >= 25:
+            raise LibraryError("Too many jobs are already queued; wait for one to finish")
         connection.execute(
             "INSERT INTO jobs(kind,status,detail) VALUES(?,'queued',?)",
             (kind, detail),
@@ -277,11 +294,7 @@ def enqueue_job(kind: str, detail: str, operation, *args, coalesce: bool = False
     with job_cancellations_lock:
         job_cancellations[job_id] = cancellation
     db.prune_history()
-    threading.Thread(
-        target=run_job,
-        args=(job_id, kind, detail, operation, cancellation, *args),
-        daemon=True,
-    ).start()
+    job_executor.submit(run_job, job_id, kind, detail, operation, cancellation, *args)
     return job_id
 
 
@@ -326,6 +339,7 @@ async def lifespan(_: FastAPI):
         )
     library.prepare_roots()
     saves.initialize()
+    transfers.initialize()
     scheduler_stop = threading.Event()
     scheduler_thread = threading.Thread(target=save_scheduler, args=(scheduler_stop,), daemon=True)
     scheduler_thread.start()
@@ -429,9 +443,33 @@ class RatingScrapeRequest(BaseModel):
     search: str = Field(default="", max_length=255)
 
 
+class UploadFileSpec(BaseModel):
+    relative_path: str = Field(min_length=1, max_length=1024)
+    size: int = Field(ge=0)
+
+
+class UploadCreateRequest(BaseModel):
+    platform: str = Field(min_length=1, max_length=100)
+    bundle_name: str = Field(default="", max_length=255)
+    folder_mode: bool = False
+    files: list[UploadFileSpec] = Field(min_length=1, max_length=20_000)
+
+
+class BulkPurgeRequest(BaseModel):
+    trash_ids: list[int] = Field(min_length=1, max_length=1000)
+
+
 @app.middleware("http")
 async def protect_private_api(request: Request, call_next):
-    if request.url.path.startswith("/api/") and request.url.path != "/api/health":
+    public_download = (
+        request.url.path.startswith("/api/downloads/")
+        and request.method in {"GET", "HEAD"}
+    )
+    if (
+        request.url.path.startswith("/api/")
+        and request.url.path != "/api/health"
+        and not public_download
+    ):
         if settings.access_token:
             authorization = request.headers.get("authorization", "")
             expected = f"Bearer {settings.access_token}"
@@ -463,6 +501,11 @@ async def add_security_headers(request: Request, call_next):
 @app.exception_handler(LibraryError)
 async def library_error_handler(_: Request, exc: LibraryError):
     return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+
+@app.exception_handler(TransferError)
+async def transfer_error_handler(_: Request, exc: TransferError):
+    return JSONResponse(status_code=exc.status_code, content={"detail": str(exc)})
 
 
 @app.get("/")
@@ -1251,6 +1294,111 @@ def restore(trash_id: int):
 def purge(trash_id: int):
     job_id = enqueue_job("purge", f"Permanently deleting trash item {trash_id}", library.purge_trash, trash_id)
     return {"job_id": job_id}
+
+
+@app.post("/api/trash/purge", status_code=202)
+def bulk_purge(payload: BulkPurgeRequest):
+    job_id = enqueue_job(
+        "bulk_purge",
+        f"Permanently deleting {len(set(payload.trash_ids))} trashed bundles",
+        library.bulk_purge_trash,
+        payload.trash_ids,
+    )
+    return {"job_id": job_id}
+
+
+@app.get("/api/uploads")
+def upload_sessions():
+    return transfers.list_sessions()
+
+
+@app.post("/api/uploads", status_code=201)
+async def create_upload(request: Request):
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            if int(content_length) > MAX_MANIFEST_BYTES:
+                raise HTTPException(status_code=413, detail="Upload manifest is too large")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid Content-Length") from None
+    body = bytearray()
+    async for chunk in request.stream():
+        body.extend(chunk)
+        if len(body) > MAX_MANIFEST_BYTES:
+            raise HTTPException(status_code=413, detail="Upload manifest is too large")
+    try:
+        payload = UploadCreateRequest.model_validate_json(bytes(body))
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail="Upload manifest is invalid") from exc
+    return transfers.create_session(
+        payload.platform,
+        payload.bundle_name,
+        payload.folder_mode,
+        [item.model_dump() for item in payload.files],
+    )
+
+
+@app.put("/api/uploads/{session_id}/files/{file_index}")
+async def upload_chunk(session_id: str, file_index: int, request: Request):
+    try:
+        offset = int(request.headers.get("upload-offset", ""))
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Upload-Offset header is required") from None
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            if int(content_length) > settings.upload_chunk_bytes:
+                raise HTTPException(status_code=413, detail="Upload chunk is too large")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid Content-Length") from None
+    return await transfers.write_chunk(
+        session_id, file_index, offset, request.stream()
+    )
+
+
+@app.post("/api/uploads/{session_id}/finalize", status_code=202)
+def finalize_upload(session_id: str):
+    job_id = enqueue_job(
+        "upload_finalize",
+        f"Finalizing upload {session_id}",
+        transfers.finalize,
+        session_id,
+        coalesce=True,
+    )
+    return {"job_id": job_id}
+
+
+@app.delete("/api/uploads/{session_id}")
+def cancel_upload(session_id: str):
+    return transfers.cancel(session_id)
+
+
+@app.post("/api/games/{game_id}/download-ticket")
+def game_download_ticket(game_id: int):
+    return transfers.create_download_ticket(game_id)
+
+
+@app.get("/api/downloads/{token}")
+def download_game(token: str):
+    download = transfers.resolve_download(token)
+    if not download["archive"]:
+        path = download["paths"][0][0]
+        return FileResponse(
+            path,
+            filename=download["filename"],
+            media_type="application/octet-stream",
+            headers={"Cache-Control": "no-store"},
+        )
+    disposition = f"attachment; filename*=UTF-8''{quote(download['filename'])}"
+    return StreamingResponse(
+        transfers.stream_zip(download),
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": disposition,
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 @app.get("/api/saves")

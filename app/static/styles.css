@@ -579,6 +579,40 @@ input[type="checkbox"] { width: 15px; height: 15px; margin: 0; accent-color: var
 .collision-note { display: block; margin-top: 3px; color: var(--danger); font-size: 0.68rem; }
 .naming-empty { min-height: 280px; }
 
+.upload-panel,
+.transfer-guidance {
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+.transfer-guidance { margin-top: 14px; }
+.upload-head h2,
+.transfer-guidance h2 { margin: 0; font-size: 0.92rem; }
+.upload-head p,
+.transfer-guidance p { margin: 4px 0 0; color: var(--text-muted); font-size: 0.76rem; line-height: 1.5; }
+.upload-form {
+  display: grid;
+  grid-template-columns: minmax(150px, 220px) minmax(220px, 1fr) auto;
+  align-items: end;
+  gap: 12px;
+  margin-top: 16px;
+}
+.upload-pickers { display: flex; align-items: center; gap: 7px; }
+.file-picker { position: relative; overflow: hidden; cursor: pointer; }
+.file-picker input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.upload-selection,
+.upload-progress,
+.upload-sessions { grid-column: 1 / -1; }
+.upload-selection { display: flex; justify-content: space-between; gap: 12px; padding: 9px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-raised); font-size: 0.76rem; }
+.upload-selection span { color: var(--text-muted); }
+.upload-progress > div,
+.upload-sessions > div { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.upload-progress { font-size: 0.74rem; }
+.upload-progress progress { width: 100%; height: 7px; margin-top: 7px; accent-color: var(--accent); }
+.upload-sessions { display: grid; gap: 7px; padding-top: 12px; border-top: 1px solid var(--border); font-size: 0.74rem; }
+.upload-sessions > div { color: var(--text-muted); }
+
 dialog {
   width: min(520px, calc(100vw - 32px));
   padding: 0;
@@ -690,6 +724,8 @@ dialog form { padding: 18px; }
   .optional-column { display: none; }
   .rename-grid { grid-template-columns: 1fr; align-items: stretch; }
   .import-form { grid-template-columns: 1fr; align-items: stretch; }
+  .upload-form { grid-template-columns: 1fr; align-items: stretch; }
+  .upload-pickers { flex-wrap: wrap; }
   .report-grid { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
   .save-strip, .restore-panel { align-items: stretch; flex-direction: column; }
   .snapshot-now { align-items: stretch; }

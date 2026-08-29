@@ -33,6 +33,9 @@ The MVP supports:
 - Reviewable naming suggestions from XML DAT catalogs and conservative filename cleanup
 - Confidence filters, collision checks, editable proposals, and bulk bundle renaming
 - Recoverable deletion, restoration, and explicit permanent deletion
+- Bulk permanent deletion from Trash with one review and confirmation
+- Resumable, chunked browser uploads on a dedicated Transfers screen
+- Authenticated per-game downloads, with streamed ZIP output for multi-file bundles
 - Cross-page duplicate keeper review with one confirmed batch move to recoverable Trash
 - Per-device desired game selections and previewed reconciliation
 - Actual device-directory inventory shown in device views and on each Library game row
@@ -272,8 +275,23 @@ hashes.
 - Deleting atomically moves the entire indexed bundle into `.rommates-trash` and records its original paths. Library, device, and trash directories share one Emulation mount so the operation cannot degrade into an interruptible copy-and-delete.
 - Deleting a canonical game also moves copies previously deployed by ROMmates into the same recoverable trash bundle. Restore puts both canonical and deployed copies back.
 - Permanent deletion is available only from the Trash screen.
+- Trash supports selecting any number of bundles and permanently deleting them in one background job.
 
 Keep normal filesystem backups. Recoverable trash protects against UI mistakes, not disk failure or manual filesystem changes.
+
+## Browser transfers
+
+Open **Transfers** to upload a single ROM, a related set of files, or a complete game
+folder. Data is written to a staging directory in bounded chunks, can resume after an
+interruption when the same files are selected again, and is moved into the library only
+after every declared byte arrives. Existing library paths are never overwritten. Folder
+uploads follow the same descriptor and folder-bundle rules as the scanner, and archives
+are stored as ROM files rather than extracted on the server.
+
+Use **Download** beside a game in Library. The authenticated API creates a short-lived,
+opaque download URL. Single-file games stream directly; multi-file games stream as an
+uncompressed ZIP without first creating another full copy on disk. Download URLs expire
+quickly and are revalidated against the indexed library before use.
 
 ## Naming suggestions
 
@@ -317,6 +335,11 @@ Duplicate and ROM trash confirmations list matching save filenames that would be
 | `ROMMATES_LIBRARY_ROOT` | `/emulation/roms` in Compose | Canonical platform-folder library |
 | `ROMMATES_DEVICES_ROOT` | `/emulation/devices` in Compose | Parent of device directories |
 | `ROMMATES_TRASH_ROOT` | `/emulation/.rommates-trash` in Compose | Recoverable deleted bundles |
+| `ROMMATES_UPLOAD_ROOT` | `/emulation/.rommates-uploads` in Compose | Staging area for incomplete browser uploads; must be outside the ROM library |
+| `ROMMATES_UPLOAD_MAX_BYTES` | `137438953472` (128 GiB) | Maximum declared size of one upload session |
+| `ROMMATES_UPLOAD_CHUNK_BYTES` | `8388608` (8 MiB) | Maximum body size of each resumable upload request |
+| `ROMMATES_UPLOAD_EXPIRY_HOURS` | `24` | Age after which abandoned staged uploads are removed |
+| `ROMMATES_DOWNLOAD_TICKET_SECONDS` | `300` | Lifetime of an opaque game download URL |
 | `ROMMATES_DATABASE_PATH` | `/data/rommates.db` | SQLite catalog and selections |
 | `ROMMATES_SCAN_ON_START` | `true` | Start a background scan at boot |
 | `ROMMATES_REQUIRE_EXISTING_ROOTS` | `true` in Compose | Fail startup instead of silently creating missing mounts |
