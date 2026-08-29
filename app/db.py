@@ -201,6 +201,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     detail TEXT NOT NULL DEFAULT '',
     progress INTEGER NOT NULL DEFAULT 0,
     result_json TEXT,
+    progress_json TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     completed_at TEXT
 );
@@ -212,6 +213,32 @@ CREATE TABLE IF NOT EXISTS job_issues (
     UNIQUE(job_id, detail)
 );
 CREATE INDEX IF NOT EXISTS idx_job_issues_job ON job_issues(job_id, id);
+
+CREATE TABLE IF NOT EXISTS artwork_bulk_runs (
+    id INTEGER PRIMARY KEY,
+    asset_mode TEXT NOT NULL CHECK(asset_mode IN ('cover','full')),
+    status TEXT NOT NULL DEFAULT 'queued' CHECK(status IN ('queued','running','paused','complete','cancelled','failed')),
+    total_games INTEGER NOT NULL DEFAULT 0,
+    processed_games INTEGER NOT NULL DEFAULT 0,
+    matched_games INTEGER NOT NULL DEFAULT 0,
+    downloaded_assets INTEGER NOT NULL DEFAULT 0,
+    skipped_games INTEGER NOT NULL DEFAULT 0,
+    job_id INTEGER,
+    last_error TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    completed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_artwork_bulk_runs_status ON artwork_bulk_runs(status, id);
+
+CREATE TABLE IF NOT EXISTS artwork_bulk_items (
+    run_id INTEGER NOT NULL REFERENCES artwork_bulk_runs(id) ON DELETE CASCADE,
+    game_id INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','complete','skipped')),
+    issue TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY(run_id, game_id)
+);
+CREATE INDEX IF NOT EXISTS idx_artwork_bulk_items_pending ON artwork_bulk_items(run_id, status, game_id);
 
 CREATE TABLE IF NOT EXISTS save_settings (
     id INTEGER PRIMARY KEY CHECK(id=1),
@@ -276,6 +303,8 @@ class Database:
             job_columns = {row["name"] for row in connection.execute("PRAGMA table_info(jobs)")}
             if "result_json" not in job_columns:
                 connection.execute("ALTER TABLE jobs ADD COLUMN result_json TEXT")
+            if "progress_json" not in job_columns:
+                connection.execute("ALTER TABLE jobs ADD COLUMN progress_json TEXT")
             connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(2)")
             # Older scanners kept at most 50 issue strings inside result_json. Preserve
             # those available details when upgrading; future scans write every issue
@@ -373,6 +402,7 @@ class Database:
                     "ALTER TABLE devices ADD COLUMN deployment_mode TEXT NOT NULL DEFAULT 'copy'"
                 )
             connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(11)")
+            connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(12)")
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:

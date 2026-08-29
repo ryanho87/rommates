@@ -60,6 +60,10 @@ class Settings:
     # These platforms store one game as a directory tree rather than one launch
     # file. Each immediate child directory is indexed as a complete bundle.
     folder_bundle_platforms: frozenset[str] = frozenset({"ps3", "wiiu"})
+    # New or changed files above this size are indexed structurally instead of
+    # blocking every scan on a full content read. A valid cached hash is retained.
+    # Set to 0 to restore legacy full hashing for every file.
+    hash_max_bytes: int = 512 * 1024 * 1024
     # Largest share of the indexed catalog a single scan may prune without an
     # explicit confirmation. Guards against an unmounted library root cascading
     # into every device selection.
@@ -131,6 +135,9 @@ class Settings:
             ),
             extensions=extensions,
             folder_bundle_platforms=folder_bundle_platforms,
+            hash_max_bytes=_int_env(
+                "ROMMATES_HASH_MAX_BYTES", 512 * 1024 * 1024, 0, 1024 * 1024 * 1024 * 1024
+            ),
             scan_prune_limit=_float_env("ROMMATES_SCAN_PRUNE_LIMIT", "ROM_SCAN_PRUNE_LIMIT", 0.5),
             saves_root=Path(os.getenv("ROMMATES_SAVES_ROOT", "/saves")),
             snapshots_root=Path(os.getenv("ROMMATES_SNAPSHOTS_ROOT", "/snapshots")),

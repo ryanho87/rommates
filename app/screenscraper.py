@@ -11,9 +11,10 @@ import urllib.parse
 import urllib.request
 import zlib
 from collections import deque
-from datetime import date
+from datetime import date, datetime, time as datetime_time, timedelta
 from pathlib import Path
 from typing import Callable
+from zoneinfo import ZoneInfo
 
 from .config import Settings
 from .db import Database
@@ -24,6 +25,7 @@ from .ratings import screenscraper_rating, screenscraper_top_staff
 API_ROOT = "https://api.screenscraper.fr/api2"
 MAX_MEDIA_BYTES = 20 * 1024 * 1024
 SYSTEM_LIST_TTL_SECONDS = 24 * 60 * 60
+SCREENSCRAPER_TIMEZONE = ZoneInfo("Europe/Paris")
 QUOTA_FIELDS = {
     "maxthreads": "max_threads",
     "maxdownloadspeed": "max_download_speed",
@@ -40,6 +42,18 @@ ASSET_CHOICES = {
     "screenshot": ("ss", "sstitle"),
     "logo": ("wheel-hd", "wheel"),
 }
+
+
+class ScreenScraperDailyQuota(LibraryError):
+    """The account quota is exhausted until ScreenScraper's next day."""
+
+
+class ScreenScraperRateLimit(LibraryError):
+    def __init__(self, retry_after: float = 30):
+        super().__init__("ScreenScraper's request or concurrency limit was reached")
+        self.retry_after = max(1.0, min(float(retry_after), 300.0))
+
+
 PLATFORM_ALIASES = {
     "gb": ("game boy",), "gbc": ("game boy color",),
     "gba": ("game boy advance",), "nds": ("nintendo ds",),
@@ -116,13 +130,23 @@ class ScreenScraperService:
         self._rate_lock = threading.Lock()
         self._request_times: deque[float] = deque()
         self._quota: dict[str, int] = {}
-        self._quota_day = date.today()
+        self._quota_day = self._quota_date()
         self._systems_cache: dict[str, int] | None = None
         self._systems_cached_at = 0.0
 
     @property
     def configured(self) -> bool:
         return bool(self.settings.screenscraper_dev_id and self.settings.screenscraper_dev_password)
+
+    @staticmethod
+    def _quota_date() -> date:
+        return datetime.now(SCREENSCRAPER_TIMEZONE).date()
+
+    @staticmethod
+    def _seconds_until_quota_reset() -> float:
+        now = datetime.now(SCREENSCRAPER_TIMEZONE)
+        reset = datetime.combine(now.date() + timedelta(days=1), datetime_time.min, SCREENSCRAPER_TIMEZONE)
+        return max((reset - now).total_seconds() + 30, 30)
 
     def status(self) -> dict[str, object]:
         with self.db.connect() as connection:
@@ -189,8 +213,9 @@ class ScreenScraperService:
                 cancel_check()
             now = time.monotonic()
             with self._rate_lock:
-                if date.today() != self._quota_day:
-                    self._quota_day = date.today()
+                quota_date = self._quota_date()
+                if quota_date != self._quota_day:
+                    self._quota_day = quota_date
                     self._quota.pop("requests_today", None)
                     self._quota.pop("failed_requests_today", None)
                     self._request_times.clear()
@@ -201,11 +226,11 @@ class ScreenScraperService:
                 failed_today = self._quota.get("failed_requests_today")
                 failed_limit = self._quota.get("max_failed_requests_per_day")
                 if daily_limit and requests_today is not None and requests_today >= daily_limit:
-                    raise LibraryError(
+                    raise ScreenScraperDailyQuota(
                         "ScreenScraper's daily request quota is exhausted; retry after its quota resets"
                     )
                 if may_miss and failed_limit and failed_today is not None and failed_today >= failed_limit:
-                    raise LibraryError(
+                    raise ScreenScraperDailyQuota(
                         "ScreenScraper's daily unmatched-ROM quota is exhausted; retry after its quota resets"
                     )
                 minute_limit = self._quota.get("max_requests_per_minute")
@@ -230,6 +255,13 @@ class ScreenScraperService:
             431: "ScreenScraper's daily unmatched-ROM quota is exhausted",
         }.get(code, f"ScreenScraper rejected the request ({code})")
 
+    @staticmethod
+    def _retry_after(error: urllib.error.HTTPError) -> float:
+        try:
+            return float(error.headers.get("Retry-After", "30"))
+        except (AttributeError, TypeError, ValueError):
+            return 30
+
     def _request_json(self, endpoint: str, *, cancel_check=None, **params) -> dict:
         may_miss = endpoint in {"jeuInfos.php", "jeuRecherche.php"}
         self._before_request(cancel_check, may_miss=may_miss)
@@ -244,6 +276,10 @@ class ScreenScraperService:
                     if "failed_requests_today" in self._quota:
                         self._quota["failed_requests_today"] += 1
                 return {}
+            if exc.code == 429:
+                raise ScreenScraperRateLimit(self._retry_after(exc)) from exc
+            if exc.code in {430, 431}:
+                raise ScreenScraperDailyQuota(self._http_error(exc.code)) from exc
             raise LibraryError(self._http_error(exc.code)) from exc
         except (urllib.error.URLError, TimeoutError) as exc:
             raise LibraryError(f"ScreenScraper could not be reached: {exc}") from exc
@@ -298,7 +334,10 @@ class ScreenScraperService:
             ).fetchone()
         if cached:
             return dict(cached)
-        if len(files) != 1:
+        # A blank catalog SHA marks a deliberately deferred large-file hash. Do not
+        # turn a fast library scan into the same multi-terabyte read during artwork
+        # scraping; use ScreenScraper's exact-name fallback for that title.
+        if len(files) != 1 or not files[0].get("sha256"):
             return {}
         path = self.settings.library_root / files[0]["relpath"]
         crc = 0
@@ -424,6 +463,10 @@ class ScreenScraperService:
                     return False
                 data = self._read_media(response, cancel_check)
         except urllib.error.HTTPError as exc:
+            if exc.code == 429:
+                raise ScreenScraperRateLimit(self._retry_after(exc)) from exc
+            if exc.code in {430, 431}:
+                raise ScreenScraperDailyQuota(self._http_error(exc.code)) from exc
             raise LibraryError(self._http_error(exc.code)) from exc
         except (urllib.error.URLError, TimeoutError) as exc:
             raise LibraryError(f"ScreenScraper media could not be reached: {exc}") from exc
@@ -458,6 +501,7 @@ class ScreenScraperService:
         game_ids: list[int],
         missing_only: bool = True,
         download_media: bool = True,
+        asset_kinds: tuple[str, ...] | None = None,
         *,
         progress_callback,
         cancel_check,
@@ -470,8 +514,10 @@ class ScreenScraperService:
                 game_ids,
                 missing_only,
                 download_media,
+                asset_kinds,
                 progress_callback=progress_callback,
                 cancel_check=cancel_check,
+                record_activity=True,
             )
         finally:
             self._scrape_lock.release()
@@ -481,14 +527,19 @@ class ScreenScraperService:
         game_ids: list[int],
         missing_only: bool = True,
         download_media: bool = True,
+        asset_kinds: tuple[str, ...] | None = None,
         *,
         progress_callback,
         cancel_check,
+        record_activity: bool = True,
     ) -> dict[str, object]:
         if not self.configured:
             raise LibraryError("ScreenScraper is not configured. Add its developer credentials to Compose.")
         self.settings.media_root.mkdir(parents=True, exist_ok=True)
         systems = self._systems(cancel_check)
+        requested_assets = tuple(asset_kinds or ASSET_CHOICES)
+        if any(kind not in ASSET_CHOICES for kind in requested_assets):
+            raise LibraryError("Unsupported ScreenScraper artwork type")
         matched = downloaded = skipped = 0
         issues: list[str] = []
         for index, game_id in enumerate(dict.fromkeys(game_ids)):
@@ -496,7 +547,11 @@ class ScreenScraperService:
             with self.db.connect() as connection:
                 row = connection.execute("SELECT * FROM games WHERE id=?", (game_id,)).fetchone()
                 files = connection.execute("SELECT * FROM game_files WHERE game_id=? ORDER BY relpath", (game_id,)).fetchall()
-                existing = connection.execute("SELECT COUNT(*) AS count FROM game_assets WHERE game_id=?", (game_id,)).fetchone()["count"]
+                existing = {
+                    item["kind"] for item in connection.execute(
+                        "SELECT kind FROM game_assets WHERE game_id=?", (game_id,)
+                    )
+                }
                 metadata = connection.execute(
                     "SELECT rating FROM game_metadata WHERE game_id=?", (game_id,)
                 ).fetchone()
@@ -506,7 +561,9 @@ class ScreenScraperService:
                 continue
             game = dict(row)
             has_rating = metadata is not None and metadata["rating"] is not None
-            if missing_only and has_rating and (not download_media or existing >= len(ASSET_CHOICES)):
+            if missing_only and has_rating and (
+                not download_media or all(kind in existing for kind in requested_assets)
+            ):
                 skipped += 1
                 continue
             progress_callback(int(index * 100 / max(len(game_ids), 1)), f"Scraping {index + 1} of {len(game_ids)} · {game['display_name']}")
@@ -556,7 +613,8 @@ class ScreenScraperService:
                 )
             if download_media:
                 medias = self._media(node)
-                for kind, choices in ASSET_CHOICES.items():
+                for kind in requested_assets:
+                    choices = ASSET_CHOICES[kind]
                     candidates = [media for choice in choices for media in medias if str(media.get("type")) == choice]
                     candidates.sort(key=lambda item: (str(item.get("region") or "") not in {"us", "wor", "eu", "ss"},))
                     if candidates and self._download_asset(
@@ -567,8 +625,224 @@ class ScreenScraperService:
         detail = f"Matched {matched} games"
         if download_media:
             detail += f" and downloaded {downloaded} visual assets"
-        self.db.activity(action, detail)
+        if record_activity:
+            self.db.activity(action, detail)
         return {"requested": len(game_ids), "matched": matched, "downloaded": downloaded, "skipped": skipped, "issues": issues}
+
+    def create_bulk_run(self, asset_mode: str) -> tuple[dict[str, object], bool]:
+        if asset_mode not in {"cover", "full"}:
+            raise LibraryError("Artwork mode must be cover or full")
+        with self.db.write() as connection:
+            active = connection.execute(
+                "SELECT * FROM artwork_bulk_runs WHERE status IN ('queued','running','paused') "
+                "ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            if active:
+                return dict(active), False
+            if asset_mode == "cover":
+                missing_sql = (
+                    "NOT EXISTS(SELECT 1 FROM game_assets ga WHERE ga.game_id=g.id AND ga.kind='cover')"
+                )
+            else:
+                missing_sql = " OR ".join(
+                    f"NOT EXISTS(SELECT 1 FROM game_assets ga WHERE ga.game_id=g.id AND ga.kind='{kind}')"
+                    for kind in ASSET_CHOICES
+                )
+            game_ids = [
+                row["id"] for row in connection.execute(
+                    f"SELECT g.id FROM games g WHERE {missing_sql} ORDER BY g.id"
+                )
+            ]
+            status = "queued" if game_ids else "complete"
+            connection.execute(
+                "INSERT INTO artwork_bulk_runs(asset_mode,status,total_games,completed_at) "
+                "VALUES(?,?,?,CASE WHEN ?='complete' THEN CURRENT_TIMESTAMP END)",
+                (asset_mode, status, len(game_ids), status),
+            )
+            run_id = connection.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
+            connection.executemany(
+                "INSERT INTO artwork_bulk_items(run_id,game_id) VALUES(?,?)",
+                ((run_id, game_id) for game_id in game_ids),
+            )
+            run = connection.execute("SELECT * FROM artwork_bulk_runs WHERE id=?", (run_id,)).fetchone()
+        return dict(run), True
+
+    def attach_bulk_job(self, run_id: int, job_id: int) -> None:
+        with self.db.write() as connection:
+            connection.execute(
+                "UPDATE artwork_bulk_runs SET job_id=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (job_id, run_id),
+            )
+
+    def resumable_bulk_runs(self) -> list[int]:
+        with self.db.connect() as connection:
+            return [
+                row["id"] for row in connection.execute(
+                    "SELECT id FROM artwork_bulk_runs WHERE status IN ('queued','running','paused') ORDER BY id"
+                )
+            ]
+
+    def bulk_status(self) -> dict[str, object]:
+        with self.db.connect() as connection:
+            coverage = dict(connection.execute(
+                "SELECT COUNT(*) AS games,"
+                "SUM(CASE WHEN EXISTS(SELECT 1 FROM game_assets ga WHERE ga.game_id=g.id AND ga.kind='cover') THEN 1 ELSE 0 END) AS covers,"
+                "SUM(CASE WHEN EXISTS(SELECT 1 FROM game_assets ga WHERE ga.game_id=g.id AND ga.kind='cover') "
+                "AND EXISTS(SELECT 1 FROM game_assets ga WHERE ga.game_id=g.id AND ga.kind='screenshot') "
+                "AND EXISTS(SELECT 1 FROM game_assets ga WHERE ga.game_id=g.id AND ga.kind='logo') THEN 1 ELSE 0 END) AS full "
+                "FROM games g"
+            ).fetchone())
+            latest = connection.execute(
+                "SELECT * FROM artwork_bulk_runs ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        games = int(coverage.get("games") or 0)
+        covers = int(coverage.get("covers") or 0)
+        full = int(coverage.get("full") or 0)
+        return {
+            "configured": self.configured,
+            "games": games,
+            "covers": covers,
+            "full": full,
+            "missing_covers": max(0, games - covers),
+            "missing_full": max(0, games - full),
+            "run": dict(latest) if latest else None,
+            "quota": self.status()["quota"],
+        }
+
+    @staticmethod
+    def _wait_cancellable(seconds: float, cancel_check, progress_callback, progress: int, detail: str) -> None:
+        deadline = time.monotonic() + max(seconds, 0)
+        progress_callback(progress, detail, "paused")
+        while time.monotonic() < deadline:
+            cancel_check()
+            time.sleep(min(5.0, max(deadline - time.monotonic(), 0.05)))
+
+    def scrape_bulk(self, run_id: int, *, progress_callback, cancel_check) -> dict[str, object]:
+        while not self._scrape_lock.acquire(timeout=0.25):
+            cancel_check()
+            progress_callback(0, "Waiting for the active ScreenScraper job")
+        try:
+            with self.db.write() as connection:
+                run = connection.execute("SELECT * FROM artwork_bulk_runs WHERE id=?", (run_id,)).fetchone()
+                if not run:
+                    raise LibraryError("Bulk artwork run was not found")
+                connection.execute(
+                    "UPDATE artwork_bulk_runs SET status='running',last_error='',updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                    (run_id,),
+                )
+            asset_kinds = ("cover",) if run["asset_mode"] == "cover" else tuple(ASSET_CHOICES)
+            while True:
+                cancel_check()
+                with self.db.connect() as connection:
+                    run = connection.execute("SELECT * FROM artwork_bulk_runs WHERE id=?", (run_id,)).fetchone()
+                    item = connection.execute(
+                        "SELECT game_id FROM artwork_bulk_items WHERE run_id=? AND status='pending' "
+                        "ORDER BY game_id LIMIT 1",
+                        (run_id,),
+                    ).fetchone()
+                if not item:
+                    break
+                total = max(int(run["total_games"]), 1)
+                processed = int(run["processed_games"])
+                progress = int(processed * 100 / total)
+                progress_callback(progress, f"Preparing artwork {processed + 1} of {run['total_games']}", "running")
+                try:
+                    result = self._scrape_locked(
+                        [item["game_id"]],
+                        True,
+                        True,
+                        asset_kinds,
+                        progress_callback=lambda local_progress, detail: progress_callback(
+                            int((processed + local_progress / 100) * 100 / total), detail, "running"
+                        ),
+                        cancel_check=cancel_check,
+                        record_activity=False,
+                    )
+                except ScreenScraperRateLimit as exc:
+                    detail = f"ScreenScraper asked ROMmates to slow down; retrying in {int(exc.retry_after)} seconds"
+                    with self.db.write() as connection:
+                        connection.execute(
+                            "UPDATE artwork_bulk_runs SET status='paused',last_error=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                            (detail, run_id),
+                        )
+                    self._wait_cancellable(exc.retry_after, cancel_check, progress_callback, progress, detail)
+                    continue
+                except ScreenScraperDailyQuota:
+                    wait_for = self._seconds_until_quota_reset()
+                    reset = datetime.now(SCREENSCRAPER_TIMEZONE) + timedelta(seconds=wait_for)
+                    detail = f"Daily ScreenScraper quota reached; resumes after {reset.strftime('%b %d at %H:%M %Z')}"
+                    with self.db.write() as connection:
+                        connection.execute(
+                            "UPDATE artwork_bulk_runs SET status='paused',last_error=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                            (detail, run_id),
+                        )
+                    self._wait_cancellable(wait_for, cancel_check, progress_callback, progress, detail)
+                    continue
+                issue = "; ".join(result.get("issues", []))
+                item_status = "complete" if result.get("matched") else "skipped"
+                with self.db.write() as connection:
+                    connection.execute(
+                        "UPDATE artwork_bulk_items SET status=?,issue=? WHERE run_id=? AND game_id=?",
+                        (item_status, issue, run_id, item["game_id"]),
+                    )
+                    connection.execute(
+                        "UPDATE artwork_bulk_runs SET status='running',processed_games=processed_games+1,"
+                        "matched_games=matched_games+?,downloaded_assets=downloaded_assets+?,"
+                        "skipped_games=skipped_games+?,last_error='',updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                        (
+                            int(result.get("matched") or 0),
+                            int(result.get("downloaded") or 0),
+                            int(result.get("skipped") or 0),
+                            run_id,
+                        ),
+                    )
+            with self.db.write() as connection:
+                connection.execute(
+                    "UPDATE artwork_bulk_runs SET status='complete',processed_games=total_games,"
+                    "last_error='',updated_at=CURRENT_TIMESTAMP,completed_at=CURRENT_TIMESTAMP WHERE id=?",
+                    (run_id,),
+                )
+                completed = dict(connection.execute(
+                    "SELECT * FROM artwork_bulk_runs WHERE id=?", (run_id,)
+                ).fetchone())
+                issues = [
+                    row["issue"] for row in connection.execute(
+                        "SELECT issue FROM artwork_bulk_items WHERE run_id=? AND issue<>'' ORDER BY game_id",
+                        (run_id,),
+                    )
+                ]
+            self.db.activity(
+                "artwork",
+                f"Bulk artwork run matched {completed['matched_games']} games and downloaded "
+                f"{completed['downloaded_assets']} assets",
+            )
+            return {
+                "run_id": run_id,
+                "requested": completed["total_games"],
+                "matched": completed["matched_games"],
+                "downloaded": completed["downloaded_assets"],
+                "skipped": completed["skipped_games"],
+                "asset_mode": completed["asset_mode"],
+                "issues": issues,
+            }
+        except JobCancelled:
+            with self.db.write() as connection:
+                connection.execute(
+                    "UPDATE artwork_bulk_runs SET status='cancelled',updated_at=CURRENT_TIMESTAMP,"
+                    "completed_at=CURRENT_TIMESTAMP WHERE id=?",
+                    (run_id,),
+                )
+            raise
+        except Exception as exc:
+            with self.db.write() as connection:
+                connection.execute(
+                    "UPDATE artwork_bulk_runs SET status='failed',last_error=?,updated_at=CURRENT_TIMESTAMP,"
+                    "completed_at=CURRENT_TIMESTAMP WHERE id=?",
+                    (str(exc), run_id),
+                )
+            raise
+        finally:
+            self._scrape_lock.release()
 
     def detail(self, game_id: int) -> dict[str, object]:
         with self.db.connect() as connection:

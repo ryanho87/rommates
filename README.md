@@ -184,7 +184,11 @@ every byte during a normal scan. This keeps large PS3, Wii U, and unpacked Vita 
 responsive. Because that structural fingerprint is not proof of identical content, folder
 bundles do not appear as exact SHA-256 duplicates; ROMmates presents same-title folders in
 the possible-duplicate review instead. Single-file and descriptor-based games retain full
-content hashing and exact duplicate detection.
+content hashing and exact duplicate detection when their files are no larger than the
+configured scan threshold. New or changed files above that threshold are indexed from
+their path, size, and timestamp instead. A previously cached full hash remains valid and is
+reused without rereading the file. This keeps large ISO, NSP, XCI, and similar additions
+from blocking the catalog while preserving exact duplicate detection for smaller ROMs.
 
 Unpacked Vita libraries use the platform layout directly. ROMmates recognizes both the
 `vita` and ES-DE `psvita` platform names, treats each title ID beneath `app` as the primary
@@ -220,8 +224,10 @@ report labels that limitation, and the next cached scan records the complete lis
 ROMmates can match games with ScreenScraper and cache a cover, screenshot, and logo under
 `/data/media`. Artwork belongs to the logical game bundle, so multi-track discs and
 folder-based games receive one media set. Scrapes run as cancellable background jobs;
-single-file ROMs use CRC32, MD5, SHA-1, and size before falling back to an unambiguous
-exact-title match. Fingerprints and downloaded assets are reused by later jobs.
+single-file ROMs with a completed catalog hash use CRC32, MD5, SHA-1, and size before
+falling back to an unambiguous exact-title match. Large files deliberately deferred by the
+scanner go directly to the title fallback instead of triggering a surprise multi-gigabyte
+read. Fingerprints and downloaded assets are reused by later jobs.
 
 Matched games also cache ScreenScraper's community score on its documented 0–20 scale
 and Staff Pick flag. Library and device views show the score and its rank among rated
@@ -261,8 +267,15 @@ configured developer credentials and software name, and only one ScreenScraper r
 stream can run at a time. Limits returned by the API are enforced for requests per minute,
 requests per day, unmatched ROMs per day, and media download speed. The system catalog is
 cached for 24 hours, while ROM fingerprints and artwork remain cached until their source
-changes or you explicitly refresh them. Limit, closure, and blocked-client responses stop
-the job with a specific error instead of being retried aggressively.
+changes or you explicitly refresh them. Closure, credential, and blocked-client responses
+stop the job with a specific error instead of being retried aggressively.
+
+Use **Fill missing artwork** at the top of Library to queue every game that needs media.
+The default covers-only mode minimizes API use and gets useful library art in place first;
+the full mode also requests a screenshot and logo. This queue is persisted in SQLite,
+skips locally cached assets, pauses when ScreenScraper reports a rate or daily quota limit,
+and resumes automatically after the allowed wait. An interrupted container resumes the
+same queue on startup. Stop cancels the remaining queue without removing completed assets.
 
 Select games in Library and choose **Find ratings and artwork**, or use the artwork tile on
 one game. Clicking an existing cover performs an explicit refresh. Ambiguous name matches
@@ -386,6 +399,7 @@ Duplicate and ROM trash confirmations list matching save filenames that would be
 | `ROMMATES_SCAN_PRUNE_LIMIT` | `0.5` | Largest share of the catalog one scan may delete without confirmation |
 | `ROMMATES_EXTENSIONS` | built-in list | Optional comma-separated extension override |
 | `ROMMATES_FOLDER_BUNDLE_PLATFORMS` | `ps3,wiiu` | Comma-separated platforms where each immediate child directory is one game bundle |
+| `ROMMATES_HASH_MAX_BYTES` | `536870912` (512 MiB) | Largest new or changed file SHA-256 hashes during a normal scan. Larger files use a structural fingerprint; `0` hashes every file |
 | `ROMMATES_RAWG_API_KEY` / `RAWG_API_KEY` | empty | Optional RAWG key for cached per-platform Top 100 Metacritic coverage; the prefixed name takes precedence |
 
 ## Local development

@@ -221,6 +221,18 @@ class ApiIntegrationTests(unittest.TestCase):
             self.assertEqual(response.status_code, 400)
             self.assertNotIn("password", response.text.casefold())
 
+        bulk = self.client.get("/api/artwork/bulk", headers=self.headers)
+        self.assertEqual(bulk.status_code, 200)
+        self.assertFalse(bulk.json()["configured"])
+        self.assertIn("missing_covers", bulk.json())
+        response = self.client.post(
+            "/api/artwork/scrape-all",
+            headers=self.headers,
+            json={"asset_mode": "cover"},
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertNotIn("password", response.text.casefold())
+
     def test_dashboard_summarizes_collection_work_queues(self):
         scan = self.client.post("/api/scan", headers=self.headers)
         self.assertEqual(self.wait_for_job(scan.json()["job_id"])["status"], "complete")
@@ -647,6 +659,13 @@ class ApiIntegrationTests(unittest.TestCase):
         report = self.client.get(f"/api/jobs/{job['id']}", headers=self.headers).json()
         self.assertEqual(report["result"]["games"], 1)
         self.assertEqual(report["result"]["skipped_count"], 55)
+        self.assertIn("bytes_read", report["telemetry"])
+        gba_progress = report["telemetry"]["platforms"]["gba"]
+        self.assertEqual(gba_progress["processed_files"], 1)
+        self.assertEqual(
+            gba_progress["processed_hash_files"] + gba_progress["processed_cached_files"],
+            1,
+        )
 
     def test_naming_catalog_suggestions_apply_as_background_job(self):
         scan = self.client.post("/api/scan", headers=self.headers)

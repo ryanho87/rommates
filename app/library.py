@@ -7,11 +7,12 @@ import os
 import re
 import shlex
 import shutil
+import stat as stat_module
 import struct
 import tempfile
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterable
@@ -51,7 +52,7 @@ HASH_CACHE_BATCH_FILES = 16
 HASH_CACHE_BATCH_BYTES = 128 * 1024 * 1024
 HASH_READ_CHUNK_BYTES = 8 * 1024 * 1024
 
-ProgressCallback = Callable[[int, str], None]
+ProgressCallback = Callable[..., None]
 CancelCheck = Callable[[], None]
 IssueCallback = Callable[[str], None]
 
@@ -146,40 +147,143 @@ class ScanProgress:
     total_files: int
     total_bytes: int
     callback: ProgressCallback | None
+    platforms: dict[str, dict[str, int]] = field(default_factory=dict)
     processed_files: int = 0
     processed_bytes: int = 0
+    hashed_files: int = 0
     cached_files: int = 0
+    cached_bytes: int = 0
     metadata_files: int = 0
+    metadata_bytes: int = 0
+    current_platform: str = ""
+    current_relpath: str = ""
+    current_mode: str = ""
+    current_size: int = 0
+    current_bytes: int = 0
+    started_at: float = field(default_factory=time.monotonic)
+    current_started_at: float = 0.0
+    slow_files: list[dict[str, object]] = field(default_factory=list)
 
-    def _emit(self) -> None:
+    def start_file(self, platform: str, relpath: str, size: int, mode: str) -> None:
+        self.current_platform = platform
+        self.current_relpath = relpath
+        self.current_mode = mode
+        self.current_size = size
+        self.current_bytes = 0
+        self.current_started_at = time.monotonic()
+        # Only a physical read can sit on one file long enough to benefit from a
+        # separate "starting" update. Cache and metadata entries finish immediately.
+        if mode == "hashing":
+            self._emit()
+
+    def _telemetry(self, final: bool = False) -> dict[str, object]:
+        elapsed = max(time.monotonic() - self.started_at, 0.001)
+        current_elapsed = (
+            max(time.monotonic() - self.current_started_at, 0)
+            if self.current_started_at
+            else 0
+        )
+        return {
+            "phase": "hashing" if self.total_bytes else "cataloging",
+            "total_files": self.total_files,
+            "processed_files": self.processed_files,
+            "bytes_to_hash": self.total_bytes,
+            "bytes_read": self.processed_bytes,
+            "read_rate": int(self.processed_bytes / elapsed),
+            "hashed_files": self.hashed_files,
+            "cached_files": self.cached_files,
+            "cached_bytes": self.cached_bytes,
+            "metadata_files": self.metadata_files,
+            "metadata_bytes": self.metadata_bytes,
+            "current": {
+                "platform": self.current_platform,
+                "relpath": self.current_relpath,
+                "mode": self.current_mode,
+                "size": self.current_size,
+                "bytes_read": self.current_bytes,
+                "elapsed_seconds": round(current_elapsed, 1),
+            },
+            "platforms": self.platforms,
+            "slow_files": self.slow_files,
+            "final": final,
+        }
+
+    def _emit(self, final: bool = False) -> None:
         if not self.callback:
             return
         if self.total_bytes:
-            fraction = self.processed_bytes / self.total_bytes
+            file_fraction = self.processed_files / self.total_files if self.total_files else 1
+            byte_fraction = self.processed_bytes / self.total_bytes
+            # Metadata and cache validation are real work, but physical reads dominate
+            # scan duration. Keep the percentage honest when thousands of metadata-only
+            # files finish before a handful of large images.
+            fraction = (file_fraction * 0.1) + (byte_fraction * 0.9)
         elif self.total_files:
             fraction = self.processed_files / self.total_files
         else:
             fraction = 1
         percent = min(90, 1 + int(max(0, min(fraction, 1)) * 89))
         detail = f"Scanning {self.processed_files:,} of {self.total_files:,} files"
+        if self.current_platform:
+            detail += f" in {self.current_platform}"
         if self.total_bytes:
-            detail += f" · {_format_bytes(self.processed_bytes)} of {_format_bytes(self.total_bytes)}"
+            detail += (
+                f" · {_format_bytes(self.processed_bytes)} of "
+                f"{_format_bytes(self.total_bytes)} physically read"
+            )
         if self.cached_files:
             detail += f" · {self.cached_files:,} cached"
         if self.metadata_files:
             detail += f" · {self.metadata_files:,} metadata-only"
-        self.callback(percent, detail)
+        if getattr(self.callback, "supports_telemetry", False):
+            self.callback(percent, detail, "running", self._telemetry(final))
+        else:
+            self.callback(percent, detail)
 
     def advance(self, byte_count: int) -> None:
         self.processed_bytes += byte_count
+        self.current_bytes += byte_count
+        if self.current_platform in self.platforms:
+            self.platforms[self.current_platform]["read_bytes"] += byte_count
         self._emit()
 
-    def finish_file(self, cached: bool = False, metadata_only: bool = False) -> None:
+    def finish_file(
+        self,
+        cached: bool = False,
+        metadata_only: bool = False,
+        byte_count: int = 0,
+    ) -> None:
         self.processed_files += 1
+        platform = self.platforms.get(self.current_platform)
+        if platform:
+            platform["processed_files"] += 1
         if cached:
             self.cached_files += 1
+            self.cached_bytes += byte_count
+            if platform:
+                platform["processed_cached_files"] += 1
         if metadata_only:
             self.metadata_files += 1
+            self.metadata_bytes += byte_count
+            if platform:
+                platform["processed_metadata_files"] += 1
+        if not cached and not metadata_only:
+            self.hashed_files += 1
+            if platform:
+                platform["processed_hash_files"] += 1
+            elapsed = max(time.monotonic() - self.current_started_at, 0.001)
+            self.slow_files.append(
+                {
+                    "platform": self.current_platform,
+                    "relpath": self.current_relpath,
+                    "size": self.current_size,
+                    "seconds": round(elapsed, 1),
+                    "rate": int(self.current_size / elapsed),
+                }
+            )
+            self.slow_files = sorted(
+                self.slow_files, key=lambda item: float(item["seconds"]), reverse=True
+            )[:5]
         self._emit()
 
 
@@ -210,6 +314,11 @@ def _inside(root: Path, candidate: Path) -> Path:
 
 def _rel(root: Path, path: Path) -> str:
     return path.resolve().relative_to(root.resolve()).as_posix()
+
+
+def _scan_rel(root: Path, path: Path) -> str:
+    """Fast relative path for entries already discovered beneath a resolved root."""
+    return path.relative_to(root).as_posix()
 
 
 class LibraryService:
@@ -243,15 +352,15 @@ class LibraryService:
         cache_updates: dict[str, tuple[int, int, str]],
         progress: ScanProgress | None = None,
         cancel_check: CancelCheck | None = None,
+        stat_result: os.stat_result | None = None,
     ) -> tuple[str, os.stat_result]:
         if cancel_check:
             cancel_check()
-        stat = path.stat()
+        stat = stat_result or path.stat()
         cached = cache.get(relpath)
         if cached and cached[0] == stat.st_size and cached[1] == stat.st_mtime_ns:
             if progress:
-                progress.advance(stat.st_size)
-                progress.finish_file(cached=True)
+                progress.finish_file(cached=True, byte_count=stat.st_size)
             return cached[2], stat
 
         digest = hashlib.sha256()
@@ -342,24 +451,38 @@ class LibraryService:
         cancel_check: CancelCheck | None = None,
         hash_contents: bool = True,
         display_name_override: str = "",
+        path_stats: dict[str, os.stat_result] | None = None,
     ) -> GameCandidate:
         root = self.settings.library_root.resolve()
         paths = paths if paths is not None else self._bundle_paths(primary)
         records: list[FileRecord] = []
         for path in paths:
-            relpath = _rel(root, path)
+            relpath = _scan_rel(root, path)
+            known_stat = path_stats.get(relpath) if path_stats else None
+            stat = known_stat or path.stat()
+            cached = cache.get(relpath)
+            cache_hit = bool(
+                cached
+                and cached[0] == stat.st_size
+                and cached[1] == stat.st_mtime_ns
+            )
+            if progress:
+                progress.start_file(
+                    platform,
+                    relpath,
+                    stat.st_size,
+                    "cached" if hash_contents and cache_hit else "hashing" if hash_contents else "metadata",
+                )
             if hash_contents:
                 sha256, stat = self._hash_file(
-                    path, relpath, cache, cache_updates, progress, cancel_check
+                    path, relpath, cache, cache_updates, progress, cancel_check, stat
                 )
             else:
                 if cancel_check:
                     cancel_check()
-                stat = path.stat()
                 sha256 = ""
                 if progress:
-                    progress.advance(stat.st_size)
-                    progress.finish_file(metadata_only=True)
+                    progress.finish_file(metadata_only=True, byte_count=stat.st_size)
             kind = "descriptor" if path.suffix.lower() in DESCRIPTOR_EXTENSIONS else "content"
             records.append(FileRecord(relpath, stat.st_size, sha256, kind, stat.st_mtime_ns))
         if not records:
@@ -376,7 +499,7 @@ class LibraryService:
             # terabytes of internal game data. Include the primary path to keep this
             # structural fingerprint out of exact-content duplicate groups.
             aggregate.update(b"metadata-only\0")
-            aggregate.update(_rel(root, primary).encode("utf-8"))
+            aggregate.update(_scan_rel(root, primary).encode("utf-8"))
             for record in sorted(records, key=lambda item: item.relpath.casefold()):
                 aggregate.update(record.relpath.encode("utf-8"))
                 aggregate.update(str(record.size).encode("ascii"))
@@ -392,7 +515,7 @@ class LibraryService:
             display_name = display_name_override.strip()
         return GameCandidate(
             platform=platform,
-            primary_relpath=_rel(root, primary),
+            primary_relpath=_scan_rel(root, primary),
             display_name=display_name,
             extension=folder_extension if primary.is_dir() else primary.suffix.lower(),
             size=sum(record.size for record in records),
@@ -441,6 +564,7 @@ class LibraryService:
         work: list[tuple[Path, str, tuple[Path, ...]]] = []
         metadata_only_primaries: set[Path] = set()
         display_overrides: dict[Path, str] = {}
+        discovered_stats: dict[str, os.stat_result] = {}
         for platform_dir in sorted((item for item in root.iterdir() if item.is_dir()), key=lambda p: p.name.lower()):
             if cancel_check:
                 cancel_check()
@@ -457,7 +581,14 @@ class LibraryService:
                     continue
                 if platform_dir.name.casefold() == "switch" and _is_switch_support_path(path, platform_dir):
                     continue
+                try:
+                    path_stat = path.stat()
+                except OSError:
+                    continue
+                if not stat_module.S_ISREG(path_stat.st_mode):
+                    continue
                 platform_paths.append(path)
+                discovered_stats[_scan_rel(root, path)] = path_stat
                 if relative_parts:
                     paths_by_top_level.setdefault(relative_parts[0], []).append(path)
             claimed: set[Path] = set()
@@ -473,8 +604,6 @@ class LibraryService:
                 }
                 grouped: dict[str, list[Path]] = {title_id: [] for title_id in app_ids}
                 for path in platform_paths:
-                    if not path.is_file():
-                        continue
                     relative = path.relative_to(platform_dir)
                     if not relative.parts or relative.parts[0].casefold() not in VITA_CONTENT_ROOTS:
                         continue
@@ -539,8 +668,7 @@ class LibraryService:
                         if path.is_symlink():
                             record_issue(path, "symbolic links are not indexed")
                             continue
-                        if path.is_file():
-                            files.append(path)
+                        files.append(path)
                     if files:
                         primaries.append(folder)
                         bundle_paths[folder] = tuple(files)
@@ -550,8 +678,7 @@ class LibraryService:
             descriptors = sorted(
                 (
                     path for path in platform_paths
-                    if path.is_file()
-                    and path.suffix.lower() in DESCRIPTOR_EXTENSIONS
+                    if path.suffix.lower() in DESCRIPTOR_EXTENSIONS
                     and not path.name.startswith("._")
                     and path not in claimed
                 ),
@@ -589,8 +716,7 @@ class LibraryService:
                         if path.is_symlink():
                             record_issue(path, "symbolic links are not indexed")
                             continue
-                        if path.is_file():
-                            folder_files.append(path.resolve())
+                        folder_files.append(path.resolve())
                     if folder_files:
                         bundle = tuple(dict.fromkeys([*bundle, *folder_files]))
                 bundle_paths[descriptor] = bundle
@@ -599,7 +725,7 @@ class LibraryService:
             for path in sorted(platform_paths, key=lambda p: p.as_posix().lower()):
                 if cancel_check:
                     cancel_check()
-                if not path.is_file() or path.name.startswith("._") or path.name == ".DS_Store":
+                if path.name.startswith("._") or path.name == ".DS_Store":
                     continue
                 if path.suffix.lower() not in self.settings.extensions:
                     continue
@@ -623,20 +749,83 @@ class LibraryService:
 
         total_bytes = 0
         total_files = 0
-        for _, _, paths in work:
+        path_stats: dict[str, os.stat_result] = {}
+        platform_plans: dict[str, dict[str, int]] = {}
+        prepared_work: list[tuple[Path, str, tuple[Path, ...], bool]] = []
+        for primary, platform, paths in work:
+            candidate_stats: list[tuple[str, os.stat_result]] = []
             for path in paths:
                 if cancel_check:
                     cancel_check()
                 try:
-                    total_bytes += path.stat().st_size
+                    relpath = _scan_rel(root, path)
+                    stat = discovered_stats.get(relpath) or path.stat()
+                    path_stats[relpath] = stat
+                    candidate_stats.append((relpath, stat))
                     total_files += 1
                 except OSError:
                     # Candidate construction records the useful per-file error.
                     pass
-        progress = ScanProgress(total_files, total_bytes, progress_callback)
+            hash_contents = primary not in metadata_only_primaries
+            if hash_contents and self.settings.hash_max_bytes > 0:
+                hash_contents = all(
+                    stat.st_size <= self.settings.hash_max_bytes
+                    or (
+                        (cached := cache.get(relpath)) is not None
+                        and cached[0] == stat.st_size
+                        and cached[1] == stat.st_mtime_ns
+                    )
+                    for relpath, stat in candidate_stats
+                )
+            if hash_contents:
+                total_bytes += sum(
+                    stat.st_size
+                    for relpath, stat in candidate_stats
+                    if not (
+                        (cached := cache.get(relpath)) is not None
+                        and cached[0] == stat.st_size
+                        and cached[1] == stat.st_mtime_ns
+                    )
+                )
+            platform_plan = platform_plans.setdefault(
+                platform,
+                {
+                    "total_files": 0,
+                    "hash_files": 0,
+                    "hash_bytes": 0,
+                    "cached_files": 0,
+                    "cached_bytes": 0,
+                    "metadata_files": 0,
+                    "metadata_bytes": 0,
+                    "processed_files": 0,
+                    "processed_hash_files": 0,
+                    "processed_cached_files": 0,
+                    "processed_metadata_files": 0,
+                    "read_bytes": 0,
+                },
+            )
+            for relpath, stat in candidate_stats:
+                platform_plan["total_files"] += 1
+                cached = cache.get(relpath)
+                cache_hit = bool(
+                    cached
+                    and cached[0] == stat.st_size
+                    and cached[1] == stat.st_mtime_ns
+                )
+                if not hash_contents:
+                    platform_plan["metadata_files"] += 1
+                    platform_plan["metadata_bytes"] += stat.st_size
+                elif cache_hit:
+                    platform_plan["cached_files"] += 1
+                    platform_plan["cached_bytes"] += stat.st_size
+                else:
+                    platform_plan["hash_files"] += 1
+                    platform_plan["hash_bytes"] += stat.st_size
+            prepared_work.append((primary, platform, paths, hash_contents))
+        progress = ScanProgress(total_files, total_bytes, progress_callback, platform_plans)
         progress._emit()
         try:
-            for primary, platform, paths in work:
+            for primary, platform, paths, hash_contents in prepared_work:
                 if cancel_check:
                     cancel_check()
                 try:
@@ -649,8 +838,9 @@ class LibraryService:
                             paths,
                             progress,
                             cancel_check,
-                            hash_contents=primary not in metadata_only_primaries,
+                            hash_contents=hash_contents,
                             display_name_override=display_overrides.get(primary, ""),
+                            path_stats=path_stats,
                         )
                     )
                 except (OSError, LibraryError) as exc:
@@ -659,6 +849,7 @@ class LibraryService:
             # Normal Python exceptions still preserve everything hashed so far. A hard
             # container stop can lose at most the current bounded batch.
             self._persist_hash_cache(cache_updates)
+        progress._emit(final=True)
         return candidates
 
     def _persist_hash_cache(self, cache_updates: dict[str, tuple[int, int, str]]) -> None:
@@ -835,10 +1026,28 @@ class LibraryService:
                     connection.execute("DROP TABLE scan_seen")
                 else:
                     connection.execute("DELETE FROM games")
+                # A changed large file may still have an older full hash in the
+                # cache. Once it is deliberately deferred, remove that stale value
+                # so a later timestamp rollback cannot revive the wrong digest.
+                connection.execute(
+                    "DELETE FROM file_cache WHERE relpath IN ("
+                    "SELECT relpath FROM game_files WHERE sha256='')"
+                )
                 connection.execute("DELETE FROM file_cache WHERE relpath NOT IN (SELECT relpath FROM game_files)")
             if progress_callback:
                 progress_callback(99, "Finalizing scan")
+            metadata_files = sum(
+                1 for candidate in candidates for item in candidate.files if not item.sha256
+            )
+            metadata_games = sum(
+                1 for candidate in candidates if candidate.bundle_hash.startswith("metadata:")
+            )
             detail = f"Indexed {len(candidates)} games"
+            if metadata_files:
+                detail += (
+                    f", used metadata for {metadata_files} files across "
+                    f"{metadata_games} large or folder-based games"
+                )
             if reconciled_components:
                 detail += f", merged {reconciled_components} legacy bundle components"
             if skipped:
@@ -854,6 +1063,8 @@ class LibraryService:
                 "skipped": skipped[:50],
                 "skipped_count": len(skipped),
                 "removed_devices": removed_devices,
+                "metadata_files": metadata_files,
+                "metadata_games": metadata_games,
             }
 
     def _guard_prune(

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import errno
+import os
 import shutil
 import struct
 import tempfile
 import threading
 import time
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -243,6 +245,63 @@ class LibraryServiceTests(unittest.TestCase):
         self.assertTrue(game["bundle_hash"].startswith("metadata:"))
         self.assertEqual({item["sha256"] for item in files}, {""})
 
+    def test_new_large_single_file_is_indexed_without_content_hashing(self):
+        large = self.write("ps2/Large Game.iso", b"large-content")
+        service = LibraryService(replace(self.settings, hash_max_bytes=4), self.db)
+
+        original_hash = service._hash_file
+
+        def reject_large_hash(path, *args, **kwargs):
+            if path == large:
+                raise AssertionError("large file content must not be hashed")
+            return original_hash(path, *args, **kwargs)
+
+        with patch.object(service, "_hash_file", side_effect=reject_large_hash):
+            result = service.scan()
+
+        game, files = service.game_bundle(self.game_id("Large Game"))
+        self.assertTrue(game["bundle_hash"].startswith("metadata:"))
+        self.assertEqual(files[0]["sha256"], "")
+        self.assertGreaterEqual(result["metadata_files"], 1)
+
+    def test_valid_cached_hash_for_large_file_is_reused(self):
+        large = self.write("ps2/Cached Large Game.iso", b"large-content")
+        full_hash_service = LibraryService(replace(self.settings, hash_max_bytes=0), self.db)
+        full_hash_service.scan()
+        game_id = self.game_id("Cached Large Game")
+        original_game, original_files = full_hash_service.game_bundle(game_id)
+        self.assertFalse(original_game["bundle_hash"].startswith("metadata:"))
+        self.assertTrue(original_files[0]["sha256"])
+
+        limited_service = LibraryService(replace(self.settings, hash_max_bytes=4), self.db)
+        with patch.object(Path, "open", side_effect=AssertionError("cached file must not be read")):
+            limited_service.scan()
+
+        game, files = limited_service.game_bundle(game_id)
+        self.assertEqual(game["bundle_hash"], original_game["bundle_hash"])
+        self.assertEqual(files[0]["sha256"], original_files[0]["sha256"])
+
+    def test_changed_large_file_discards_stale_cached_hash(self):
+        large = self.write("ps2/Changed Large Game.iso", b"old-content")
+        full_hash_service = LibraryService(replace(self.settings, hash_max_bytes=0), self.db)
+        full_hash_service.scan()
+        large.write_bytes(b"new-content")
+        stat = large.stat()
+        os.utime(large, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
+
+        limited_service = LibraryService(replace(self.settings, hash_max_bytes=4), self.db)
+        with patch.object(Path, "open", side_effect=AssertionError("changed large file must be deferred")):
+            limited_service.scan()
+
+        game, files = limited_service.game_bundle(self.game_id("Changed Large Game"))
+        self.assertTrue(game["bundle_hash"].startswith("metadata:"))
+        self.assertEqual(files[0]["sha256"], "")
+        with self.db.connect() as connection:
+            cached = connection.execute(
+                "SELECT 1 FROM file_cache WHERE relpath='ps2/Changed Large Game.iso'"
+            ).fetchone()
+        self.assertIsNone(cached)
+
     def test_folder_bundle_tree_is_walked_only_once(self):
         self.write("ps3/Game [TEST00001].ps3/PS3_GAME/USRDIR/data.bin", b"payload")
         original_rglob = Path.rglob
@@ -449,6 +508,27 @@ class LibraryServiceTests(unittest.TestCase):
         self.assertTrue(any("Scanning" in detail and "of 2 files" in detail for _, detail in updates))
         self.assertTrue(any(percent == 92 and "2 games" in detail for percent, detail in updates))
         self.assertEqual(updates[-1], (99, "Finalizing scan"))
+
+    def test_scan_reports_physical_read_and_platform_telemetry(self):
+        self.write("gba/Read.gba", b"read-me")
+        self.write("ps3/Folder.ps3/PS3_GAME/USRDIR/content.bin", b"metadata-only")
+        updates: list[tuple[object, ...]] = []
+
+        def progress(*values):
+            updates.append(values)
+
+        progress.supports_telemetry = True
+        self.service.scan(progress_callback=progress)
+
+        telemetry = [values[3] for values in updates if len(values) == 4]
+        self.assertTrue(telemetry)
+        final = telemetry[-1]
+        self.assertEqual(final["bytes_read"], len(b"read-me"))
+        self.assertEqual(final["bytes_to_hash"], len(b"read-me"))
+        self.assertEqual(final["hashed_files"], 1)
+        self.assertEqual(final["metadata_files"], 1)
+        self.assertEqual(final["platforms"]["gba"]["processed_hash_files"], 1)
+        self.assertEqual(final["platforms"]["ps3"]["processed_metadata_files"], 1)
 
     def test_interrupted_scan_preserves_completed_hash_batches(self):
         self.write("gba/A.gba", b"first")

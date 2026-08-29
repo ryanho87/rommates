@@ -10,7 +10,7 @@ from unittest.mock import patch
 from app.config import Settings
 from app.db import Database
 from app.library import LibraryError, LibraryService
-from app.screenscraper import ScreenScraperService
+from app.screenscraper import ScreenScraperDailyQuota, ScreenScraperService
 
 
 class _Headers:
@@ -124,6 +124,55 @@ class ScreenScraperTests(unittest.TestCase):
             service._before_request()
         self.assertEqual(service.status()["quota"]["max_threads"], 2)
 
+    def test_bulk_cover_run_persists_progress_and_uses_cover_only(self):
+        service = ScreenScraperService(self.settings, self.db)
+        run, created = service.create_bulk_run("cover")
+        self.assertTrue(created)
+        self.assertEqual(run["total_games"], 1)
+        self.assertEqual(service.resumable_bulk_runs(), [run["id"]])
+
+        with patch.object(
+            service,
+            "_scrape_locked",
+            return_value={"matched": 1, "downloaded": 1, "skipped": 0, "issues": []},
+        ) as scrape:
+            result = service.scrape_bulk(
+                run["id"], progress_callback=lambda *_: None, cancel_check=lambda: None
+            )
+
+        self.assertEqual(result["asset_mode"], "cover")
+        self.assertEqual(result["downloaded"], 1)
+        self.assertEqual(scrape.call_args.args[3], ("cover",))
+        self.assertEqual(service.resumable_bulk_runs(), [])
+        status = service.bulk_status()["run"]
+        self.assertEqual(status["status"], "complete")
+        self.assertEqual(status["processed_games"], 1)
+
+    def test_bulk_run_pauses_for_daily_quota_then_resumes(self):
+        service = ScreenScraperService(self.settings, self.db)
+        run, _ = service.create_bulk_run("cover")
+        statuses = []
+        with (
+            patch.object(service, "_seconds_until_quota_reset", return_value=0),
+            patch.object(
+                service,
+                "_scrape_locked",
+                side_effect=[
+                    ScreenScraperDailyQuota("quota"),
+                    {"matched": 1, "downloaded": 1, "skipped": 0, "issues": []},
+                ],
+            ),
+        ):
+            result = service.scrape_bulk(
+                run["id"],
+                progress_callback=lambda _progress, _detail, status="running": statuses.append(status),
+                cancel_check=lambda: None,
+            )
+
+        self.assertIn("paused", statuses)
+        self.assertEqual(result["matched"], 1)
+        self.assertEqual(service.bulk_status()["run"]["status"], "complete")
+
     def test_rating_scrape_caches_metadata_without_downloading_media(self):
         systems = b'{"response":{"systemes":[]}}'
         game = (
@@ -153,6 +202,25 @@ class ScreenScraperTests(unittest.TestCase):
         detail = service.detail(self.game_id)
         self.assertEqual(detail["metadata"]["rating"], 16)
         self.assertEqual(detail["assets"], [])
+
+    def test_deferred_catalog_hash_uses_name_matching_without_reading_rom(self):
+        service = ScreenScraperService(self.settings, self.db)
+        with self.db.write() as connection:
+            connection.execute(
+                "UPDATE games SET bundle_hash='metadata:test' WHERE id=?", (self.game_id,)
+            )
+            connection.execute(
+                "UPDATE game_files SET sha256='' WHERE game_id=?", (self.game_id,)
+            )
+            game = dict(connection.execute("SELECT * FROM games WHERE id=?", (self.game_id,)).fetchone())
+            files = [
+                dict(row) for row in connection.execute(
+                    "SELECT * FROM game_files WHERE game_id=?", (self.game_id,)
+                )
+            ]
+
+        with patch.object(Path, "open", side_effect=AssertionError("deferred ROM must not be read")):
+            self.assertEqual(service._fingerprint(game, files, lambda: None), {})
 
     def test_unmatched_quota_only_blocks_match_requests(self):
         service = ScreenScraperService(self.settings, self.db)

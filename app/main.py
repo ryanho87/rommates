@@ -25,7 +25,7 @@ from .transfers import MAX_MANIFEST_BYTES, TransferError, TransferService
 
 
 MINIMUM_TOKEN_LENGTH = 16
-CANCELLABLE_JOB_KINDS = frozenset({"scan", "device_apply", "save_snapshot", "save_restore", "save_delete", "artwork_scrape", "rating_scrape", "ranking_refresh", "upload_finalize"})
+CANCELLABLE_JOB_KINDS = frozenset({"scan", "device_apply", "save_snapshot", "save_restore", "save_delete", "artwork_scrape", "artwork_bulk", "rating_scrape", "ranking_refresh", "upload_finalize"})
 
 settings = Settings.from_env()
 
@@ -93,6 +93,7 @@ def job_execution_slot(kind: str, cancellation: threading.Event):
 def job_payload(row) -> dict[str, object]:
     payload = dict(row)
     result_json = payload.get("result_json")
+    progress_json = payload.pop("progress_json", None)
     try:
         result = json.loads(result_json) if result_json else None
     except (TypeError, json.JSONDecodeError):
@@ -101,11 +102,16 @@ def job_payload(row) -> dict[str, object]:
     reported = captured
     if isinstance(result, dict):
         reported = max(reported, int(result.get("skipped_count") or 0))
+    try:
+        telemetry = json.loads(progress_json) if progress_json else None
+    except (TypeError, json.JSONDecodeError):
+        telemetry = None
+    payload["telemetry"] = telemetry if isinstance(telemetry, dict) else None
     payload["issue_count"] = captured
     payload["reported_issue_count"] = reported
     payload["cancellable"] = payload["status"] == "queued" or (
         payload["kind"] in CANCELLABLE_JOB_KINDS
-        and payload["status"] in {"running", "cancelling"}
+        and payload["status"] in {"running", "paused", "cancelling"}
     )
     return payload
 
@@ -115,6 +121,11 @@ def job_result_detail(kind: str, result: object, fallback: str) -> str:
         return fallback
     if kind == "scan":
         summary = f"Indexed {result.get('games', 0)} games across {result.get('platforms', 0)} platforms"
+        if result.get("metadata_files"):
+            summary += (
+                f", used metadata for {result['metadata_files']} files in "
+                f"{result.get('metadata_games', 0)} large or folder-based games"
+            )
         if result.get("skipped_count"):
             summary += f", skipped {result['skipped_count']} unreadable files"
         if result.get("removed_devices"):
@@ -156,6 +167,12 @@ def job_result_detail(kind: str, result: object, fallback: str) -> str:
     if kind == "artwork_scrape":
         return (
             f"Matched {result.get('matched', 0)} games and downloaded "
+            f"{result.get('downloaded', 0)} visual assets; skipped {result.get('skipped', 0)}"
+        )
+    if kind == "artwork_bulk":
+        mode = "covers" if result.get("asset_mode") == "cover" else "complete artwork sets"
+        return (
+            f"Bulk {mode}: matched {result.get('matched', 0)} games and downloaded "
             f"{result.get('downloaded', 0)} visual assets; skipped {result.get('skipped', 0)}"
         )
     if kind == "rating_scrape":
@@ -205,20 +222,38 @@ def run_job(
             if cancellation.is_set():
                 raise JobCancelled("Stopped by user")
 
-        def report_progress(progress: int, progress_detail: str) -> None:
+        def report_progress(
+            progress: int,
+            progress_detail: str,
+            status: str = "running",
+            telemetry: dict[str, object] | None = None,
+        ) -> None:
             nonlocal last_progress_update
             now = time.monotonic()
             progress = max(0, min(int(progress), 99))
             # Hashing reports every MiB so a huge image can show movement. Keep those
             # callbacks cheap by committing UI state at most twice per second.
-            if progress not in {0, 99} and now - last_progress_update < 0.5:
+            if (
+                status == "running"
+                and progress not in {0, 99}
+                and now - last_progress_update < 0.5
+                and not (telemetry and telemetry.get("final"))
+            ):
                 return
             with db.write() as connection:
                 connection.execute(
-                    "UPDATE jobs SET progress=?,detail=? WHERE id=?",
-                    (progress, progress_detail, job_id),
+                    "UPDATE jobs SET status=?,progress=?,detail=?,progress_json=COALESCE(?,progress_json) WHERE id=?",
+                    (
+                        status if status in {"running", "paused"} else "running",
+                        progress,
+                        progress_detail,
+                        json.dumps(telemetry, separators=(",", ":")) if telemetry else None,
+                        job_id,
+                    ),
                 )
             last_progress_update = now
+
+        report_progress.supports_telemetry = True
 
         with job_execution_slot(kind, cancellation):
             check_cancelled()
@@ -233,13 +268,13 @@ def run_job(
                 )
             elif kind == "device_apply":
                 result = operation(*args, cancel_check=check_cancelled)
-            elif kind in {"save_snapshot", "save_restore", "artwork_scrape", "rating_scrape", "ranking_refresh", "upload_finalize"}:
+            elif kind in {"save_snapshot", "save_restore", "artwork_scrape", "artwork_bulk", "rating_scrape", "ranking_refresh", "upload_finalize"}:
                 result = operation(
                     *args, progress_callback=report_progress, cancel_check=check_cancelled
                 )
             else:
                 result = operation(*args)
-            if kind == "artwork_scrape" and isinstance(result, dict):
+            if kind in {"artwork_scrape", "artwork_bulk"} and isinstance(result, dict):
                 job_issues.extend(str(issue) for issue in result.get("issues", []))
             # Cooperative operations check cancellation before their final commit. A
             # stop request arriving after the operation returns must not relabel a
@@ -276,13 +311,13 @@ def enqueue_job(kind: str, detail: str, operation, *args, coalesce: bool = False
         if coalesce:
             active = connection.execute(
                 "SELECT id FROM jobs WHERE kind=? AND detail=? "
-                "AND status IN ('queued','running','cancelling') ORDER BY id LIMIT 1",
+                "AND status IN ('queued','running','paused','cancelling') ORDER BY id LIMIT 1",
                 (kind, detail),
             ).fetchone()
             if active:
                 return active["id"]
         active_count = connection.execute(
-            "SELECT COUNT(*) AS count FROM jobs WHERE status IN ('queued','running','cancelling')"
+            "SELECT COUNT(*) AS count FROM jobs WHERE status IN ('queued','running','paused','cancelling')"
         ).fetchone()["count"]
         if active_count >= 25:
             raise LibraryError("Too many jobs are already queued; wait for one to finish")
@@ -328,7 +363,7 @@ async def lifespan(_: FastAPI):
     with db.write() as connection:
         connection.execute(
             "UPDATE jobs SET status='failed',detail='Interrupted by application restart',completed_at=CURRENT_TIMESTAMP "
-            "WHERE status IN ('queued','running','cancelling')"
+            "WHERE status IN ('queued','running','paused','cancelling')"
         )
     # Validated unconditionally: an unset token disables authentication entirely, so
     # this must never depend on an unrelated flag or on which launcher started the app.
@@ -344,6 +379,15 @@ async def lifespan(_: FastAPI):
     scheduler_stop = threading.Event()
     scheduler_thread = threading.Thread(target=save_scheduler, args=(scheduler_stop,), daemon=True)
     scheduler_thread.start()
+    if screenscraper.configured:
+        for run_id in screenscraper.resumable_bulk_runs():
+            job_id = enqueue_job(
+                "artwork_bulk",
+                f"Resuming bulk artwork run #{run_id}",
+                screenscraper.scrape_bulk,
+                run_id,
+            )
+            screenscraper.attach_bulk_job(run_id, job_id)
     if settings.scan_on_start:
         enqueue_job("scan", "Indexing library", library.scan)
     try:
@@ -441,6 +485,10 @@ class SaveOrphanDeleteRequest(BaseModel):
 class ArtworkScrapeRequest(BaseModel):
     game_ids: list[int] = Field(min_length=1, max_length=500)
     missing_only: bool = True
+
+
+class ArtworkBulkRequest(BaseModel):
+    asset_mode: str = Field(default="cover", pattern="^(cover|full)$")
 
 
 class RatingScrapeRequest(BaseModel):
@@ -1089,6 +1137,56 @@ def artwork_status():
     return screenscraper.status()
 
 
+@app.get("/api/artwork/bulk")
+def artwork_bulk_status():
+    return screenscraper.bulk_status()
+
+
+@app.post("/api/artwork/scrape-all", status_code=202)
+def scrape_all_artwork(payload: ArtworkBulkRequest):
+    if not screenscraper.configured:
+        raise HTTPException(
+            status_code=400,
+            detail="ScreenScraper developer credentials are not configured",
+        )
+    run, created = screenscraper.create_bulk_run(payload.asset_mode)
+    if not created:
+        return {
+            "run_id": run["id"],
+            "job_id": run.get("job_id"),
+            "already_running": True,
+            "requested": run["total_games"],
+        }
+    if run["status"] == "complete":
+        return {
+            "run_id": run["id"],
+            "job_id": None,
+            "already_complete": True,
+            "requested": 0,
+        }
+    try:
+        job_id = enqueue_job(
+            "artwork_bulk",
+            f"Downloading missing {'covers' if payload.asset_mode == 'cover' else 'artwork'} for {run['total_games']} games",
+            screenscraper.scrape_bulk,
+            run["id"],
+        )
+    except Exception as exc:
+        with db.write() as connection:
+            connection.execute(
+                "UPDATE artwork_bulk_runs SET status='failed',last_error=?,completed_at=CURRENT_TIMESTAMP WHERE id=?",
+                (str(exc), run["id"]),
+            )
+        raise
+    screenscraper.attach_bulk_job(run["id"], job_id)
+    return {
+        "run_id": run["id"],
+        "job_id": job_id,
+        "already_running": False,
+        "requested": run["total_games"],
+    }
+
+
 @app.get("/api/games/{game_id}/artwork")
 def game_artwork(game_id: int):
     with db.connect() as connection:
@@ -1112,7 +1210,8 @@ def scrape_artwork(payload: ArtworkScrapeRequest):
         )
     with db.connect() as connection:
         active = connection.execute(
-            "SELECT id FROM jobs WHERE kind='artwork_scrape' AND status IN ('queued','running','cancelling') "
+            "SELECT id FROM jobs WHERE kind IN ('artwork_scrape','artwork_bulk') "
+            "AND status IN ('queued','running','paused','cancelling') "
             "ORDER BY id DESC LIMIT 1"
         ).fetchone()
     if active:
@@ -1150,8 +1249,8 @@ def scrape_ratings(payload: RatingScrapeRequest):
             )
         ]
         active = connection.execute(
-            "SELECT id FROM jobs WHERE kind IN ('rating_scrape','artwork_scrape') "
-            "AND status IN ('queued','running','cancelling') ORDER BY id DESC LIMIT 1"
+            "SELECT id FROM jobs WHERE kind IN ('rating_scrape','artwork_scrape','artwork_bulk') "
+            "AND status IN ('queued','running','paused','cancelling') ORDER BY id DESC LIMIT 1"
         ).fetchone()
     if active:
         return {"job_id": active["id"], "already_running": True}
@@ -1673,7 +1772,7 @@ def cancel_job(job_id: int):
     with db.write() as connection:
         connection.execute(
             "UPDATE jobs SET status='cancelling',detail='Stopping safely at the next checkpoint' "
-            "WHERE id=? AND status IN ('queued','running')",
+            "WHERE id=? AND status IN ('queued','running','paused')",
             (job_id,),
         )
     return {"job_id": job_id, "status": "cancelling", "already_finished": False}

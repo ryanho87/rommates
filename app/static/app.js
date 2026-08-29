@@ -377,8 +377,10 @@ const JOB_LABELS = {
   save_restore: "Restoring saves…",
   save_delete: "Deleting orphan saves…",
   artwork_scrape: "Scraping artwork…",
+  artwork_bulk: "Downloading library artwork…",
 };
 
+const ACTIVE_JOB_STATUSES = ["queued", "running", "paused", "cancelling"];
 const JOB_POLL_INTERVAL = 700;
 const JOB_POLL_TIMEOUT = 30 * 60 * 1000;
 
@@ -419,11 +421,11 @@ async function refreshStatus() {
   document.querySelector("#library-root").textContent = state.status.roots.library;
   const pill = document.querySelector("#job-pill");
   const job = state.status.job;
-  const running = job && ["queued", "running", "cancelling"].includes(job.status);
+  const running = job && ACTIVE_JOB_STATUSES.includes(job.status);
   const scanning = running && job.kind === "scan";
   pill.classList.toggle("hidden", !running);
   pill.textContent = running
-    ? scanning ? `${job.progress}% · ${job.detail}` : JOB_LABELS[job.kind] || "Working…"
+    ? job.status === "paused" ? job.detail : scanning ? `${job.progress}% · ${job.detail}` : JOB_LABELS[job.kind] || "Working…"
     : "";
   pill.title = running ? job.detail : "";
   const canStop = running && job.cancellable;
@@ -441,10 +443,17 @@ function scheduleStatusRefresh() {
   clearTimeout(state.refreshTimer);
   state.refreshTimer = setTimeout(async () => {
     try {
-      const wasRunning = state.status?.job && ["queued", "running", "cancelling"].includes(state.status.job.status);
+      const wasRunning = state.status?.job && ACTIVE_JOB_STATUSES.includes(state.status.job.status);
       await refreshStatus();
-      const isRunning = state.status?.job && ["queued", "running", "cancelling"].includes(state.status.job.status);
+      const isRunning = state.status?.job && ACTIVE_JOB_STATUSES.includes(state.status.job.status);
       if (isRunning && state.view === "jobs") await renderJobs();
+      if (isRunning && state.view === "library" && state.status.job.kind === "artwork_bulk") {
+        const panel = document.querySelector(".artwork-bulk");
+        if (panel) {
+          panel.outerHTML = artworkBulkPanel(await api("/api/artwork/bulk"));
+          bindArtworkBulkEvents();
+        }
+      }
       if (wasRunning && !isRunning) {
         await reportJobOutcome(state.status.job);
         await loadReferenceData();
@@ -975,7 +984,7 @@ function coverageBar(value, total, label) {
 
 function dashboardJobBadge(job) {
   const badge = job.status === "failed" ? "exact" : job.status === "complete" ? "unique" : job.status === "cancelled" ? "cancelled" : "possible";
-  return `<span class="badge ${badge}">${escapeHtml(job.status)}${["running", "cancelling"].includes(job.status) ? ` · ${job.progress}%` : ""}</span>`;
+  return `<span class="badge ${badge}">${escapeHtml(job.status)}${["running", "paused", "cancelling"].includes(job.status) ? ` · ${job.progress}%` : ""}</span>`;
 }
 
 async function renderOverview() {
@@ -1050,17 +1059,88 @@ async function renderOverview() {
   }));
 }
 
+function artworkBulkPanel(data) {
+  const run = data.run;
+  const active = run && ACTIVE_JOB_STATUSES.includes(run.status);
+  const processed = Number(run?.processed_games || 0);
+  const total = Number(run?.total_games || 0);
+  const progress = total ? Math.min(100, Math.round(processed * 100 / total)) : 0;
+  const dailyUsed = Number(data.quota?.requests_today || 0);
+  const dailyLimit = Number(data.quota?.max_requests_per_day || 0);
+  const quotaText = dailyLimit
+    ? `${dailyUsed.toLocaleString()} of ${dailyLimit.toLocaleString()} API requests used today`
+    : "ROMmates will follow the limits reported by your ScreenScraper account";
+  const runDetail = active
+    ? `<div class="artwork-bulk-progress"><div><span class="badge ${run.status === "paused" ? "possible" : "unique"}">${escapeHtml(run.status)}</span><strong>${processed.toLocaleString()} of ${total.toLocaleString()} games processed</strong></div><div class="coverage-track" role="progressbar" aria-label="Bulk artwork progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${progress}"><span style="width:${progress}%"></span></div><p>${escapeHtml(run.last_error || (run.status === "queued" ? "Waiting to start" : "Missing artwork is downloading in the background"))}</p></div>`
+    : run
+      ? `<p class="artwork-bulk-last">Last run ${escapeHtml(run.status)}: ${Number(run.matched_games).toLocaleString()} matched, ${Number(run.downloaded_assets).toLocaleString()} assets downloaded, ${Number(run.skipped_games).toLocaleString()} skipped.</p>`
+      : "";
+  return `<section class="artwork-bulk" aria-labelledby="artwork-bulk-title">
+    <div class="artwork-bulk-copy">
+      <h2 id="artwork-bulk-title">Fill missing artwork</h2>
+      <p><strong>${data.missing_covers.toLocaleString()}</strong> games need covers. <strong>${data.missing_full.toLocaleString()}</strong> need a complete cover, screenshot, and logo set.</p>
+      <small>${escapeHtml(quotaText)}. Progress survives container restarts.</small>
+    </div>
+    <div class="artwork-bulk-actions">
+      <label><span class="sr-only">Artwork to download</span><select id="artwork-bulk-mode" ${active ? "disabled" : ""}><option value="cover" ${!data.missing_covers ? "disabled" : ""}>Covers only</option><option value="full" ${!data.missing_covers ? "selected" : ""} ${!data.missing_full ? "disabled" : ""}>Covers, screenshots, and logos</option></select></label>
+      ${active
+        ? `<button class="button secondary" data-open-bulk-job="${run.job_id || ""}" ${!run.job_id ? "disabled" : ""}>View job</button><button class="button danger-subtle" data-cancel-bulk-job="${run.job_id}" ${run.status === "cancelling" || !run.job_id ? "disabled" : ""}>${run.status === "cancelling" ? "Stopping…" : "Stop"}</button>`
+        : `<button class="button" data-start-bulk-artwork ${!data.configured || (!data.missing_covers && !data.missing_full) ? "disabled" : ""}>Download missing artwork</button>`}
+    </div>
+    ${runDetail}
+  </section>`;
+}
+
+function bindArtworkBulkEvents() {
+  view.querySelector("[data-start-bulk-artwork]")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    try {
+      const assetMode = view.querySelector("#artwork-bulk-mode").value;
+      const response = await api("/api/artwork/scrape-all", {
+        method: "POST",
+        body: JSON.stringify({ asset_mode: assetMode }),
+      });
+      toast(response.already_complete
+        ? "Nothing is missing for that artwork mode"
+        : `Bulk artwork queued for ${Number(response.requested).toLocaleString()} games`);
+      await refreshStatus();
+      await renderLibrary();
+    } catch (error) {
+      button.disabled = false;
+      toast(error.message, "error");
+    }
+  });
+  view.querySelector("[data-open-bulk-job]")?.addEventListener("click", (event) => {
+    navigateTo("jobs", { jobId: Number(event.currentTarget.dataset.openBulkJob) || null });
+  });
+  view.querySelector("[data-cancel-bulk-job]")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    try {
+      await api(`/api/jobs/${button.dataset.cancelBulkJob}/cancel`, { method: "POST" });
+      toast("Bulk artwork will stop at the next safe checkpoint");
+      await refreshStatus();
+      await renderLibrary();
+    } catch (error) {
+      button.disabled = false;
+      toast(error.message, "error");
+    }
+  });
+}
+
 async function renderLibrary() {
   const renderVersion = beginPageRender();
   setHeading("Library", "Browse, rename, and clean the canonical collection.");
-  const response = await getGames();
+  const [response, artworkBulk] = await Promise.all([getGames(), api("/api/artwork/bulk")]);
   const ranking = state.rankingOpen && state.platform
     ? await api(`/api/rankings/${encodeURIComponent(state.platform)}`)
     : null;
   if (!pageRenderIsCurrent(renderVersion, "library")) return;
   const key = `library\u001f${state.search}\u001f${state.platform}\u001f${state.duplicate}\u001f${state.sort}`;
   const data = mergeInfinitePage(key, response);
-  setViewHtml(`${libraryToolbar(true)}${rankingPanel(ranking)}${gamesTable(data)}<div id="bulk-bar-slot"></div>`);
+  setViewHtml(`${artworkBulkPanel(artworkBulk)}${libraryToolbar(true)}${rankingPanel(ranking)}${gamesTable(data)}<div id="bulk-bar-slot"></div>`);
+  bindArtworkBulkEvents();
   renderBulkBar();
   syncSelectAll();
   bindFilters(renderLibrary);
@@ -2217,7 +2297,7 @@ async function renderJobs() {
     );
   }
   if (!pageRenderIsCurrent(renderVersion, "jobs")) return;
-  const jobsHtml = jobs.length ? `<div class="table-wrap"><table><thead><tr><th>Job</th><th>Status</th><th>Detail</th><th>Started</th><th>Finished</th><th>Action</th></tr></thead><tbody>${jobs.map((job) => `<tr${state.jobReportId === job.id ? ` class="selected-row"` : ""}><td>${escapeHtml(job.kind)}</td><td><span class="badge ${job.status === "failed" ? "exact" : job.status === "complete" ? "unique" : job.status === "cancelled" ? "cancelled" : "possible"}">${escapeHtml(job.status)}${["running", "cancelling"].includes(job.status) ? ` · ${job.progress}%` : ""}</span></td><td class="name-cell">${escapeHtml(job.detail)}</td><td class="meta">${escapeHtml(job.created_at)}</td><td class="meta">${escapeHtml(job.completed_at || "In progress")}</td><td><div class="bulk-actions"><button class="button secondary small" data-job-report="${job.id}" aria-expanded="${state.jobReportId === job.id}">${state.jobReportId === job.id ? "Close" : "Report"}${job.reported_issue_count ? ` · ${job.reported_issue_count} issues` : ""}</button>${job.cancellable ? `<button class="button danger-subtle small" data-cancel-job="${job.id}" ${job.status === "cancelling" ? "disabled" : ""}>${job.status === "cancelling" ? "Stopping…" : "Stop"}</button>` : ""}</div></td></tr>`).join("")}</tbody></table></div>` : `<div class="empty-state"><div><h2>No jobs yet</h2><p>Library scans will appear here.</p></div></div>`;
+  const jobsHtml = jobs.length ? `<div class="table-wrap"><table><thead><tr><th>Job</th><th>Status</th><th>Detail</th><th>Started</th><th>Finished</th><th>Action</th></tr></thead><tbody>${jobs.map((job) => `<tr${state.jobReportId === job.id ? ` class="selected-row"` : ""}><td>${escapeHtml(job.kind)}</td><td><span class="badge ${job.status === "failed" ? "exact" : job.status === "complete" ? "unique" : job.status === "cancelled" ? "cancelled" : "possible"}">${escapeHtml(job.status)}${["running", "paused", "cancelling"].includes(job.status) ? ` · ${job.progress}%` : ""}</span></td><td class="name-cell">${escapeHtml(job.detail)}</td><td class="meta">${escapeHtml(job.created_at)}</td><td class="meta">${escapeHtml(job.completed_at || "In progress")}</td><td><div class="bulk-actions"><button class="button secondary small" data-job-report="${job.id}" aria-expanded="${state.jobReportId === job.id}">${state.jobReportId === job.id ? "Close" : "Report"}${job.reported_issue_count ? ` · ${job.reported_issue_count} issues` : ""}</button>${job.cancellable ? `<button class="button danger-subtle small" data-cancel-job="${job.id}" ${job.status === "cancelling" ? "disabled" : ""}>${job.status === "cancelling" ? "Stopping…" : "Stop"}</button>` : ""}</div></td></tr>`).join("")}</tbody></table></div>` : `<div class="empty-state"><div><h2>No jobs yet</h2><p>Library scans will appear here.</p></div></div>`;
   const reportHtml = report ? renderJobReport(report, issues) : "";
   const activityHtml = activity.length ? `<div class="section-heading"><div><h2>Activity</h2><p>Rename, delete, restore, and deployment history.</p></div></div><div class="table-wrap"><table><thead><tr><th>Action</th><th>Detail</th><th>Time</th></tr></thead><tbody>${activity.map((item) => `<tr><td>${escapeHtml(item.action)}</td><td class="name-cell">${escapeHtml(item.detail)}</td><td class="meta">${escapeHtml(item.created_at)} UTC</td></tr>`).join("")}</tbody></table></div>` : "";
   setViewHtml(jobsHtml + reportHtml + activityHtml);
@@ -2264,6 +2344,37 @@ function jobDuration(job) {
   return `${minutes}m ${seconds % 60}s`;
 }
 
+function formatElapsed(seconds) {
+  const value = Math.max(0, Math.round(Number(seconds) || 0));
+  if (value < 60) return `${value}s`;
+  const minutes = Math.floor(value / 60);
+  if (minutes < 60) return `${minutes}m ${value % 60}s`;
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+}
+
+function renderScanTelemetry(telemetry) {
+  if (!telemetry || typeof telemetry !== "object") return "";
+  const current = telemetry.current || {};
+  const platforms = Object.entries(telemetry.platforms || {})
+    .sort(([leftName, left], [rightName, right]) => {
+      if (leftName === current.platform) return -1;
+      if (rightName === current.platform) return 1;
+      return (right.hash_bytes || 0) - (left.hash_bytes || 0) || leftName.localeCompare(rightName);
+    });
+  const hashPercent = telemetry.bytes_to_hash
+    ? Math.min(100, (telemetry.bytes_read || 0) * 100 / telemetry.bytes_to_hash)
+    : 100;
+  const currentRate = current.mode === "hashing" && current.elapsed_seconds
+    ? (current.bytes_read || 0) / current.elapsed_seconds
+    : 0;
+  const currentFile = current.relpath
+    ? `<div class="scan-current"><span>${current.mode === "hashing" ? "Reading now" : current.mode === "cached" ? "Cache hit" : "Cataloging metadata"}</span><code title="${escapeHtml(current.relpath)}">${escapeHtml(current.relpath)}</code><small>${formatBytes(current.bytes_read || 0)} of ${formatBytes(current.size || 0)}${current.mode === "hashing" ? ` at ${formatBytes(currentRate)}/s` : ""}</small></div>`
+    : "";
+  const platformRows = platforms.map(([name, item]) => `<tr${name === current.platform ? ' class="selected-row"' : ""}><td><strong>${escapeHtml(name)}</strong></td><td class="meta">${(item.processed_files || 0).toLocaleString()} / ${(item.total_files || 0).toLocaleString()}</td><td class="meta">${(item.processed_hash_files || 0).toLocaleString()} / ${(item.hash_files || 0).toLocaleString()}</td><td class="meta">${(item.processed_cached_files || 0).toLocaleString()} / ${(item.cached_files || 0).toLocaleString()}</td><td class="meta">${(item.processed_metadata_files || 0).toLocaleString()} / ${(item.metadata_files || 0).toLocaleString()}</td><td class="meta">${formatBytes(item.read_bytes || 0)} / ${formatBytes(item.hash_bytes || 0)}</td></tr>`).join("");
+  const slowRows = (telemetry.slow_files || []).map((item) => `<tr><td class="name-cell"><code title="${escapeHtml(item.relpath)}">${escapeHtml(item.relpath)}</code></td><td>${escapeHtml(item.platform)}</td><td class="meta">${formatBytes(item.size)}</td><td class="meta">${formatElapsed(item.seconds)}</td><td class="meta">${formatBytes(item.rate)}/s</td></tr>`).join("");
+  return `<div class="report-section scan-diagnostics"><div class="report-section-head"><div><h3>Live scan diagnostics</h3><p>Metadata-only files are walked and inspected, but their contents are not read. Physical read shows the actual hashing I/O.</p></div></div><dl class="report-grid scan-facts"><div><dt>Physical read</dt><dd>${formatBytes(telemetry.bytes_read || 0)} / ${formatBytes(telemetry.bytes_to_hash || 0)}</dd></div><div><dt>Current throughput</dt><dd>${currentRate ? `${formatBytes(currentRate)}/s` : "Not reading"}</dd></div><div><dt>Fully hashed</dt><dd>${(telemetry.hashed_files || 0).toLocaleString()} files</dd></div><div><dt>Cache hits</dt><dd>${(telemetry.cached_files || 0).toLocaleString()} files, ${formatBytes(telemetry.cached_bytes || 0)}</dd></div><div><dt>Metadata-only</dt><dd>${(telemetry.metadata_files || 0).toLocaleString()} files, ${formatBytes(telemetry.metadata_bytes || 0)}</dd></div></dl><div class="scan-read-progress" aria-label="${Math.round(hashPercent)} percent of required file contents read"><i style="width:${hashPercent}%"></i></div>${currentFile}${platformRows ? `<div class="table-wrap scan-platforms"><table><thead><tr><th>Platform</th><th>Files processed</th><th>Full hash</th><th>Cache</th><th>Metadata-only</th><th>Physical read</th></tr></thead><tbody>${platformRows}</tbody></table></div>` : ""}${slowRows ? `<details class="scan-slowest"><summary>Slowest completed reads</summary><div class="table-wrap"><table><thead><tr><th>File</th><th>Platform</th><th>Size</th><th>Time</th><th>Rate</th></tr></thead><tbody>${slowRows}</tbody></table></div></details>` : ""}</div>`;
+}
+
 function renderJobReport(job, issues) {
   const resultEntries = job.result && typeof job.result === "object"
     ? Object.entries(job.result).filter(([key]) => key !== "skipped" && key !== "skipped_count")
@@ -2280,7 +2391,8 @@ function renderJobReport(job, issues) {
   const scanIssues = job.kind === "scan"
     ? `<div class="report-section"><div class="report-section-head"><div><h3>Unreadable files</h3><p>${issues.reported_total ? `${issues.reported_total.toLocaleString()} reported by this scan.` : "Paths and reasons captured during scanning."}</p></div></div>${captureWarning}${issueRows}</div>`
     : "";
-  return `<section class="job-report" aria-labelledby="job-report-title"><div class="section-heading report-heading"><div><h2 id="job-report-title">Job #${job.id} report</h2><p>${escapeHtml(job.detail)}</p></div><span class="badge ${job.status === "failed" ? "exact" : job.status === "complete" ? "unique" : job.status === "cancelled" ? "cancelled" : "possible"}">${escapeHtml(job.status)}</span></div><dl class="report-grid report-summary"><div><dt>Job type</dt><dd>${escapeHtml(job.kind)}</dd></div><div><dt>Started</dt><dd>${escapeHtml(job.created_at)} UTC</dd></div><div><dt>Finished</dt><dd>${escapeHtml(job.completed_at || "In progress")}${job.completed_at ? " UTC" : ""}</dd></div><div><dt>Duration</dt><dd>${escapeHtml(jobDuration(job))}</dd></div><div><dt>Progress</dt><dd>${job.progress}%</dd></div></dl><div class="report-section"><h3>Result</h3>${results}</div>${scanIssues}</section>`;
+  const scanTelemetry = job.kind === "scan" ? renderScanTelemetry(job.telemetry) : "";
+  return `<section class="job-report" aria-labelledby="job-report-title"><div class="section-heading report-heading"><div><h2 id="job-report-title">Job #${job.id} report</h2><p>${escapeHtml(job.detail)}</p></div><span class="badge ${job.status === "failed" ? "exact" : job.status === "complete" ? "unique" : job.status === "cancelled" ? "cancelled" : "possible"}">${escapeHtml(job.status)}</span></div><dl class="report-grid report-summary"><div><dt>Job type</dt><dd>${escapeHtml(job.kind)}</dd></div><div><dt>Started</dt><dd>${escapeHtml(job.created_at)} UTC</dd></div><div><dt>Finished</dt><dd>${escapeHtml(job.completed_at || "In progress")}${job.completed_at ? " UTC" : ""}</dd></div><div><dt>Duration</dt><dd>${escapeHtml(jobDuration(job))}</dd></div><div><dt>Progress</dt><dd>${job.progress}%</dd></div></dl>${scanTelemetry}<div class="report-section"><h3>Result</h3>${results}</div>${scanIssues}</section>`;
 }
 
 async function cancelJob(jobId, button = stopJobButton) {
