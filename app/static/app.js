@@ -1014,6 +1014,7 @@ async function renderOverview() {
   const missingArtwork = Math.max(0, collection.games - data.artwork.games);
   if (missingArtwork) attention.push({ view: "library", label: `${missingArtwork.toLocaleString()} games without artwork`, detail: data.screenscraper_configured ? "Select games to scrape missing assets" : "ScreenScraper credentials are not configured", tone: "neutral" });
   if (!data.cleanup.naming_catalogs) attention.push({ view: "naming", label: "No naming catalogs imported", detail: "Import a DAT for canonical filename matches", tone: "neutral" });
+  if (data.syncthing.configured && !data.syncthing.available && !data.syncthing.checking) attention.push({ view: "overview", label: "Syncthing status unavailable", detail: data.syncthing.error || "ROMmates could not reach Syncthing", tone: "warning" });
   const attentionHtml = attention.length
     ? `<div class="attention-list">${attention.slice(0, 7).map((item) => `<button class="attention-row ${item.tone}" data-dashboard-view="${item.view}" ${item.duplicate ? `data-dashboard-duplicate="${item.duplicate}"` : ""} ${item.job ? `data-dashboard-job="${item.job}"` : ""} ${item.saveTab ? `data-dashboard-save-tab="${item.saveTab}"` : ""}><span class="attention-mark" aria-hidden="true"></span><span><strong>${escapeHtml(item.label)}</strong><small>${escapeHtml(item.detail)}</small></span><span aria-hidden="true">→</span></button>`).join("")}</div>`
     : '<div class="dashboard-empty"><strong>Nothing needs immediate review</strong><span>Scans, devices, saves, and cleanup queues are current.</span></div>';
@@ -1024,6 +1025,21 @@ async function renderOverview() {
         return `<tr><td><button class="text-button" data-dashboard-view="devices" data-dashboard-device="${device.id}">${escapeHtml(device.name)}</button></td><td>${device.selected_games.toLocaleString()}</td><td>${device.deployed_games.toLocaleString()}</td><td>${pending ? `<span class="dashboard-pending">+${device.additions} / −${device.removals}</span>` : "0"}</td><td>${pending ? '<span class="badge possible">Needs apply</span>' : '<span class="badge unique">Applied</span>'}</td></tr>`;
       }).join("")}</tbody></table></div>`
     : '<div class="dashboard-empty compact"><strong>No devices discovered</strong><span>Create a device ROM directory, then scan.</span></div>';
+
+  const syncthingHtml = !data.syncthing.configured
+    ? `<div class="dashboard-empty compact"><strong>Syncthing is not connected</strong><span>${escapeHtml(data.syncthing.error || "Configure the Syncthing API URL and key to see device presence.")}</span></div>`
+    : data.syncthing.checking
+      ? '<div class="syncthing-devices syncthing-loading" aria-label="Checking Syncthing device status"><div class="syncthing-device"><span class="skeleton-dot"></span><div><span class="skeleton-line wide"></span><span class="skeleton-line"></span></div></div><div class="syncthing-device"><span class="skeleton-dot"></span><div><span class="skeleton-line wide"></span><span class="skeleton-line"></span></div></div></div>'
+    : !data.syncthing.available
+      ? `<div class="dashboard-empty compact"><strong>Syncthing is unavailable</strong><span>${escapeHtml(data.syncthing.error || "Check the configured API URL and key.")}</span></div>`
+      : data.syncthing.devices.length
+        ? `<div class="syncthing-devices">${data.syncthing.devices.map((device) => {
+            const detail = device.connected
+              ? [device.connection_type, device.address, device.client_version].filter(Boolean).join(" · ")
+              : device.paused ? "Paused" : device.last_seen ? `Last observed ${dashboardDate(device.last_seen)}` : "Not currently connected";
+            return `<div class="syncthing-device"><span class="presence-dot ${device.connected ? "online" : "offline"}" aria-hidden="true"></span><div><strong>${escapeHtml(device.name)}</strong><small>${escapeHtml(detail)}</small></div><span class="badge ${device.connected ? "unique" : "cancelled"}">${device.connected ? "Online" : "Offline"}</span></div>`;
+          }).join("")}</div>`
+        : '<div class="dashboard-empty compact"><strong>No remote Syncthing devices</strong><span>Add a device to the Syncthing node, then refresh.</span></div>';
 
   const savesUpdated = data.saves.latest_mtime_ns
     ? dashboardDate(new Date(data.saves.latest_mtime_ns / 1e6).toISOString())
@@ -1042,6 +1058,7 @@ async function renderOverview() {
   <div class="dashboard-grid">
     <section class="dashboard-panel platform-panel"><div class="dashboard-panel-head"><div><h2>Collection by platform</h2><p>Largest indexed sets by game count.</p></div><button class="text-button" data-dashboard-view="library">Open library</button></div><div class="platform-list">${platformRows}${otherSummary}</div></section>
     <section class="dashboard-panel attention-panel"><div class="dashboard-panel-head"><div><h2>Needs attention</h2><p>Work that can change or improve the collection.</p></div></div>${attentionHtml}</section>
+    <section class="dashboard-panel syncthing-panel"><div class="dashboard-panel-head"><div><h2>Syncthing devices</h2><p>${data.syncthing.available ? `${data.syncthing.online.toLocaleString()} of ${data.syncthing.total.toLocaleString()} online${data.syncthing.checked_at ? ` · checked ${dashboardDate(data.syncthing.checked_at)}` : ""}` : "Live connection status from the NUC."}</p></div><button class="text-button" data-refresh-syncthing ${data.syncthing.configured ? "" : "disabled"}>Refresh</button></div>${syncthingHtml}</section>
     <section class="dashboard-panel device-panel"><div class="dashboard-panel-head"><div><h2>Device sync</h2><p>Desired games compared with managed deployments.</p></div><button class="text-button" data-dashboard-view="devices">Manage devices</button></div>${devicesHtml}</section>
     <section class="dashboard-panel coverage-panel"><div class="dashboard-panel-head"><div><h2>Coverage</h2><p>Metadata and recovery readiness.</p></div></div>${coverageBar(data.artwork.games, collection.games, "Games with artwork")}${coverageBar(data.artwork.covers, collection.games, "Games with cover art")}<div class="coverage-facts"><div><span>Cached artwork</span><strong>${data.artwork.assets.toLocaleString()} assets · ${formatBytes(data.artwork.bytes)}</strong></div><div><span>Save snapshots</span><strong>${data.saves.snapshots.toLocaleString()}${data.saves.latest_snapshot ? ` · latest #${data.saves.latest_snapshot.id}` : ""}</strong></div></div></section>
     <section class="dashboard-panel saves-panel"><div class="dashboard-panel-head"><div><h2>RetroArch cloud</h2><p>${data.saves.error ? escapeHtml(data.saves.error) : "Live files visible to ROMmates."}</p></div><button class="text-button" data-dashboard-view="saves">Open saves</button></div><dl class="save-facts"><div><dt>Battery saves</dt><dd>${data.saves.save_files.toLocaleString()}</dd></div><div><dt>Save states</dt><dd>${data.saves.state_files.toLocaleString()}</dd></div><div><dt>All cloud files</dt><dd>${data.saves.files.toLocaleString()} · ${formatBytes(data.saves.bytes)}</dd></div><div><dt>Last changed</dt><dd>${escapeHtml(savesUpdated)}</dd></div></dl></section>
@@ -1057,6 +1074,21 @@ async function renderOverview() {
       saveTab: button.dataset.dashboardSaveTab || null,
     });
   }));
+  view.querySelector("[data-refresh-syncthing]")?.addEventListener("click", async (event) => {
+    event.currentTarget.disabled = true;
+    try {
+      await api("/api/syncthing/status?refresh=true");
+      await renderOverview();
+    } catch (error) {
+      toast(error.message, "error");
+      event.currentTarget.disabled = false;
+    }
+  });
+  if (data.syncthing.checking || data.syncthing.stale) {
+    api("/api/syncthing/status?refresh=true")
+      .then(() => { if (state.currentView === "overview") return renderOverview(); })
+      .catch(() => { /* The refreshed dashboard will show the sanitized connection error. */ });
+  }
 }
 
 function artworkBulkPanel(data) {

@@ -23,6 +23,7 @@ from .naming import NamingService
 from .rankings import RankingService
 from .saves import SaveSnapshotService
 from .screenscraper import ScreenScraperService
+from .syncthing import SyncthingService
 from .transfers import MAX_MANIFEST_BYTES, TransferError, TransferService
 
 
@@ -63,6 +64,7 @@ naming = NamingService(db, settings.library_root, library, saves)
 screenscraper = ScreenScraperService(settings, db)
 ranking_service = RankingService(settings, db)
 transfers = TransferService(settings, db, library)
+syncthing = SyncthingService(settings)
 job_cancellations: dict[int, threading.Event] = {}
 job_cancellations_lock = threading.Lock()
 library_job_lock = threading.Lock()
@@ -695,7 +697,13 @@ def status():
         },
         "screenscraper": screenscraper.status(),
         "rawg": {"configured": ranking_service.configured},
+        "syncthing": {"configured": syncthing.configured},
     }
+
+
+@app.get("/api/syncthing/status")
+def syncthing_status(refresh: bool = False):
+    return syncthing.status(refresh=refresh)
 
 
 @app.get("/api/dashboard")
@@ -791,6 +799,7 @@ def dashboard():
         },
         "last_scan": last_scan,
         "recent_jobs": recent_jobs,
+        "syncthing": syncthing.peek(),
     }
 
 

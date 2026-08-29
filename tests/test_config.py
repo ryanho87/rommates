@@ -24,6 +24,9 @@ class ConfigurationCompatibilityTests(unittest.TestCase):
                 "ROMMATES_UPLOAD_ROOT": "/srv/rommates-uploads",
                 "ROMMATES_UPLOAD_MAX_BYTES": "2048",
                 "RAWG_API_KEY": "fallback-key",
+                "ROMMATES_SYNCTHING_URL": "http://syncthing:8384/",
+                "ROMMATES_SYNCTHING_API_KEY": "syncthing-key",
+                "ROMMATES_SYNCTHING_TIMEOUT_SECONDS": "1.5",
             },
             clear=True,
         ):
@@ -37,6 +40,16 @@ class ConfigurationCompatibilityTests(unittest.TestCase):
         self.assertEqual(settings.rawg_api_key, "prefixed-key")
         self.assertEqual(str(settings.upload_root), "/srv/rommates-uploads")
         self.assertEqual(settings.upload_max_bytes, 2048)
+        self.assertEqual(settings.syncthing_url, "http://syncthing:8384")
+        self.assertEqual(settings.syncthing_api_key, "syncthing-key")
+        self.assertEqual(settings.syncthing_timeout_seconds, 1.5)
+
+    def test_invalid_syncthing_timeout_uses_default(self):
+        with patch.dict(
+            os.environ, {"ROMMATES_SYNCTHING_TIMEOUT_SECONDS": "not-a-number"}, clear=True
+        ):
+            settings = Settings.from_env()
+        self.assertEqual(settings.syncthing_timeout_seconds, 2.0)
 
     def test_rawg_api_key_alias_is_supported(self):
         with patch.dict(os.environ, {"RAWG_API_KEY": "rawg-key"}, clear=True):

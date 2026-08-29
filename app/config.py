@@ -44,6 +44,14 @@ def _int_env(name: str, default: int, minimum: int, maximum: int) -> int:
     return min(max(value, minimum), maximum)
 
 
+def _number_env(name: str, default: float, minimum: float, maximum: float) -> float:
+    try:
+        value = float(os.getenv(name, str(default)).strip())
+    except ValueError:
+        return default
+    return min(max(value, minimum), maximum)
+
+
 @dataclass(frozen=True)
 class Settings:
     library_root: Path
@@ -89,6 +97,10 @@ class Settings:
     screenscraper_password: str = ""
     screenscraper_system_map: dict[str, int] | None = None
     rawg_api_key: str = ""
+    syncthing_url: str = ""
+    syncthing_api_key: str = ""
+    syncthing_timeout_seconds: float = 2.0
+    syncthing_cache_seconds: int = 10
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -175,6 +187,14 @@ class Settings:
             rawg_api_key=(
                 os.getenv("ROMMATES_RAWG_API_KEY") or os.getenv("RAWG_API_KEY", "")
             ).strip(),
+            syncthing_url=os.getenv("ROMMATES_SYNCTHING_URL", "").strip().rstrip("/"),
+            syncthing_api_key=os.getenv("ROMMATES_SYNCTHING_API_KEY", "").strip(),
+            syncthing_timeout_seconds=_number_env(
+                "ROMMATES_SYNCTHING_TIMEOUT_SECONDS", 2.0, 0.25, 10.0
+            ),
+            syncthing_cache_seconds=_int_env(
+                "ROMMATES_SYNCTHING_CACHE_SECONDS", 10, 1, 300
+            ),
             screenscraper_user=os.getenv("ROMMATES_SCREENSCRAPER_USER", "").strip(),
             screenscraper_password=os.getenv(
                 "ROMMATES_SCREENSCRAPER_PASSWORD", ""

@@ -370,7 +370,17 @@ input[type="checkbox"] { width: 15px; height: 15px; margin: 0; accent-color: var
 .attention-row.warning .attention-mark { background: var(--warning); }
 .attention-row.accent .attention-mark { background: var(--accent); }
 
-.device-panel, .activity-panel { grid-column: 1 / -1; }
+.syncthing-panel, .device-panel, .activity-panel { grid-column: 1 / -1; }
+.syncthing-devices { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+.syncthing-device { display: grid; grid-template-columns: 9px minmax(0, 1fr) auto; align-items: center; gap: 10px; min-height: 58px; padding: 9px 13px; border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+.syncthing-device strong, .syncthing-device small { display: block; }
+.syncthing-device small { margin-top: 2px; overflow: hidden; color: var(--text-faint); font-size: 0.68rem; text-overflow: ellipsis; white-space: nowrap; }
+.presence-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-faint); box-shadow: 0 0 0 3px color-mix(in oklch, var(--text-faint), transparent 85%); }
+.presence-dot.online { background: var(--success); box-shadow: 0 0 0 3px var(--success-soft); }
+.skeleton-dot, .skeleton-line { display: block; border-radius: 99px; background: var(--surface-raised); }
+.skeleton-dot { width: 8px; height: 8px; }
+.skeleton-line { width: min(190px, 65%); height: 7px; margin-top: 7px; }
+.skeleton-line.wide { width: min(130px, 45%); height: 10px; margin-top: 0; }
 .dashboard-table { overflow-x: auto; }
 .dashboard-table th { position: static; }
 .dashboard-table td:first-child { font-weight: 590; }
@@ -809,7 +819,7 @@ dialog form { padding: 18px; }
   .overview-strip > div:nth-last-child(-n+2) { border-bottom: 0; }
   .overview-strip .scan-summary { grid-column: 1 / -1; border-top: 1px solid var(--border); }
   .dashboard-grid { grid-template-columns: 1fr; }
-  .device-panel, .activity-panel { grid-column: auto; }
+  .syncthing-panel, .device-panel, .activity-panel { grid-column: auto; }
   .artwork-bulk { grid-template-columns: 1fr; }
   .artwork-bulk-actions { justify-content: flex-start; flex-wrap: wrap; }
   .artwork-bulk-progress { grid-template-columns: 1fr; }

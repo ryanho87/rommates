@@ -117,6 +117,15 @@ class ApiIntegrationTests(unittest.TestCase):
 
         self.assertEqual(self.client.get("/not-a-rommates-page").status_code, 404)
 
+    def test_syncthing_status_is_private_and_explains_unconfigured_state(self):
+        self.assertEqual(self.client.get("/api/syncthing/status").status_code, 401)
+        response = self.client.get("/api/syncthing/status", headers=self.headers)
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertFalse(payload["configured"])
+        self.assertFalse(payload["available"])
+        self.assertEqual(payload["devices"], [])
+
     def test_upload_resumes_finalizes_and_downloads_without_bearer_token(self):
         manifest = {
             "platform": "gba",

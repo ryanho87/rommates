@@ -155,6 +155,28 @@ Add these patterns to the Syncthing folder ignore list as another layer of prote
 *.rommates-link
 ```
 
+## Syncthing device presence
+
+ROMmates can show the live connection state of every device configured on the NUC's
+Syncthing instance. The integration is read-only and cached: ROMmates requests fixed status
+endpoints, never sends Syncthing configuration changes, and never exposes the Syncthing API
+key to the browser.
+
+Create or copy an API key from **Syncthing > Actions > Settings > General > API Key**, then
+set these values in ROMmates' `.env`:
+
+```dotenv
+ROMMATES_SYNCTHING_URL=http://syncthing:8384
+ROMMATES_SYNCTHING_API_KEY=replace-with-your-syncthing-api-key
+```
+
+The URL is resolved inside the ROMmates container. If Syncthing is defined in a different
+Compose project, attach both services to a shared Docker network so the `syncthing` hostname
+resolves, or use another URL that is reachable from the ROMmates container. The API key is
+passed to the container by `compose.yaml`; recreating the container is required after changing
+it. The Overview dashboard then reports online/offline state, connection type, address, client
+version, paused devices, and the last recorded connection time.
+
 ## How device reconciliation works
 
 Selections represent the desired managed set for a device. Each device can use independent
@@ -438,6 +460,10 @@ Duplicate and ROM trash confirmations list matching save filenames that would be
 | `ROMMATES_FOLDER_BUNDLE_PLATFORMS` | `ps3,wiiu` | Comma-separated platforms where each immediate child directory is one game bundle |
 | `ROMMATES_HASH_MAX_BYTES` | `536870912` (512 MiB) | Largest new or changed file SHA-256 hashes during a normal scan. Larger files use a structural fingerprint; `0` hashes every file |
 | `ROMMATES_RAWG_API_KEY` / `RAWG_API_KEY` | empty | Optional RAWG key for cached per-platform Top 100 Metacritic coverage; the prefixed name takes precedence |
+| `ROMMATES_SYNCTHING_URL` | empty | Optional base URL for the NUC Syncthing API as reached from the ROMmates container |
+| `ROMMATES_SYNCTHING_API_KEY` | empty | Syncthing API key used only by the ROMmates backend for read-only status requests |
+| `ROMMATES_SYNCTHING_TIMEOUT_SECONDS` | `2` | Maximum wait for a Syncthing status request, from 0.25 to 10 seconds |
+| `ROMMATES_SYNCTHING_CACHE_SECONDS` | `10` | How long ROMmates reuses device presence results before querying Syncthing again |
 
 ## Local development
 
