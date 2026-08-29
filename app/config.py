@@ -9,10 +9,10 @@ from pathlib import Path
 DEFAULT_EXTENSIONS = frozenset(
     {
         ".7z", ".a26", ".a52", ".a78", ".bin", ".chd", ".col", ".cue",
-        ".d64", ".fds", ".gb", ".gba", ".gbc", ".gg", ".iso", ".lnx",
+        ".3ds", ".cci", ".d64", ".fds", ".gb", ".gba", ".gbc", ".gg", ".iso", ".lnx",
         ".gdi", ".m3u", ".md", ".n64", ".nds", ".nes", ".ngc", ".pbp", ".pce",
-        ".rvz", ".sfc", ".sg", ".smc", ".sms", ".swc", ".v64", ".wad",
-        ".wbfs", ".ws", ".wsc", ".z64", ".zip",
+        ".nsp", ".rvz", ".sfc", ".sg", ".smc", ".sms", ".swc", ".v64", ".vpk", ".wad",
+        ".wbfs", ".ws", ".wsc", ".xci", ".z64", ".zip",
     }
 )
 

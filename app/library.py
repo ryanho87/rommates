@@ -22,6 +22,7 @@ from .esde import esde_device_relpath
 
 COPY_SUFFIX = ".rommates-copy"
 LEGACY_COPY_SUFFIX = ".rommanager-copy"
+LINK_SUFFIX = ".rommates-link"
 DEVICE_INVENTORY_CACHE_SECONDS = 5.0
 
 CUE_FILE_RE = re.compile(
@@ -31,6 +32,11 @@ CUE_FILE_RE = re.compile(
 GDI_FILE_RE = re.compile(r'^(\s*\d+\s+\d+\s+\d+\s+\d+\s+)(?:"([^"]+)"|(\S+))(\s+\d+.*)$')
 DESCRIPTOR_EXTENSIONS = frozenset({".cue", ".gdi", ".m3u"})
 DISC_FOLDER_PLATFORMS = frozenset({"dreamcast", "psx"})
+SWITCH_SUPPORT_DIRECTORIES = frozenset(
+    {"update", "updates", "dlc", "cheat", "cheats", "mod", "mods", "firmware"}
+)
+SWITCH_TITLE_ID_RE = re.compile(r"[\[(]([0-9a-f]{16})[\])]", re.IGNORECASE)
+SWITCH_UPDATE_MARKER_RE = re.compile(r"(?:^|[\s._\-\[(])(update|upd)(?:$|[\s._\-\])])", re.IGNORECASE)
 TAG_RE = re.compile(r"\s*[\(\[].*?[\)\]]")
 NON_WORD_RE = re.compile(r"[^a-z0-9]+")
 PACK_NUMBER_RE = re.compile(r"^\s*(?:\[\d{1,4}\]|\d{1,4}[.)])\s*")
@@ -79,6 +85,20 @@ def _format_bytes(value: int) -> str:
             return f"{size:.0f} {unit}" if unit in {"B", "KB"} else f"{size:.1f} {unit}"
         size /= 1024
     return f"{value} B"
+
+
+def _is_switch_support_path(path: Path, platform_dir: Path) -> bool:
+    """Keep emulator support content and update packages out of the game catalog."""
+    try:
+        relative = path.relative_to(platform_dir)
+    except ValueError:
+        return False
+    if any(part.casefold() in SWITCH_SUPPORT_DIRECTORIES for part in relative.parts[:-1]):
+        return True
+    name = path.name
+    if SWITCH_UPDATE_MARKER_RE.search(name):
+        return True
+    return any(match.group(1).casefold().endswith("800") for match in SWITCH_TITLE_ID_RE.finditer(name))
 
 
 @dataclass
@@ -359,6 +379,8 @@ class LibraryService:
                     relative_parts = ()
                 if any(part.startswith(".rommates-upload-") for part in relative_parts):
                     continue
+                if platform_dir.name.casefold() == "switch" and _is_switch_support_path(path, platform_dir):
+                    continue
                 platform_paths.append(path)
             claimed: set[Path] = set()
             bundle_paths: dict[Path, tuple[Path, ...]] = {}
@@ -369,6 +391,10 @@ class LibraryService:
                     (
                         path for path in platform_dir.iterdir()
                         if path.is_dir() and not path.name.startswith(".rommates-upload-")
+                        and not (
+                            platform_dir.name.casefold() == "switch"
+                            and _is_switch_support_path(path, platform_dir)
+                        )
                     ),
                     key=lambda path: path.name.casefold(),
                 ):
@@ -973,7 +999,8 @@ class LibraryService:
                     )
                 ]
                 deployments = [dict(row) for row in connection.execute(
-                    "SELECT d.path, dp.relpath FROM deployments dp JOIN devices d ON d.id=dp.device_id WHERE dp.game_id=?",
+                    "SELECT d.path,dp.relpath FROM deployments dp "
+                    "JOIN devices d ON d.id=dp.device_id WHERE dp.game_id=?",
                     (game_id,),
                 )]
             moved: list[tuple[Path, Path]] = []
@@ -1330,12 +1357,63 @@ class LibraryService:
                 )
         return len(valid_ids)
 
+    def set_device_deployment_mode(self, device_id: int, mode: str) -> None:
+        if mode not in {"copy", "hardlink"}:
+            raise LibraryError("Deployment mode must be copy or hardlink")
+        with self.db.write() as connection:
+            updated = connection.execute(
+                "UPDATE devices SET deployment_mode=? WHERE id=?", (mode, device_id)
+            ).rowcount
+        if not updated:
+            raise LibraryError("Device was not found")
+
     def _record_deployment(self, device_id: int, game_id: int, relpath: str) -> None:
         with self.db.write() as connection:
             connection.execute(
                 "INSERT OR IGNORE INTO deployments(device_id,game_id,relpath) VALUES(?,?,?)",
                 (device_id, game_id, relpath),
             )
+
+    def device_storage_summary(self, device_id: int) -> dict[str, int]:
+        """Inspect deployed files and report their current on-disk storage relationship."""
+        with self.db.connect() as connection:
+            device = connection.execute(
+                "SELECT path FROM devices WHERE id=?", (device_id,)
+            ).fetchone()
+            if not device:
+                raise LibraryError("Device was not found")
+            rows = connection.execute(
+                "SELECT dp.game_id,dp.relpath,gf.relpath AS source_relpath,"
+                "EXISTS(SELECT 1 FROM device_selections ds WHERE ds.device_id=dp.device_id "
+                "AND ds.game_id=dp.game_id) AS selected "
+                "FROM deployments dp LEFT JOIN game_files gf ON gf.game_id=dp.game_id "
+                "AND gf.device_relpath=dp.relpath WHERE dp.device_id=?",
+                (device_id,),
+            ).fetchall()
+        source_root = self.settings.library_root.resolve()
+        device_root = _inside(
+            self.settings.devices_root,
+            self.settings.devices_root / device["path"] / "roms",
+        )
+        summary = {"hardlinked": 0, "copied": 0, "missing": 0, "unknown": 0, "conversions": 0}
+        for row in rows:
+            if not row["source_relpath"]:
+                summary["unknown"] += 1
+                continue
+            source = _inside(source_root, source_root / row["source_relpath"])
+            target = _inside(device_root, device_root / row["relpath"])
+            try:
+                if not target.is_file() or not source.is_file():
+                    summary["missing"] += 1
+                elif os.path.samestat(source.stat(), target.stat()):
+                    summary["hardlinked"] += 1
+                else:
+                    summary["copied"] += 1
+                    if row["selected"]:
+                        summary["conversions"] += 1
+            except OSError:
+                summary["unknown"] += 1
+        return summary
 
     def _forget_deployment(self, device_id: int, game_id: int, relpath: str) -> None:
         with self.db.write() as connection:
@@ -1353,7 +1431,7 @@ class LibraryService:
                 if not device:
                     raise LibraryError("Device was not found")
                 selected = connection.execute(
-                    "SELECT g.id AS game_id,gf.relpath AS source_relpath,gf.device_relpath AS relpath FROM device_selections ds "
+                    "SELECT g.id AS game_id,gf.relpath AS source_relpath,gf.device_relpath AS relpath,gf.sha256 FROM device_selections ds "
                     "JOIN games g ON g.id=ds.game_id JOIN game_files gf ON gf.game_id=g.id "
                     "WHERE ds.device_id=? ORDER BY gf.relpath",
                     (device_id,),
@@ -1366,14 +1444,18 @@ class LibraryService:
                 self.settings.devices_root / device["path"] / "roms",
             )
             device_root.mkdir(parents=True, exist_ok=True)
-            desired = {(row["game_id"], row["relpath"]): row["source_relpath"] for row in selected}
+            desired = {
+                (row["game_id"], row["relpath"]): (row["source_relpath"], row["sha256"])
+                for row in selected
+            }
             existing = {(row["game_id"], row["relpath"]) for row in deployed}
-            copied = skipped = removed = metadata_removed = 0
+            mode = device["deployment_mode"] if "deployment_mode" in device.keys() else "copy"
+            copied = linked = converted = link_fallbacks = skipped = removed = metadata_removed = 0
             source_root = self.settings.library_root.resolve()
-            copy_plan: list[tuple[int, str, Path, Path]] = []
+            deploy_plan: list[tuple[int, str, Path, Path, bool]] = []
             required_bytes = 0
             target_owners: dict[str, tuple[int, str]] = {}
-            for (game_id, relpath), source_relpath in sorted(desired.items()):
+            for (game_id, relpath), (source_relpath, _) in sorted(desired.items()):
                 if cancel_check:
                     cancel_check()
                 owner = target_owners.get(relpath)
@@ -1387,28 +1469,75 @@ class LibraryService:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 source_stat = source.stat()
                 if target.exists():
+                    if not target.is_file():
+                        raise LibraryError(f"Device target is not a regular file: {relpath}")
                     target_stat = target.stat()
-                    if target_stat.st_size == source_stat.st_size and target_stat.st_mtime_ns == source_stat.st_mtime_ns:
+                    same_inode = os.path.samestat(source_stat, target_stat)
+                    if same_inode:
                         skipped += 1
+                        self._record_deployment(device_id, game_id, relpath)
                         continue
-                copy_plan.append((game_id, relpath, source, target))
-                required_bytes += source_stat.st_size
+                    content_matches = (
+                        target_stat.st_size == source_stat.st_size
+                        and target_stat.st_mtime_ns == source_stat.st_mtime_ns
+                    )
+                    if content_matches and mode == "copy":
+                        skipped += 1
+                        self._record_deployment(device_id, game_id, relpath)
+                        continue
+                    deploy_plan.append((game_id, relpath, source, target, content_matches))
+                    if mode == "copy":
+                        required_bytes += source_stat.st_size
+                    continue
+                deploy_plan.append((game_id, relpath, source, target, False))
+                if mode == "copy":
+                    required_bytes += source_stat.st_size
             free_bytes = shutil.disk_usage(device_root).free
-            if required_bytes > free_bytes:
+            if mode == "copy" and required_bytes > free_bytes:
                 raise LibraryError(
                     f"Device needs {required_bytes} bytes but only {free_bytes} bytes are available"
                 )
-            # Files already present and identical are still part of the managed set.
-            for game_id, relpath in sorted(set(desired) - {(g, r) for g, r, _, _ in copy_plan}):
-                if cancel_check:
-                    cancel_check()
-                self._record_deployment(device_id, game_id, relpath)
-            # Record every copy as it lands. Batching this until the end would leave
+            # Record every deployment as it lands. Batching this until the end would leave
             # files on the device that no deployment row claims, making them permanently
             # unmanaged if the job fails or the container stops partway through.
-            for game_id, relpath, source, target in copy_plan:
+            for game_id, relpath, source, target, existing_matches in deploy_plan:
                 if cancel_check:
                     cancel_check()
+                linked_file = False
+                if mode == "hardlink":
+                    link_temp = target.with_name(f".{target.name}{LINK_SUFFIX}")
+                    link_temp.unlink(missing_ok=True)
+                    try:
+                        os.link(source, link_temp, follow_symlinks=False)
+                        os.replace(link_temp, target)
+                        linked_file = True
+                    except OSError as exc:
+                        link_temp.unlink(missing_ok=True)
+                        if exc.errno not in {
+                            errno.EXDEV, errno.EPERM, errno.EACCES,
+                            getattr(errno, "EOPNOTSUPP", errno.ENOTSUP), errno.ENOSYS,
+                        }:
+                            raise
+                        link_fallbacks += 1
+                if linked_file:
+                    self._record_deployment(device_id, game_id, relpath)
+                    if existing_matches:
+                        converted += 1
+                    else:
+                        linked += 1
+                    continue
+                if existing_matches:
+                    # The requested hardlink was unavailable, but the existing copy is
+                    # already current. Keep it intact instead of rewriting it pointlessly.
+                    self._record_deployment(device_id, game_id, relpath)
+                    skipped += 1
+                    continue
+                source_size = source.stat().st_size
+                if source_size > shutil.disk_usage(device_root).free:
+                    raise LibraryError(
+                        f"Device needs {source_size} bytes but only "
+                        f"{shutil.disk_usage(device_root).free} bytes are available"
+                    )
                 temp = target.with_name(f".{target.name}{COPY_SUFFIX}")
                 try:
                     if cancel_check:
@@ -1433,18 +1562,26 @@ class LibraryService:
                     target.unlink()
                     removed += 1
                 self._forget_deployment(device_id, game_id, relpath)
-            for pattern in ("._*", ".DS_Store", f"*{COPY_SUFFIX}", f"*{LEGACY_COPY_SUFFIX}"):
+            for pattern in (
+                "._*", ".DS_Store", f"*{COPY_SUFFIX}", f"*{LEGACY_COPY_SUFFIX}", f"*{LINK_SUFFIX}"
+            ):
                 for metadata in device_root.rglob(pattern):
                     if cancel_check:
                         cancel_check()
                     if metadata.is_file():
                         metadata.unlink()
                         metadata_removed += 1
-            detail = f"Applied {device['name']}: {copied} copied, {removed} removed"
+            detail = (
+                f"Applied {device['name']}: {linked} linked, {converted} converted, "
+                f"{copied} copied, {removed} removed"
+            )
             self._device_inventory_cache.pop(device_id, None)
             self.db.activity("device_apply", detail)
             return {
                 "copied": copied,
+                "linked": linked,
+                "converted": converted,
+                "link_fallbacks": link_fallbacks,
                 "unchanged": skipped,
                 "removed": removed,
                 "metadata_removed": metadata_removed,

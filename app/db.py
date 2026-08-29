@@ -167,6 +167,7 @@ CREATE TABLE IF NOT EXISTS devices (
     id INTEGER PRIMARY KEY,
     name TEXT NOT NULL UNIQUE,
     path TEXT NOT NULL UNIQUE,
+    deployment_mode TEXT NOT NULL DEFAULT 'copy' CHECK(deployment_mode IN ('copy','hardlink')),
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -364,6 +365,14 @@ class Database:
             connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(8)")
             connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(9)")
             connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(10)")
+            device_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(devices)")
+            }
+            if "deployment_mode" not in device_columns:
+                connection.execute(
+                    "ALTER TABLE devices ADD COLUMN deployment_mode TEXT NOT NULL DEFAULT 'copy'"
+                )
+            connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(11)")
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:

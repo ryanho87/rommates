@@ -131,7 +131,8 @@ def job_result_detail(kind: str, result: object, fallback: str) -> str:
         )
     if kind == "device_apply":
         return (
-            f"Copied {result.get('copied', 0)}, removed {result.get('removed', 0)}, "
+            f"Linked {result.get('linked', 0)}, converted {result.get('converted', 0)}, "
+            f"copied {result.get('copied', 0)}, removed {result.get('removed', 0)}, "
             f"left {result.get('unchanged', 0)} unchanged"
         )
     if kind == "save_snapshot":
@@ -376,6 +377,10 @@ class SelectionRequest(BaseModel):
 class BulkSelectionRequest(BaseModel):
     game_ids: list[int] = Field(max_length=1000)
     selected: bool
+
+
+class DeviceDeploymentModeRequest(BaseModel):
+    mode: str = Field(pattern="^(copy|hardlink)$")
 
 
 class DatImportRequest(BaseModel):
@@ -1242,6 +1247,12 @@ def update_selections(device_id: int, payload: BulkSelectionRequest):
     return {"selected": payload.selected, "updated": updated}
 
 
+@app.put("/api/devices/{device_id}/deployment-mode")
+def update_device_deployment_mode(device_id: int, payload: DeviceDeploymentModeRequest):
+    library.set_device_deployment_mode(device_id, payload.mode)
+    return {"mode": payload.mode}
+
+
 @app.get("/api/devices/{device_id}/preview")
 def device_preview(device_id: int):
     with db.connect() as connection:
@@ -1263,7 +1274,19 @@ def device_preview(device_id: int):
             "AND NOT EXISTS(SELECT 1 FROM device_selections ds WHERE ds.device_id=dp.device_id AND ds.game_id=dp.game_id)",
             (device_id,),
         ).fetchone()["count"]
-    return {"device": dict(device), "games": desired["games"], "files": desired["files"], "additions": additions, "removals": removals}
+    storage = library.device_storage_summary(device_id)
+    return {
+        "device": dict(device),
+        "games": desired["games"],
+        "files": desired["files"],
+        "additions": additions,
+        "removals": removals,
+        "conversions": storage["conversions"] if device["deployment_mode"] == "hardlink" else 0,
+        "hardlinked": storage["hardlinked"],
+        "copied": storage["copied"],
+        "missing": storage["missing"],
+        "unknown": storage["unknown"],
+    }
 
 
 @app.post("/api/devices/{device_id}/apply", status_code=202)

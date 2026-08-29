@@ -29,6 +29,8 @@ The MVP supports:
 - Normalized-filename possible duplicate review
 - Bundle-aware `.cue`, `.gdi`, and `.m3u` descriptor scanning, including unquoted GDI track filenames with spaces
 - Complete folder bundles for directory-based platforms such as PS3
+- Native `.3ds`, `.cci`, `.nsp`, `.xci`, and `.vpk` discovery
+- Switch base-game indexing that excludes update title IDs and support trees such as updates, DLC, cheats, and mods
 - Safe bundle rename with descriptor reference rewriting
 - Reviewable naming suggestions from XML DAT catalogs and conservative filename cleanup
 - Confidence filters, collision checks, editable proposals, and bulk bundle renaming
@@ -149,13 +151,17 @@ Add these patterns to the Syncthing folder ignore list as another layer of prote
 .DS_Store
 *.rommates-copy
 *.rommanager-copy
+*.rommates-link
 ```
 
 ## How device reconciliation works
 
-Selections represent the desired managed set for a device. Applying changes:
+Selections represent the desired managed set for a device. Each device can use independent
+copies or prefer hardlinks. Applying changes:
 
-1. Copies missing or changed files from `/emulation/roms` to `/emulation/devices/{device}/roms`.
+1. Deploys missing or changed files from `/emulation/roms` to `/emulation/devices/{device}/roms`.
+   Hardlink-preferred devices use a zero-additional-storage hardlink when the source and
+   target are on the same underlying filesystem, with a safe copy fallback.
 2. Removes previously managed files whose games were unselected.
 3. Leaves unrelated, unmanaged files alone.
 4. Removes Finder metadata and interrupted ROMmates temp files from the target device ROM tree.
@@ -165,7 +171,25 @@ human-readable library folders to ES-DE's canonical, case-sensitive paths (for e
 `Nintendo Game Boy` to `gb` and `PlayStation` to `psx`) and preserves every nested bundle
 path below them. Unknown or custom platform folders are preserved instead of guessed.
 
-Each copy is recorded as it lands, so an apply that fails or is interrupted partway leaves every file it already wrote under management. Re-running the apply finishes the job, and unselecting a game still removes what was copied.
+Each deployment is recorded as it lands, so an apply that fails or is interrupted partway leaves every file it already wrote under management. That record is an ownership boundary—not a cached claim that a file is a copy or hardlink. ROMmates derives the storage relationship from the source and destination inodes whenever it renders the device preview. Re-running the apply finishes the job, and unselecting a game still removes what was deployed.
+
+Within `roms/switch`, packages in `update`, `updates`, `dlc`, `cheats`, `mods`, or
+`firmware` trees are deliberately excluded from the game catalog. Root-level packages
+whose Nintendo title ID ends in `800`, plus packages explicitly named `Update` or `UPD`,
+are also treated as support content. Base `.nsp` and `.xci` packages remain selectable.
+
+Changing a device from **Independent copies** to **Hardlinks preferred** makes the next
+apply atomically replace eligible managed copies with hardlinks. The filename Syncthing
+sees does not change. Removing the device entry only unlinks that entry; the canonical ROM
+remains. ROMmates treats ROM content as immutable because permissions, timestamps, and
+in-place writes are shared by every hardlink to the same inode.
+
+For mergerfs pools, hardlinks require the device/platform directory to exist on the same
+underlying branch as the canonical ROM. Configure the mergerfs mount with `func.mkdir=all`
+and mirror existing `/devices/{device}/roms/{platform}` directories across the branches
+once before converting. ROMmates falls back to an independent copy when the kernel returns
+`EXDEV` or otherwise rejects a hardlink, so enabling the preference is safe before every
+directory has been prepared.
 
 Device apply jobs can be stopped from the header or Jobs screen. ROMmates checks for
 cancellation between copy chunks, removes the current temporary partial file, and leaves

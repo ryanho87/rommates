@@ -60,7 +60,7 @@ class DatabaseMigrationTests(unittest.TestCase):
                 columns = {row["name"] for row in upgraded.execute("PRAGMA table_info(jobs)")}
                 versions = {row["version"] for row in upgraded.execute("SELECT version FROM schema_migrations")}
             self.assertIn("result_json", columns)
-            self.assertEqual(versions, {1, 2, 3, 4, 5, 6, 7, 8, 9, 10})
+            self.assertEqual(versions, {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11})
 
     def test_screenscraper_ratings_are_backfilled_from_cached_metadata(self):
         with tempfile.TemporaryDirectory() as directory:

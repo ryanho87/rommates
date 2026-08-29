@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 from app.config import Settings
 from app.db import Database
-from app.library import COPY_SUFFIX, JobCancelled, LibraryError, LibraryService, normalize_name
+from app.library import COPY_SUFFIX, LINK_SUFFIX, JobCancelled, LibraryError, LibraryService, normalize_name
 
 
 class LibraryServiceTests(unittest.TestCase):
@@ -230,6 +230,23 @@ class LibraryServiceTests(unittest.TestCase):
             names = {row["display_name"] for row in connection.execute("SELECT display_name FROM games")}
         self.assertEqual(names, {"First Game", "Second Game"})
 
+    def test_switch_indexes_base_games_but_excludes_updates_and_support_trees(self):
+        self.write("switch/Astral Chain [01007300020FA000].xci", b"base")
+        self.write("switch/Astral Chain Update [01007300020FA800].nsp", b"update")
+        self.write("switch/Updates/Another Game [0100123412345800].nsp", b"update")
+        self.write("switch/dlc/Astral Chain Pack [01007300020FA001].nsp", b"dlc")
+        self.write("switch/cheats/Astral Chain/60fps.txt", b"cheat")
+
+        result = self.service.scan()
+
+        self.assertEqual(result["games"], 1)
+        with self.db.connect() as connection:
+            game = connection.execute(
+                "SELECT display_name,extension FROM games"
+            ).fetchone()
+        self.assertEqual(game["display_name"], "Astral Chain [01007300020FA000]")
+        self.assertEqual(game["extension"], ".xci")
+
     def test_folder_bundle_rename_moves_the_complete_tree(self):
         self.write("ps3/Old Folder.ps3/PS3_GAME/PARAM.SFO", b"metadata")
         self.write("ps3/Old Folder.ps3/PS3_GAME/USRDIR/game.bin", b"content")
@@ -388,6 +405,92 @@ class LibraryServiceTests(unittest.TestCase):
         removed = self.service.apply_device(device_id)
         self.assertEqual(removed["removed"], 1)
         self.assertFalse((device_roms / "gba/Metroid.gba").exists())
+
+    def test_hardlink_device_deploys_without_duplicate_storage(self):
+        source = self.write("gba/Zero Copy.gba", b"linked-rom")
+        device_roms = self.devices / "handheld" / "roms"
+        device_roms.mkdir(parents=True)
+        self.service.scan()
+        game_id = self.game_id("Zero Copy")
+        with self.db.connect() as connection:
+            device_id = connection.execute("SELECT id FROM devices").fetchone()["id"]
+        self.service.set_device_deployment_mode(device_id, "hardlink")
+        self.service.set_selection(device_id, game_id, True)
+
+        result = self.service.apply_device(device_id)
+
+        target = device_roms / "gba/Zero Copy.gba"
+        self.assertEqual(result["linked"], 1)
+        self.assertEqual(result["copied"], 0)
+        self.assertTrue(source.samefile(target))
+        self.assertEqual(self.service.device_storage_summary(device_id)["hardlinked"], 1)
+
+        self.service.set_selection(device_id, game_id, False)
+        self.service.apply_device(device_id)
+        self.assertFalse(target.exists())
+        self.assertEqual(source.read_bytes(), b"linked-rom")
+
+    def test_device_storage_summary_reflects_external_file_replacement(self):
+        source = self.write("gba/Filesystem Truth.gba", b"linked-rom")
+        device_roms = self.devices / "handheld" / "roms"
+        device_roms.mkdir(parents=True)
+        self.service.scan()
+        game_id = self.game_id("Filesystem Truth")
+        with self.db.connect() as connection:
+            device_id = connection.execute("SELECT id FROM devices").fetchone()["id"]
+        self.service.set_device_deployment_mode(device_id, "hardlink")
+        self.service.set_selection(device_id, game_id, True)
+        self.service.apply_device(device_id)
+        target = device_roms / "gba/Filesystem Truth.gba"
+        self.assertEqual(self.service.device_storage_summary(device_id)["hardlinked"], 1)
+
+        target.unlink()
+        shutil.copy2(source, target)
+
+        summary = self.service.device_storage_summary(device_id)
+        self.assertEqual(summary["hardlinked"], 0)
+        self.assertEqual(summary["copied"], 1)
+        self.assertEqual(summary["conversions"], 1)
+
+    def test_hardlink_mode_atomically_converts_existing_copy(self):
+        source = self.write("gba/Convert Me.gba", b"convert-rom")
+        device_roms = self.devices / "handheld" / "roms"
+        device_roms.mkdir(parents=True)
+        self.service.scan()
+        game_id = self.game_id("Convert Me")
+        with self.db.connect() as connection:
+            device_id = connection.execute("SELECT id FROM devices").fetchone()["id"]
+        self.service.set_selection(device_id, game_id, True)
+        self.assertEqual(self.service.apply_device(device_id)["copied"], 1)
+        target = device_roms / "gba/Convert Me.gba"
+        self.assertFalse(source.samefile(target))
+
+        self.service.set_device_deployment_mode(device_id, "hardlink")
+        result = self.service.apply_device(device_id)
+
+        self.assertEqual(result["converted"], 1)
+        self.assertTrue(source.samefile(target))
+        self.assertEqual(list(device_roms.rglob(f"*{LINK_SUFFIX}")), [])
+
+    def test_hardlink_mode_falls_back_to_copy_on_cross_device_error(self):
+        source = self.write("gba/Fallback.gba", b"fallback-rom")
+        device_roms = self.devices / "handheld" / "roms"
+        device_roms.mkdir(parents=True)
+        self.service.scan()
+        game_id = self.game_id("Fallback")
+        with self.db.connect() as connection:
+            device_id = connection.execute("SELECT id FROM devices").fetchone()["id"]
+        self.service.set_device_deployment_mode(device_id, "hardlink")
+        self.service.set_selection(device_id, game_id, True)
+
+        with patch("app.library.os.link", side_effect=OSError(errno.EXDEV, "cross-device")):
+            result = self.service.apply_device(device_id)
+
+        target = device_roms / "gba/Fallback.gba"
+        self.assertEqual(result["link_fallbacks"], 1)
+        self.assertEqual(result["copied"], 1)
+        self.assertEqual(target.read_bytes(), source.read_bytes())
+        self.assertFalse(source.samefile(target))
 
     def test_bulk_device_selection_updates_visible_set(self):
         self.write("gba/One.gba", b"one")

@@ -1535,7 +1535,8 @@ async function renderDevices() {
   setViewHtml(`
     <div class="device-strip">
       <label class="field"><span>Target device</span><select id="device-select">${state.devices.map((item) => `<option value="${item.id}" ${item.id === device.id ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("")}</select></label>
-      <div class="device-summary"><span><strong>${inventory.present_games}</strong> currently on device</span><span><strong>${preview.games}</strong> desired</span><span><strong>${preview.additions}</strong> files to add/update</span><span><strong>${preview.removals}</strong> files to remove</span><button class="button" id="apply-device" ${preview.additions === 0 && preview.removals === 0 ? "disabled" : ""}>Review and apply</button></div>
+      <label class="field"><span>Deployment storage</span><select id="deployment-mode"><option value="copy" ${device.deployment_mode === "copy" ? "selected" : ""}>Independent copies</option><option value="hardlink" ${device.deployment_mode === "hardlink" ? "selected" : ""}>Prefer hardlinks</option></select></label>
+      <div class="device-summary"><span title="Measured from the current source and device file inodes"><strong>${preview.hardlinked}</strong> hardlinked</span><span title="Measured from the current source and device file inodes"><strong>${preview.copied}</strong> copied</span>${preview.missing ? `<span><strong>${preview.missing}</strong> managed files missing</span>` : ""}${preview.unknown ? `<span><strong>${preview.unknown}</strong> storage states unknown</span>` : ""}<span><strong>${inventory.present_games}</strong> currently on device</span><span><strong>${preview.games}</strong> desired</span><span><strong>${preview.additions}</strong> files to add/update</span>${preview.conversions ? `<span><strong>${preview.conversions}</strong> copies to convert</span>` : ""}<span><strong>${preview.removals}</strong> files to remove</span><button class="button" id="apply-device" ${preview.additions === 0 && preview.removals === 0 && preview.conversions === 0 ? "disabled" : ""}>Review and apply</button></div>
     </div>
     <div class="device-scope" role="group" aria-label="Device ROM view">
       <button class="scope-button ${state.deviceScope === "on_device" ? "active" : ""}" data-device-scope="on_device" aria-pressed="${state.deviceScope === "on_device"}">On device <span>${inventory.present_games.toLocaleString()}</span></button>
@@ -1550,6 +1551,19 @@ async function renderDevices() {
     state.deviceScope = "on_device";
     state.offset = 0;
     renderDevices();
+  });
+  document.querySelector("#deployment-mode").addEventListener("change", async (event) => {
+    const select = event.target;
+    select.disabled = true;
+    try {
+      await api(`/api/devices/${device.id}/deployment-mode`, {
+        method: "PUT",
+        body: JSON.stringify({ mode: select.value }),
+      });
+      toast(select.value === "hardlink" ? "Hardlinks preferred. Apply to convert eligible copies." : "New deployments will use independent copies.");
+      await loadReferenceData();
+      await renderDevices();
+    } catch (error) { select.value = device.deployment_mode; select.disabled = false; toast(error.message, "error"); }
   });
   view.querySelectorAll("[data-device-scope]").forEach((button) => button.addEventListener("click", () => {
     state.deviceScope = button.dataset.deviceScope;
@@ -1583,7 +1597,7 @@ async function renderDevices() {
   view.querySelector("#apply-device")?.addEventListener("click", async () => {
     const confirmed = await confirmAction({
       title: `Apply changes to ${device.name}?`,
-      content: `<p class="warning-copy"><strong>${preview.additions} ${preview.additions === 1 ? "file" : "files"}</strong> will be copied and <strong>${preview.removals} managed ${preview.removals === 1 ? "file" : "files"}</strong> will be removed. AppleDouble and .DS_Store metadata in the device ROM directory will also be cleaned.</p>`,
+      content: `<p class="warning-copy"><strong>${preview.additions} ${preview.additions === 1 ? "file" : "files"}</strong> will be deployed${device.deployment_mode === "hardlink" ? " as hardlinks where supported" : " as independent copies"}, <strong>${preview.conversions} existing ${preview.conversions === 1 ? "copy" : "copies"}</strong> will be considered for conversion, and <strong>${preview.removals} managed ${preview.removals === 1 ? "file" : "files"}</strong> will be removed. If mergerfs cannot place a hardlink on the ROM's underlying filesystem, ROMmates keeps or creates a normal copy. AppleDouble and .DS_Store metadata will also be cleaned.</p>`,
       confirmLabel: "Apply device changes",
       cancelLabel: "Keep current device files",
       danger: preview.removals > 0,
@@ -1591,7 +1605,7 @@ async function renderDevices() {
     if (!confirmed) return;
     try {
       const result = await requestJob(`/api/devices/${device.id}/apply`, { method: "POST" }, `Applying ${device.name}`);
-      toast(`Applied ${device.name}: ${result.copied} copied, ${result.removed} removed, ${result.unchanged} unchanged`);
+      toast(`Applied ${device.name}: ${result.linked} linked, ${result.converted} converted, ${result.copied} copied, ${result.removed} removed${result.link_fallbacks ? `, ${result.link_fallbacks} link fallbacks` : ""}`);
       await loadReferenceData();
       await renderDevices();
     } catch (error) { toast(error.message, "error"); }

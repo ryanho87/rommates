@@ -439,6 +439,31 @@ class ApiIntegrationTests(unittest.TestCase):
             target.unlink(missing_ok=True)
             unknown.unlink(missing_ok=True)
 
+    def test_device_deployment_mode_is_configurable_and_previewed(self):
+        device = self.client.get("/api/devices", headers=self.headers).json()[0]
+        try:
+            updated = self.client.put(
+                f"/api/devices/{device['id']}/deployment-mode",
+                headers=self.headers,
+                json={"mode": "hardlink"},
+            )
+            self.assertEqual(updated.status_code, 200)
+            self.assertEqual(updated.json()["mode"], "hardlink")
+            preview = self.client.get(
+                f"/api/devices/{device['id']}/preview", headers=self.headers
+            )
+            self.assertEqual(preview.status_code, 200)
+            self.assertEqual(preview.json()["device"]["deployment_mode"], "hardlink")
+            self.assertIn("conversions", preview.json())
+            self.assertIn("hardlinked", preview.json())
+            self.assertIn("copied", preview.json())
+        finally:
+            self.client.put(
+                f"/api/devices/{device['id']}/deployment-mode",
+                headers=self.headers,
+                json={"mode": "copy"},
+            )
+
     def test_running_scan_can_be_cancelled(self):
         started = threading.Event()
 

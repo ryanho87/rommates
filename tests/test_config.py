@@ -43,6 +43,10 @@ class ConfigurationCompatibilityTests(unittest.TestCase):
             settings = Settings.from_env()
         self.assertEqual(settings.rawg_api_key, "rawg-key")
 
+    def test_default_extensions_cover_modern_handheld_packages(self):
+        settings = Settings.from_env()
+        self.assertTrue({".3ds", ".cci", ".nsp", ".xci", ".vpk"}.issubset(settings.extensions))
+
     def test_legacy_rom_manager_environment_still_works(self):
         with patch.dict(
             os.environ,
