@@ -138,6 +138,7 @@ nav { display: grid; gap: 3px; }
   border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text-muted);
+  text-decoration: none;
   text-align: left;
   cursor: pointer;
 }

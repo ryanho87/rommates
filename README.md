@@ -186,10 +186,11 @@ bundles do not appear as exact SHA-256 duplicates; ROMmates presents same-title 
 the possible-duplicate review instead. Single-file and descriptor-based games retain full
 content hashing and exact duplicate detection.
 
-Unpacked Vita libraries use the platform layout directly. ROMmates treats each title ID
-beneath `vita/app` as the primary game and includes files carrying that title ID beneath
-`vita/patch`, `vita/addcont`, and `vita/license`. Orphan support trees without a matching
-`app` title are ignored rather than exposed as thousands of individual ROMs.
+Unpacked Vita libraries use the platform layout directly. ROMmates recognizes both the
+`vita` and ES-DE `psvita` platform names, treats each title ID beneath `app` as the primary
+game, and includes files carrying that title ID beneath `patch`, `addcont`, and `license`.
+Orphan support trees without a matching `app` title are ignored rather than exposed as
+thousands of individual ROMs.
 
 Changing a device from **Independent copies** to **Hardlinks preferred** makes the next
 apply atomically replace eligible managed copies with hardlinks. The filename Syncthing

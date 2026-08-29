@@ -73,6 +73,25 @@ class ApiIntegrationTests(unittest.TestCase):
         self.assertIn("frame-ancestors 'none'", unauthorized.headers["content-security-policy"])
         self.assertEqual(self.client.get("/api/health").status_code, 200)
 
+    def test_ui_pages_support_direct_navigation(self):
+        for path in (
+            "/",
+            "/library",
+            "/transfers",
+            "/duplicates",
+            "/naming",
+            "/devices",
+            "/saves",
+            "/jobs",
+            "/trash",
+        ):
+            with self.subTest(path=path):
+                response = self.client.get(path)
+                self.assertEqual(response.status_code, 200)
+                self.assertIn('<nav id="navigation">', response.text)
+
+        self.assertEqual(self.client.get("/not-a-rommates-page").status_code, 404)
+
     def test_upload_resumes_finalizes_and_downloads_without_bearer_token(self):
         manifest = {
             "platform": "gba",

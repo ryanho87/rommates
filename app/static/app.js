@@ -1,5 +1,28 @@
+const VIEW_ROUTES = Object.freeze({
+  overview: "/",
+  library: "/library",
+  transfers: "/transfers",
+  duplicates: "/duplicates",
+  naming: "/naming",
+  devices: "/devices",
+  saves: "/saves",
+  jobs: "/jobs",
+  trash: "/trash",
+});
+
+const ROUTE_VIEWS = new Map(Object.entries(VIEW_ROUTES).map(([viewName, path]) => [path, viewName]));
+
+function normalizedRoute(pathname = window.location.pathname) {
+  const route = pathname.replace(/\/+$/, "");
+  return route || "/";
+}
+
+function viewFromLocation() {
+  return ROUTE_VIEWS.get(normalizedRoute()) || "overview";
+}
+
 const state = {
-  view: "overview",
+  view: viewFromLocation(),
   status: null,
   platforms: [],
   devices: [],
@@ -441,6 +464,7 @@ async function loadReferenceData() {
 function setHeading(title, subtitle) {
   pageTitle.textContent = title;
   pageSubtitle.textContent = subtitle;
+  document.title = title === "Overview" ? "ROMmates" : `${title} · ROMmates`;
 }
 
 function platformOptions() {
@@ -2372,7 +2396,29 @@ function renderAuthentication() {
   document.querySelector("#access-token").focus();
 }
 
-function navigateTo(viewName, options = {}) {
+function updateActiveNavigation(viewName) {
+  document.querySelectorAll(".nav-item").forEach((item) => {
+    const active = item.dataset.view === viewName;
+    item.classList.toggle("active", active);
+    if (active) item.setAttribute("aria-current", "page");
+    else item.removeAttribute("aria-current");
+  });
+}
+
+function updateBrowserRoute(viewName, historyMode) {
+  if (historyMode === "none") return;
+  const route = VIEW_ROUTES[viewName] || VIEW_ROUTES.overview;
+  if (normalizedRoute() === route) return;
+  window.history[historyMode === "replace" ? "replaceState" : "pushState"](
+    { view: viewName },
+    "",
+    route,
+  );
+}
+
+function navigateTo(viewName, options = {}, historyMode = "push") {
+  if (!VIEW_ROUTES[viewName]) viewName = "overview";
+  updateBrowserRoute(viewName, historyMode);
   state.view = viewName;
   state.offset = 0;
   state.search = "";
@@ -2393,16 +2439,19 @@ function navigateTo(viewName, options = {}) {
   if (state.view !== "naming") state.namingSelected.clear();
   if (state.view !== "saves") state.saveSnapshotId = null;
   if (state.view !== "trash") state.trashSelected.clear();
-  document.querySelectorAll(".nav-item").forEach((item) => item.classList.toggle("active", item.dataset.view === viewName));
+  updateActiveNavigation(viewName);
   renderCurrentView();
   scheduleNavigationLoading(state.renderVersion);
 }
 
 document.querySelector("#navigation").addEventListener("click", (event) => {
-  const button = event.target.closest("[data-view]");
-  if (!button) return;
-  navigateTo(button.dataset.view);
+  const link = event.target.closest("[data-view]");
+  if (!link || event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+  event.preventDefault();
+  navigateTo(link.dataset.view);
 });
+
+window.addEventListener("popstate", () => navigateTo(viewFromLocation(), {}, "none"));
 
 scanButton.addEventListener("click", () => startScan());
 stopJobButton.addEventListener("click", () => cancelJob(Number(stopJobButton.dataset.jobId), stopJobButton));
@@ -2419,6 +2468,7 @@ document.addEventListener("keydown", (event) => {
 });
 
 async function initialize() {
+  updateActiveNavigation(state.view);
   try {
     await refreshStatus();
     await loadReferenceData();

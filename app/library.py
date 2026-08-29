@@ -43,11 +43,13 @@ SWITCH_NONZERO_VERSION_RE = re.compile(
 )
 VITA_TITLE_ID_RE = re.compile(r"^[A-Z]{4}\d{5}$", re.IGNORECASE)
 VITA_CONTENT_ROOTS = frozenset({"app", "patch", "addcont", "license"})
+VITA_PLATFORM_NAMES = frozenset({"vita", "psvita"})
 TAG_RE = re.compile(r"\s*[\(\[].*?[\)\]]")
 NON_WORD_RE = re.compile(r"[^a-z0-9]+")
 PACK_NUMBER_RE = re.compile(r"^\s*(?:\[\d{1,4}\]|\d{1,4}[.)])\s*")
 HASH_CACHE_BATCH_FILES = 16
 HASH_CACHE_BATCH_BYTES = 128 * 1024 * 1024
+HASH_READ_CHUNK_BYTES = 8 * 1024 * 1024
 
 ProgressCallback = Callable[[int, str], None]
 CancelCheck = Callable[[], None]
@@ -254,7 +256,7 @@ class LibraryService:
 
         digest = hashlib.sha256()
         with path.open("rb") as handle:
-            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            for chunk in iter(lambda: handle.read(HASH_READ_CHUNK_BYTES), b""):
                 if cancel_check:
                     cancel_check()
                 digest.update(chunk)
@@ -443,6 +445,7 @@ class LibraryService:
             if cancel_check:
                 cancel_check()
             platform_paths: list[Path] = []
+            paths_by_top_level: dict[str, list[Path]] = {}
             for path in platform_dir.rglob("*"):
                 if cancel_check:
                     cancel_check()
@@ -455,11 +458,13 @@ class LibraryService:
                 if platform_dir.name.casefold() == "switch" and _is_switch_support_path(path, platform_dir):
                     continue
                 platform_paths.append(path)
+                if relative_parts:
+                    paths_by_top_level.setdefault(relative_parts[0], []).append(path)
             claimed: set[Path] = set()
             bundle_paths: dict[Path, tuple[Path, ...]] = {}
             primaries: list[Path] = []
 
-            if platform_dir.name.casefold() == "vita":
+            if platform_dir.name.casefold() in VITA_PLATFORM_NAMES:
                 app_root = platform_dir / "app"
                 app_ids = {
                     child.name.upper(): child
@@ -474,13 +479,13 @@ class LibraryService:
                     if not relative.parts or relative.parts[0].casefold() not in VITA_CONTENT_ROOTS:
                         continue
                     if path.name.startswith("._") or path.name == ".DS_Store":
-                        claimed.add(path.resolve())
+                        claimed.add(path)
                         continue
                     if path.is_symlink():
                         record_issue(path, "symbolic links are not indexed")
-                        claimed.add(path.resolve())
+                        claimed.add(path)
                         continue
-                    claimed.add(path.resolve())
+                    claimed.add(path)
                     title_id = next(
                         (
                             part.upper()
@@ -523,7 +528,10 @@ class LibraryService:
                     key=lambda path: path.name.casefold(),
                 ):
                     files: list[Path] = []
-                    for path in sorted(folder.rglob("*"), key=lambda item: item.as_posix().casefold()):
+                    for path in sorted(
+                        paths_by_top_level.get(folder.name, ()),
+                        key=lambda item: item.as_posix().casefold(),
+                    ):
                         if cancel_check:
                             cancel_check()
                         if path.name.startswith("._") or path.name == ".DS_Store":
@@ -537,15 +545,15 @@ class LibraryService:
                         primaries.append(folder)
                         bundle_paths[folder] = tuple(files)
                         metadata_only_primaries.add(folder)
-                        claimed.update(path.resolve() for path in files)
+                        claimed.update(files)
 
             descriptors = sorted(
                 (
                     path for path in platform_paths
                     if path.is_file()
-                    and path.resolve() not in claimed
                     and path.suffix.lower() in DESCRIPTOR_EXTENSIONS
                     and not path.name.startswith("._")
+                    and path not in claimed
                 ),
                 key=lambda p: (
                     0 if p.suffix.lower() == ".m3u" else 1,
@@ -571,7 +579,8 @@ class LibraryService:
                     game_folder = platform_dir / relative.parts[0]
                     folder_files: list[Path] = []
                     for path in sorted(
-                        game_folder.rglob("*"), key=lambda item: item.as_posix().casefold()
+                        paths_by_top_level.get(relative.parts[0], ()),
+                        key=lambda item: item.as_posix().casefold(),
                     ):
                         if cancel_check:
                             cancel_check()
@@ -597,7 +606,7 @@ class LibraryService:
                 if path.is_symlink():
                     record_issue(path, "symbolic links are not indexed")
                     continue
-                if path.resolve() in claimed or path.resolve() in referenced or path in primaries:
+                if path in claimed or path.resolve() in referenced or path in primaries:
                     continue
                 primaries.append(path)
 

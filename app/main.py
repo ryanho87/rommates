@@ -513,7 +513,15 @@ async def transfer_error_handler(_: Request, exc: TransferError):
     return JSONResponse(status_code=exc.status_code, content={"detail": str(exc)})
 
 
-@app.get("/")
+@app.get("/", include_in_schema=False)
+@app.get("/library", include_in_schema=False)
+@app.get("/transfers", include_in_schema=False)
+@app.get("/duplicates", include_in_schema=False)
+@app.get("/naming", include_in_schema=False)
+@app.get("/devices", include_in_schema=False)
+@app.get("/saves", include_in_schema=False)
+@app.get("/jobs", include_in_schema=False)
+@app.get("/trash", include_in_schema=False)
 def index():
     return FileResponse(STATIC_DIR / "index.html")
 

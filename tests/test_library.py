@@ -243,6 +243,20 @@ class LibraryServiceTests(unittest.TestCase):
         self.assertTrue(game["bundle_hash"].startswith("metadata:"))
         self.assertEqual({item["sha256"] for item in files}, {""})
 
+    def test_folder_bundle_tree_is_walked_only_once(self):
+        self.write("ps3/Game [TEST00001].ps3/PS3_GAME/USRDIR/data.bin", b"payload")
+        original_rglob = Path.rglob
+        walked: list[Path] = []
+
+        def tracking_rglob(path: Path, pattern: str):
+            walked.append(path)
+            return original_rglob(path, pattern)
+
+        with patch.object(Path, "rglob", tracking_rglob):
+            self.service.scan()
+
+        self.assertEqual(walked, [(self.settings.library_root / "ps3").resolve()])
+
     def test_vita_title_id_is_one_cross_root_deployable_bundle(self):
         title_id = "PCSE00001"
         self.write(f"vita/app/{title_id}/sce_sys/param.sfo", make_param_sfo("Gravity Rush"))
@@ -284,6 +298,29 @@ class LibraryServiceTests(unittest.TestCase):
 
         with self.assertRaisesRegex(LibraryError, "spans multiple system directories"):
             self.service.preview_rename(game_id, "Different Name")
+
+    def test_psvita_esde_alias_uses_vita_title_id_bundles(self):
+        title_id = "PCSE00003"
+        self.write(f"psvita/app/{title_id}/sce_sys/param.sfo", make_param_sfo("Vita Alias"))
+        self.write(f"psvita/app/{title_id}/eboot.bin", b"base")
+        self.write(f"psvita/patch/{title_id}/patch.bin", b"patch")
+
+        with patch.object(self.service, "_hash_file", side_effect=AssertionError("must not hash")):
+            result = self.service.scan()
+
+        self.assertEqual(result["games"], 1)
+        game, files = self.service.game_bundle(self.game_id("Vita Alias"))
+        self.assertEqual(game["platform"], "psvita")
+        self.assertEqual(game["primary_relpath"], f"psvita/app/{title_id}")
+        self.assertTrue(game["bundle_hash"].startswith("metadata:"))
+        self.assertEqual(
+            {item["relpath"] for item in files},
+            {
+                f"psvita/app/{title_id}/sce_sys/param.sfo",
+                f"psvita/app/{title_id}/eboot.bin",
+                f"psvita/patch/{title_id}/patch.bin",
+            },
+        )
 
     def test_vita_scan_merges_legacy_internal_games_and_preserves_device_state(self):
         title_id = "PCSE00002"
