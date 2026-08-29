@@ -7,6 +7,7 @@ import os
 import re
 import shlex
 import shutil
+import struct
 import tempfile
 import threading
 import time
@@ -37,6 +38,11 @@ SWITCH_SUPPORT_DIRECTORIES = frozenset(
 )
 SWITCH_TITLE_ID_RE = re.compile(r"[\[(]([0-9a-f]{16})[\])]", re.IGNORECASE)
 SWITCH_UPDATE_MARKER_RE = re.compile(r"(?:^|[\s._\-\[(])(update|upd)(?:$|[\s._\-\])])", re.IGNORECASE)
+SWITCH_NONZERO_VERSION_RE = re.compile(
+    r"\[[0-9a-f]{16,17}\]\[v?([1-9]\d*)\]", re.IGNORECASE
+)
+VITA_TITLE_ID_RE = re.compile(r"^[A-Z]{4}\d{5}$", re.IGNORECASE)
+VITA_CONTENT_ROOTS = frozenset({"app", "patch", "addcont", "license"})
 TAG_RE = re.compile(r"\s*[\(\[].*?[\)\]]")
 NON_WORD_RE = re.compile(r"[^a-z0-9]+")
 PACK_NUMBER_RE = re.compile(r"^\s*(?:\[\d{1,4}\]|\d{1,4}[.)])\s*")
@@ -98,7 +104,39 @@ def _is_switch_support_path(path: Path, platform_dir: Path) -> bool:
     name = path.name
     if SWITCH_UPDATE_MARKER_RE.search(name):
         return True
+    if SWITCH_NONZERO_VERSION_RE.search(name):
+        return True
     return any(match.group(1).casefold().endswith("800") for match in SWITCH_TITLE_ID_RE.finditer(name))
+
+
+def _read_sfo_title(path: Path) -> str:
+    """Read the default TITLE value from a PlayStation PARAM.SFO file."""
+    try:
+        data = path.read_bytes()
+        if len(data) < 20 or data[:4] != b"\x00PSF":
+            return ""
+        key_start, value_start, count = struct.unpack_from("<III", data, 8)
+        if count > 4096 or key_start >= len(data) or value_start >= len(data):
+            return ""
+        values: dict[str, str] = {}
+        for index in range(count):
+            offset = 20 + index * 16
+            if offset + 16 > len(data):
+                return ""
+            key_offset, _, value_length, _, value_offset = struct.unpack_from("<HHIII", data, offset)
+            key_position = key_start + key_offset
+            value_position = value_start + value_offset
+            if key_position >= len(data) or value_position + value_length > len(data):
+                continue
+            key_end = data.find(b"\0", key_position)
+            if key_end < 0:
+                continue
+            key = data[key_position:key_end].decode("utf-8", "replace")
+            value = data[value_position : value_position + value_length]
+            values[key] = value.rstrip(b"\0").decode("utf-8", "replace").strip()
+        return values.get("TITLE", "")
+    except (OSError, ValueError, struct.error):
+        return ""
 
 
 @dataclass
@@ -109,6 +147,7 @@ class ScanProgress:
     processed_files: int = 0
     processed_bytes: int = 0
     cached_files: int = 0
+    metadata_files: int = 0
 
     def _emit(self) -> None:
         if not self.callback:
@@ -120,21 +159,25 @@ class ScanProgress:
         else:
             fraction = 1
         percent = min(90, 1 + int(max(0, min(fraction, 1)) * 89))
-        detail = f"Hashing {self.processed_files:,} of {self.total_files:,} files"
+        detail = f"Scanning {self.processed_files:,} of {self.total_files:,} files"
         if self.total_bytes:
             detail += f" · {_format_bytes(self.processed_bytes)} of {_format_bytes(self.total_bytes)}"
         if self.cached_files:
             detail += f" · {self.cached_files:,} cached"
+        if self.metadata_files:
+            detail += f" · {self.metadata_files:,} metadata-only"
         self.callback(percent, detail)
 
     def advance(self, byte_count: int) -> None:
         self.processed_bytes += byte_count
         self._emit()
 
-    def finish_file(self, cached: bool = False) -> None:
+    def finish_file(self, cached: bool = False, metadata_only: bool = False) -> None:
         self.processed_files += 1
         if cached:
             self.cached_files += 1
+        if metadata_only:
+            self.metadata_files += 1
         self._emit()
 
 
@@ -295,35 +338,63 @@ class LibraryService:
         paths: tuple[Path, ...] | None = None,
         progress: ScanProgress | None = None,
         cancel_check: CancelCheck | None = None,
+        hash_contents: bool = True,
+        display_name_override: str = "",
     ) -> GameCandidate:
         root = self.settings.library_root.resolve()
         paths = paths if paths is not None else self._bundle_paths(primary)
         records: list[FileRecord] = []
         for path in paths:
             relpath = _rel(root, path)
-            sha256, stat = self._hash_file(path, relpath, cache, cache_updates, progress, cancel_check)
+            if hash_contents:
+                sha256, stat = self._hash_file(
+                    path, relpath, cache, cache_updates, progress, cancel_check
+                )
+            else:
+                if cancel_check:
+                    cancel_check()
+                stat = path.stat()
+                sha256 = ""
+                if progress:
+                    progress.advance(stat.st_size)
+                    progress.finish_file(metadata_only=True)
             kind = "descriptor" if path.suffix.lower() in DESCRIPTOR_EXTENSIONS else "content"
             records.append(FileRecord(relpath, stat.st_size, sha256, kind, stat.st_mtime_ns))
         if not records:
             raise LibraryError(f"No readable files found for {primary}")
         aggregate = hashlib.sha256()
-        hash_records = [record for record in records if record.kind == "content"] or records
-        for record in sorted(hash_records, key=lambda item: (item.sha256, item.size)):
-            aggregate.update(record.sha256.encode("ascii"))
-            aggregate.update(str(record.size).encode("ascii"))
+        if hash_contents:
+            hash_records = [record for record in records if record.kind == "content"] or records
+            for record in sorted(hash_records, key=lambda item: (item.sha256, item.size)):
+                aggregate.update(record.sha256.encode("ascii"))
+                aggregate.update(str(record.size).encode("ascii"))
+            bundle_hash = aggregate.hexdigest()
+        else:
+            # Folder bundles are indexed from metadata so normal scans never read
+            # terabytes of internal game data. Include the primary path to keep this
+            # structural fingerprint out of exact-content duplicate groups.
+            aggregate.update(b"metadata-only\0")
+            aggregate.update(_rel(root, primary).encode("utf-8"))
+            for record in sorted(records, key=lambda item: item.relpath.casefold()):
+                aggregate.update(record.relpath.encode("utf-8"))
+                aggregate.update(str(record.size).encode("ascii"))
+                aggregate.update(str(record.mtime_ns).encode("ascii"))
+            bundle_hash = f"metadata:{aggregate.hexdigest()}"
         folder_extension = ""
         display_name = primary.stem
         if primary.is_dir():
             expected_suffix = f".{platform.casefold()}"
             folder_extension = primary.suffix.lower() if primary.suffix.lower() == expected_suffix else ""
             display_name = primary.stem if folder_extension else primary.name
+        if display_name_override.strip():
+            display_name = display_name_override.strip()
         return GameCandidate(
             platform=platform,
             primary_relpath=_rel(root, primary),
             display_name=display_name,
             extension=folder_extension if primary.is_dir() else primary.suffix.lower(),
             size=sum(record.size for record in records),
-            bundle_hash=aggregate.hexdigest(),
+            bundle_hash=bundle_hash,
             normalized_name=normalize_name(display_name),
             mtime_ns=max(record.mtime_ns for record in records),
             files=tuple(records),
@@ -366,6 +437,8 @@ class LibraryService:
         if progress_callback:
             progress_callback(0, "Discovering library files")
         work: list[tuple[Path, str, tuple[Path, ...]]] = []
+        metadata_only_primaries: set[Path] = set()
+        display_overrides: dict[Path, str] = {}
         for platform_dir in sorted((item for item in root.iterdir() if item.is_dir()), key=lambda p: p.name.lower()):
             if cancel_check:
                 cancel_check()
@@ -386,7 +459,58 @@ class LibraryService:
             bundle_paths: dict[Path, tuple[Path, ...]] = {}
             primaries: list[Path] = []
 
-            if platform_dir.name.casefold() in self.settings.folder_bundle_platforms:
+            if platform_dir.name.casefold() == "vita":
+                app_root = platform_dir / "app"
+                app_ids = {
+                    child.name.upper(): child
+                    for child in (app_root.iterdir() if app_root.is_dir() else ())
+                    if child.is_dir() and VITA_TITLE_ID_RE.fullmatch(child.name)
+                }
+                grouped: dict[str, list[Path]] = {title_id: [] for title_id in app_ids}
+                for path in platform_paths:
+                    if not path.is_file():
+                        continue
+                    relative = path.relative_to(platform_dir)
+                    if not relative.parts or relative.parts[0].casefold() not in VITA_CONTENT_ROOTS:
+                        continue
+                    if path.name.startswith("._") or path.name == ".DS_Store":
+                        claimed.add(path.resolve())
+                        continue
+                    if path.is_symlink():
+                        record_issue(path, "symbolic links are not indexed")
+                        claimed.add(path.resolve())
+                        continue
+                    claimed.add(path.resolve())
+                    title_id = next(
+                        (
+                            part.upper()
+                            for part in relative.parts[1:]
+                            if VITA_TITLE_ID_RE.fullmatch(part)
+                        ),
+                        "",
+                    )
+                    if title_id in grouped:
+                        grouped[title_id].append(path)
+                for title_id, primary in sorted(app_ids.items()):
+                    files = tuple(
+                        sorted(grouped[title_id], key=lambda item: item.as_posix().casefold())
+                    )
+                    if not files:
+                        continue
+                    primaries.append(primary)
+                    bundle_paths[primary] = files
+                    metadata_only_primaries.add(primary)
+                    sfo = next(
+                        (
+                            path for path in files
+                            if path.name.casefold() == "param.sfo"
+                            and "sce_sys" in {part.casefold() for part in path.parts}
+                        ),
+                        None,
+                    )
+                    display_overrides[primary] = _read_sfo_title(sfo) if sfo else title_id
+
+            elif platform_dir.name.casefold() in self.settings.folder_bundle_platforms:
                 for folder in sorted(
                     (
                         path for path in platform_dir.iterdir()
@@ -412,6 +536,7 @@ class LibraryService:
                     if files:
                         primaries.append(folder)
                         bundle_paths[folder] = tuple(files)
+                        metadata_only_primaries.add(folder)
                         claimed.update(path.resolve() for path in files)
 
             descriptors = sorted(
@@ -507,7 +632,17 @@ class LibraryService:
                     cancel_check()
                 try:
                     candidates.append(
-                        self._candidate(primary, platform, cache, cache_updates, paths, progress, cancel_check)
+                        self._candidate(
+                            primary,
+                            platform,
+                            cache,
+                            cache_updates,
+                            paths,
+                            progress,
+                            cancel_check,
+                            hash_contents=primary not in metadata_only_primaries,
+                            display_name_override=display_overrides.get(primary, ""),
+                        )
                     )
                 except (OSError, LibraryError) as exc:
                     record_issue(primary, exc)
@@ -859,6 +994,10 @@ class LibraryService:
         paths = [_inside(root, root / item["relpath"]) for item in files]
         mapping: dict[Path, Path] = {}
         if primary.is_dir():
+            if any(primary not in old.parents for old in paths):
+                raise LibraryError(
+                    "This title-ID bundle spans multiple system directories and cannot be renamed"
+                )
             primary_target = _inside(root, primary.with_name(new_stem + extension))
             if primary_target.exists() and primary_target != primary:
                 raise LibraryError(f"A folder named {primary_target.name} already exists")

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import errno
 import shutil
+import struct
 import tempfile
 import threading
 import time
@@ -12,6 +13,16 @@ from unittest.mock import patch
 from app.config import Settings
 from app.db import Database
 from app.library import COPY_SUFFIX, LINK_SUFFIX, JobCancelled, LibraryError, LibraryService, normalize_name
+
+
+def make_param_sfo(title: str) -> bytes:
+    key = b"TITLE\0"
+    value = title.encode("utf-8") + b"\0"
+    key_start = 36
+    value_start = (key_start + len(key) + 3) & ~3
+    header = b"\x00PSF" + struct.pack("<IIII", 0x101, key_start, value_start, 1)
+    entry = struct.pack("<HHIII", 0, 0x0204, len(value), len(value), 0)
+    return header + entry + key + b"\0" * (value_start - key_start - len(key)) + value
 
 
 class LibraryServiceTests(unittest.TestCase):
@@ -190,7 +201,8 @@ class LibraryServiceTests(unittest.TestCase):
                 "FROM games ORDER BY display_name"
             ).fetchall()
         self.assertTrue(all(row["primary_relpath"].endswith(".ps3") for row in rows))
-        self.assertEqual(len({row["bundle_hash"] for row in rows}), 1)
+        self.assertEqual(len({row["bundle_hash"] for row in rows}), 2)
+        self.assertTrue(all(row["bundle_hash"].startswith("metadata:") for row in rows))
         self.assertEqual({row["normalized_name"] for row in rows}, {"zone of the enders hd collection"})
         self.assertTrue(all(row["size"] == len(b"same-metadata") + len(b"same-content") for row in rows))
         game, files = self.service.game_bundle(self.game_id("Zone of the Enders HD Collection [BLES01756]"))
@@ -219,6 +231,108 @@ class LibraryServiceTests(unittest.TestCase):
             _, files = self.service.game_bundle(game["id"])
             self.assertEqual(len(files), 2)
 
+    def test_folder_bundles_are_metadata_indexed_without_content_hashing(self):
+        self.write("ps3/Fast Folder.ps3/PS3_GAME/PARAM.SFO", b"metadata")
+        self.write("ps3/Fast Folder.ps3/PS3_GAME/USRDIR/large.bin", b"large-content")
+
+        with patch.object(self.service, "_hash_file", side_effect=AssertionError("must not hash")):
+            result = self.service.scan()
+
+        self.assertEqual(result["games"], 1)
+        game, files = self.service.game_bundle(self.game_id("Fast Folder"))
+        self.assertTrue(game["bundle_hash"].startswith("metadata:"))
+        self.assertEqual({item["sha256"] for item in files}, {""})
+
+    def test_vita_title_id_is_one_cross_root_deployable_bundle(self):
+        title_id = "PCSE00001"
+        self.write(f"vita/app/{title_id}/sce_sys/param.sfo", make_param_sfo("Gravity Rush"))
+        app_file = self.write(f"vita/app/{title_id}/game.bin", b"base")
+        patch_file = self.write(f"vita/patch/{title_id}/game.bin", b"patch")
+        dlc_file = self.write(f"vita/addcont/{title_id}/DLC0001/content.bin", b"dlc")
+        license_file = self.write(f"vita/license/app/{title_id}/license.rif", b"license")
+        self.write("vita/patch/PCSE99999/orphan.bin", b"orphan-patch")
+        device_roms = self.devices / "odin" / "roms"
+        device_roms.mkdir(parents=True)
+
+        with patch.object(self.service, "_hash_file", side_effect=AssertionError("must not hash")):
+            result = self.service.scan()
+
+        self.assertEqual(result["games"], 1)
+        game_id = self.game_id("Gravity Rush")
+        game, files = self.service.game_bundle(game_id)
+        self.assertEqual(game["primary_relpath"], f"vita/app/{title_id}")
+        self.assertTrue(game["bundle_hash"].startswith("metadata:"))
+        self.assertEqual(
+            {item["relpath"] for item in files},
+            {
+                f"vita/app/{title_id}/sce_sys/param.sfo",
+                f"vita/app/{title_id}/game.bin",
+                f"vita/patch/{title_id}/game.bin",
+                f"vita/addcont/{title_id}/DLC0001/content.bin",
+                f"vita/license/app/{title_id}/license.rif",
+            },
+        )
+        with self.db.connect() as connection:
+            device_id = connection.execute("SELECT id FROM devices WHERE name='odin'").fetchone()["id"]
+        self.service.set_device_deployment_mode(device_id, "hardlink")
+        self.service.set_selection(device_id, game_id, True)
+        applied = self.service.apply_device(device_id)
+        self.assertEqual(applied["linked"], 5)
+        for source in (app_file, patch_file, dlc_file, license_file):
+            target = device_roms / source.relative_to(self.roms)
+            self.assertTrue(source.samefile(target))
+
+        with self.assertRaisesRegex(LibraryError, "spans multiple system directories"):
+            self.service.preview_rename(game_id, "Different Name")
+
+    def test_vita_scan_merges_legacy_internal_games_and_preserves_device_state(self):
+        title_id = "PCSE00002"
+        paths = [
+            f"vita/app/{title_id}/eboot.bin",
+            f"vita/patch/{title_id}/patch.bin",
+        ]
+        for path in paths:
+            self.write(path, path.encode())
+        (self.devices / "odin" / "roms").mkdir(parents=True)
+        with self.db.write() as connection:
+            connection.execute("INSERT INTO devices(name,path) VALUES('odin','odin')")
+            device_id = connection.execute("SELECT id FROM devices WHERE name='odin'").fetchone()["id"]
+            for index, path in enumerate(paths, start=1):
+                connection.execute(
+                    "INSERT INTO games(platform,primary_relpath,display_name,extension,bundle_hash,normalized_name) "
+                    "VALUES('vita',?,?,'.bin',?,?)",
+                    (path, Path(path).stem, f"legacy-{index}", Path(path).stem),
+                )
+                game_id = connection.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
+                connection.execute(
+                    "INSERT INTO game_files(game_id,relpath,device_relpath,size,sha256,kind) "
+                    "VALUES(?,?,?,?,?,'content')",
+                    (game_id, path, path, len(path.encode()), f"sha-{index}"),
+                )
+                connection.execute(
+                    "INSERT INTO device_selections(device_id,game_id) VALUES(?,?)",
+                    (device_id, game_id),
+                )
+                connection.execute(
+                    "INSERT INTO deployments(device_id,game_id,relpath) VALUES(?,?,?)",
+                    (device_id, game_id, path),
+                )
+
+        result = self.service.scan()
+
+        self.assertEqual(result["games"], 1)
+        with self.db.connect() as connection:
+            game = connection.execute("SELECT id,primary_relpath FROM games").fetchone()
+            selected = connection.execute(
+                "SELECT DISTINCT game_id FROM device_selections WHERE device_id=?", (device_id,)
+            ).fetchall()
+            deployed = connection.execute(
+                "SELECT DISTINCT game_id FROM deployments WHERE device_id=?", (device_id,)
+            ).fetchall()
+        self.assertEqual(game["primary_relpath"], f"vita/app/{title_id}")
+        self.assertEqual([row["game_id"] for row in selected], [game["id"]])
+        self.assertEqual([row["game_id"] for row in deployed], [game["id"]])
+
     def test_cartridge_collection_folders_remain_individual_games(self):
         self.write("gba/gba-top100/First Game.gba", b"first")
         self.write("gba/gba-top100/Second Game.gba", b"second")
@@ -233,6 +347,7 @@ class LibraryServiceTests(unittest.TestCase):
     def test_switch_indexes_base_games_but_excludes_updates_and_support_trees(self):
         self.write("switch/Astral Chain [01007300020FA000].xci", b"base")
         self.write("switch/Astral Chain Update [01007300020FA800].nsp", b"update")
+        self.write("switch/Oddly Named Update [001000C001F82A000][196608].nsp", b"update")
         self.write("switch/Updates/Another Game [0100123412345800].nsp", b"update")
         self.write("switch/dlc/Astral Chain Pack [01007300020FA001].nsp", b"dlc")
         self.write("switch/cheats/Astral Chain/60fps.txt", b"cheat")
@@ -294,7 +409,7 @@ class LibraryServiceTests(unittest.TestCase):
         self.service.scan(progress_callback=lambda percent, detail: updates.append((percent, detail)))
 
         self.assertEqual(updates[0], (0, "Discovering library files"))
-        self.assertTrue(any("Hashing" in detail and "of 2 files" in detail for _, detail in updates))
+        self.assertTrue(any("Scanning" in detail and "of 2 files" in detail for _, detail in updates))
         self.assertTrue(any(percent == 92 and "2 games" in detail for percent, detail in updates))
         self.assertEqual(updates[-1], (99, "Finalizing scan"))
 
@@ -339,7 +454,7 @@ class LibraryServiceTests(unittest.TestCase):
 
         def progress(_, detail):
             nonlocal cancel_requested
-            if "Hashing 1 of 2 files" in detail:
+            if "Scanning 1 of 2 files" in detail:
                 cancel_requested = True
 
         def check_cancelled():

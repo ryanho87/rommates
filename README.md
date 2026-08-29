@@ -28,7 +28,8 @@ The MVP supports:
 - SHA-256 exact duplicate detection
 - Normalized-filename possible duplicate review
 - Bundle-aware `.cue`, `.gdi`, and `.m3u` descriptor scanning, including unquoted GDI track filenames with spaces
-- Complete folder bundles for directory-based platforms such as PS3
+- Fast metadata-indexed folder bundles for directory-based platforms such as PS3 and Wii U
+- Vita title-ID bundles combining `app`, `patch`, `addcont`, and `license` trees into one game
 - Native `.3ds`, `.cci`, `.nsp`, `.xci`, and `.vpk` discovery
 - Switch base-game indexing that excludes update title IDs and support trees such as updates, DLC, cheats, and mods
 - Safe bundle rename with descriptor reference rewriting
@@ -177,6 +178,18 @@ Within `roms/switch`, packages in `update`, `updates`, `dlc`, `cheats`, `mods`, 
 `firmware` trees are deliberately excluded from the game catalog. Root-level packages
 whose Nintendo title ID ends in `800`, plus packages explicitly named `Update` or `UPD`,
 are also treated as support content. Base `.nsp` and `.xci` packages remain selectable.
+
+Folder-based games are indexed from their file paths, sizes, and timestamps without reading
+every byte during a normal scan. This keeps large PS3, Wii U, and unpacked Vita libraries
+responsive. Because that structural fingerprint is not proof of identical content, folder
+bundles do not appear as exact SHA-256 duplicates; ROMmates presents same-title folders in
+the possible-duplicate review instead. Single-file and descriptor-based games retain full
+content hashing and exact duplicate detection.
+
+Unpacked Vita libraries use the platform layout directly. ROMmates treats each title ID
+beneath `vita/app` as the primary game and includes files carrying that title ID beneath
+`vita/patch`, `vita/addcont`, and `vita/license`. Orphan support trees without a matching
+`app` title are ignored rather than exposed as thousands of individual ROMs.
 
 Changing a device from **Independent copies** to **Hardlinks preferred** makes the next
 apply atomically replace eligible managed copies with hardlinks. The filename Syncthing
