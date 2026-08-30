@@ -6,7 +6,7 @@ product
 
 ## Users
 
-An owner manages a large, inconsistently named ROM library on a private Ubuntu server. Trusted family members browse and download games, while selected contributors can submit new ROMs without receiving cleanup or server-management access. They work primarily from desktop browsers, often reviewing hundreds or thousands of files at once, and deploy selected games into per-device directories that Syncthing distributes to handhelds.
+An owner manages a large, inconsistently named ROM library on a private Ubuntu server. Trusted family members browse and download games, while selected contributors can submit new ROMs without receiving cleanup or server-management access. They work primarily from desktop browsers, often reviewing hundreds or thousands of files at once, but also need to safely manage the collection from a phone while away from home. They deploy selected games into per-device directories that Syncthing distributes to handhelds.
 
 ## Product Purpose
 
@@ -31,4 +31,4 @@ Do not resemble a decorative retro-gaming launcher, an arcade cabinet skin, a ge
 
 ## Accessibility & Inclusion
 
-Meet WCAG 2.1 AA as the baseline. Follow the browser or operating-system light/dark preference, provide visible keyboard focus, maintain non-color state indicators, use semantic controls, and respect reduced-motion settings. The primary experience is desktop-first and responsive across desktop and laptop widths.
+Meet WCAG 2.1 AA as the baseline. Follow the browser or operating-system light/dark preference, provide visible keyboard focus, maintain non-color state indicators, use semantic controls, and respect reduced-motion settings. The primary experience is desktop-first, with a fully usable phone layout that preserves clear navigation, readable game details, and touch-friendly controls.

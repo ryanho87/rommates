@@ -14,6 +14,7 @@
         <div class="brand">
           <img class="brand-mark" src="/static/rommates-icon.png" alt="" width="28" height="24">
           <span>ROMmates</span>
+          <button class="sidebar-close-button" id="sidebar-close-button" type="button" aria-label="Close navigation">×</button>
         </div>
         <nav id="navigation">
           <a class="nav-item active" href="/" data-view="overview"><span>Overview</span></a>
@@ -41,8 +42,11 @@
         </nav>
         <div class="sidebar-foot">
           <div class="account-state hidden" id="account-state">
-            <div><strong id="account-name"></strong><span id="account-role"></span></div>
-            <button class="button secondary small" id="logout-button">Sign out</button>
+            <div class="account-identity"><strong id="account-name"></strong><span id="account-role"></span></div>
+            <div class="account-actions">
+              <button class="button secondary small" id="change-password-button">Password</button>
+              <button class="button secondary small" id="logout-button">Sign out</button>
+            </div>
           </div>
           <div class="root-state">
             <span>Library root</span>
@@ -51,9 +55,13 @@
           <button class="button secondary full" id="scan-button">Scan library</button>
         </div>
       </aside>
+      <button class="nav-backdrop" id="nav-backdrop" type="button" aria-label="Close navigation" tabindex="-1"></button>
 
       <main id="main-content" tabindex="-1">
         <header class="topbar">
+          <button class="mobile-menu-button" id="mobile-menu-button" type="button" aria-label="Open navigation" aria-controls="navigation" aria-expanded="false">
+            <span aria-hidden="true"></span>
+          </button>
           <div>
             <h1 id="page-title">Overview</h1>
             <p id="page-subtitle">Collection health and recent activity.</p>

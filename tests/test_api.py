@@ -117,6 +117,8 @@ class ApiIntegrationTests(unittest.TestCase):
                 response = self.client.get(path)
                 self.assertEqual(response.status_code, 200)
                 self.assertIn('<nav id="navigation">', response.text)
+                self.assertIn('id="mobile-menu-button"', response.text)
+                self.assertIn('id="nav-backdrop"', response.text)
 
         self.assertEqual(self.client.get("/not-a-rommates-page").status_code, 404)
 
@@ -159,6 +161,17 @@ class ApiIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(login.status_code, 200, login.text)
         self.assertTrue(login.cookies.get("rommates_session"))
+        self.assertTrue(login.json()["user"]["must_change_password"])
+        self.assertEqual(self.client.get("/api/games").status_code, 403)
+        changed = self.client.post(
+            "/api/auth/password",
+            json={
+                "current_password": "viewer-test-password",
+                "new_password": "viewer-test-password-changed",
+            },
+        )
+        self.assertEqual(changed.status_code, 200, changed.text)
+        self.assertFalse(changed.json()["user"]["must_change_password"])
         games = self.client.get("/api/games")
         self.assertEqual(games.status_code, 200)
         self.assertEqual(games.json()["items"][0]["devices"], [])
@@ -195,6 +208,15 @@ class ApiIntegrationTests(unittest.TestCase):
             json={"username": "contributor-test", "password": "contributor-test-password"},
         )
         self.assertEqual(login.status_code, 200, login.text)
+        self.assertEqual(self.client.post("/api/uploads", json={}).status_code, 403)
+        changed = self.client.post(
+            "/api/auth/password",
+            json={
+                "current_password": "contributor-test-password",
+                "new_password": "contributor-test-password-changed",
+            },
+        )
+        self.assertEqual(changed.status_code, 200, changed.text)
         created_upload = self.client.post(
             "/api/uploads",
             json={

@@ -118,7 +118,11 @@ The application refuses to start without a token, so a misconfigured launch fail
 
 `ROMMATES_ACCESS_TOKEN` remains the bootstrap administrator credential. Use it to create
 named accounts, recover access, and manage roles. Named sessions use an HttpOnly,
-SameSite cookie and expire after 30 days. Passwords are salted and hashed with scrypt.
+SameSite cookie and expire after 30 days. Passwords require at least 12 characters and
+are salted and hashed with scrypt. Administrators assign a temporary password when they
+create or reset an account; the user must replace it before accessing ROMmates. Signed-in
+users can change their own password from the account controls, which invalidates their
+other sessions.
 
 - **Viewer:** browse the library, inspect cached artwork and rankings, and create a
   short-lived, single-use ROM download.
@@ -127,7 +131,7 @@ SameSite cookie and expire after 30 days. Passwords are salted and hashed with s
 - **Admin:** complete access to scans, cleanup, naming, devices, saves, jobs,
   notifications, upload review, and user management.
 
-Disabled accounts and password resets invalidate their active sessions. Cloudflare Access
+Disabled accounts and administrator password resets invalidate their active sessions. Cloudflare Access
 can remain the outer identity gate, but ROMmates roles are the authorization layer inside
 the service. Do not set `ROMMATES_ALLOW_ANONYMOUS=true` when you want per-user roles;
 anonymous proxy access is intentionally treated as administrator access for backward

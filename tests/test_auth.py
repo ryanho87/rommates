@@ -35,7 +35,21 @@ class AuthServiceTests(unittest.TestCase):
             "BROTHER", "a-long-test-password", "127.0.0.1"
         )
         self.assertEqual(principal.role, "contributor")
+        self.assertTrue(principal.must_change_password)
         self.assertEqual(self.auth.from_session(token).id, user["id"])
+        updated = self.auth.change_password(
+            user["id"], "a-long-test-password", "a-new-long-test-password", token
+        )
+        self.assertFalse(updated.must_change_password)
+        self.assertFalse(self.auth.from_session(token).must_change_password)
+        with self.assertRaisesRegex(LibraryError, "not accepted"):
+            self.auth.authenticate("brother", "a-long-test-password", "old-password")
+        self.assertEqual(
+            self.auth.authenticate(
+                "brother", "a-new-long-test-password", "new-password"
+            )[0].id,
+            user["id"],
+        )
         self.auth.update_user(user["id"], active=False)
         self.assertIsNone(self.auth.from_session(token))
 

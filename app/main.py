@@ -704,6 +704,11 @@ class LoginRequest(BaseModel):
     password: str = Field(min_length=1, max_length=1024)
 
 
+class PasswordChangeRequest(BaseModel):
+    current_password: str = Field(min_length=1, max_length=1024)
+    new_password: str = Field(min_length=PASSWORD_MIN_LENGTH, max_length=1024)
+
+
 class UserCreateRequest(BaseModel):
     username: str = Field(min_length=1, max_length=64)
     display_name: str = Field(default="", max_length=100)
@@ -731,7 +736,7 @@ def request_principal(request: Request) -> Principal:
 def role_allows(role: str, method: str, path: str) -> bool:
     if role == "admin":
         return True
-    if path in {"/api/auth/me", "/api/auth/logout"}:
+    if path in {"/api/auth/me", "/api/auth/logout", "/api/auth/password"}:
         return True
     if method == "GET" and (
         path in {"/api/status", "/api/platforms"}
@@ -779,6 +784,19 @@ async def protect_private_api(request: Request, call_next):
         if principal is None:
             return JSONResponse(status_code=401, content={"detail": "Sign in to continue"})
         request.state.principal = principal
+        if principal.must_change_password and path not in {
+            "/api/auth/me",
+            "/api/auth/logout",
+            "/api/auth/password",
+            "/api/status",
+        }:
+            return JSONResponse(
+                status_code=403,
+                content={
+                    "detail": "Change your temporary password to continue",
+                    "password_change_required": True,
+                },
+            )
         if path.startswith("/mcp") and principal.role != "admin":
             return JSONResponse(status_code=403, content={"detail": "Administrator access is required"})
         if path.startswith("/api/") and not role_allows(principal.role, request.method, path):
@@ -863,6 +881,24 @@ def logout(request: Request):
     return response
 
 
+@app.post("/api/auth/password")
+def change_password(payload: PasswordChangeRequest, request: Request):
+    principal = request_principal(request)
+    if principal.id is None or principal.bootstrap:
+        raise HTTPException(
+            status_code=400,
+            detail="Bootstrap access uses ROMMATES_ACCESS_TOKEN rather than an account password",
+        )
+    updated = auth.change_password(
+        principal.id,
+        payload.current_password,
+        payload.new_password,
+        request.cookies.get("rommates_session", ""),
+    )
+    db.activity("user", f"Changed password for account {updated.username}")
+    return {"user": updated.payload(), "changed": True}
+
+
 @app.get("/api/auth/me")
 def current_user(request: Request):
     principal = request_principal(request)
@@ -870,9 +906,9 @@ def current_user(request: Request):
         "user": principal.payload(),
         "roles": list(ROLES),
         "permissions": {
-            "admin": principal.role == "admin",
-            "upload": principal.role in {"admin", "contributor"},
-            "download": True,
+            "admin": principal.role == "admin" and not principal.must_change_password,
+            "upload": principal.role in {"admin", "contributor"} and not principal.must_change_password,
+            "download": not principal.must_change_password,
         },
     }
 

@@ -1217,7 +1217,18 @@ class SaveSnapshotService:
             rows = [dict(row) for row in connection.execute(
                 "SELECT id,pinned,created_at FROM save_snapshots ORDER BY id DESC"
             )]
+            resolution_snapshots = {
+                row["safety_snapshot_id"]
+                for row in connection.execute(
+                    "SELECT DISTINCT safety_snapshot_id FROM save_conflict_resolutions"
+                )
+            }
         keep: set[int] = {row["id"] for row in rows if row["pinned"]}
+        # A conflict resolution promises that both branches remain recoverable
+        # through its safety snapshot. Retention must therefore treat snapshots
+        # referenced by resolution history as pinned; attempting to prune one is
+        # also rejected by SQLite's foreign-key constraint.
+        keep.update(resolution_snapshots)
         recent = int(settings["retention_recent"])
         keep.update(row["id"] for row in rows[:recent])
         now = datetime.now(timezone.utc)

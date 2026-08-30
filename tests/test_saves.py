@@ -206,6 +206,39 @@ class SaveSnapshotTests(unittest.TestCase):
                 item["canonical_sha256"], item["conflict_sha256"],
             )
 
+    def test_retention_preserves_snapshots_referenced_by_conflict_history(self):
+        current = self.write("retroarch/mGBA/Game.srm", b"current")
+        self.write(
+            "retroarch/mGBA/Game.sync-conflict-20260829-183000-ABC1234.srm", b"conflict"
+        )
+        item = self.service.conflicts()["items"][0]
+        result = self.service.resolve_conflict(
+            item["conflict_relpath"], "current",
+            item["canonical_sha256"], item["conflict_sha256"],
+        )
+        safety_snapshot_id = result["safety_snapshot_id"]
+
+        self.service.update_settings({
+            "retention_recent": 1,
+            "retention_daily": 0,
+            "retention_weekly": 0,
+            "retention_monthly": 0,
+        })
+        current.write_bytes(b"newer-1")
+        self.service.create_snapshot()
+        current.write_bytes(b"newer-2")
+        self.service.create_snapshot()
+
+        with self.db.connect() as connection:
+            safety_snapshot = connection.execute(
+                "SELECT id FROM save_snapshots WHERE id=?", (safety_snapshot_id,)
+            ).fetchone()
+            resolution = connection.execute(
+                "SELECT safety_snapshot_id FROM save_conflict_resolutions"
+            ).fetchone()
+        self.assertIsNotNone(safety_snapshot)
+        self.assertEqual(resolution["safety_snapshot_id"], safety_snapshot_id)
+
     def test_orphan_delete_creates_safety_snapshot_and_removes_only_the_group(self):
         orphan = self.write("saves/mGBA/Old Game.srm", b"old-save")
         state = self.write("states/mGBA/Old Game.state", b"old-state")

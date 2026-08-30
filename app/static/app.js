@@ -105,13 +105,25 @@ const dialogContent = document.querySelector("#dialog-content");
 const dialogConfirm = document.querySelector("#dialog-confirm");
 const dialogCancel = document.querySelector("#dialog-cancel");
 const logoutButton = document.querySelector("#logout-button");
+const changePasswordButton = document.querySelector("#change-password-button");
+const mobileMenuButton = document.querySelector("#mobile-menu-button");
+const navBackdrop = document.querySelector("#nav-backdrop");
+const sidebarCloseButton = document.querySelector("#sidebar-close-button");
 
 function isAdmin() { return state.permissions.admin; }
 function canUpload() { return state.permissions.upload; }
 
 function allowedViews() {
+  if (state.principal?.must_change_password) return new Set();
   if (isAdmin()) return new Set(Object.keys(VIEW_ROUTES));
   return new Set(["library", ...(canUpload() ? ["transfers"] : [])]);
+}
+
+function setMobileNavigation(open) {
+  document.body.classList.toggle("nav-open", open);
+  mobileMenuButton.setAttribute("aria-expanded", String(open));
+  mobileMenuButton.setAttribute("aria-label", open ? "Close navigation" : "Open navigation");
+  if (open) window.requestAnimationFrame(() => sidebarCloseButton.focus());
 }
 
 function applyRoleNavigation() {
@@ -125,6 +137,7 @@ function applyRoleNavigation() {
   account?.classList.remove("hidden");
   document.querySelector("#account-name").textContent = state.principal?.display_name || "ROMmates user";
   document.querySelector("#account-role").textContent = state.principal?.bootstrap ? "Bootstrap admin" : state.principal?.role || "";
+  changePasswordButton.classList.toggle("hidden", Boolean(state.principal?.bootstrap));
 }
 
 // Views re-render by replacing their whole subtree, which destroys the element the
@@ -450,9 +463,9 @@ async function refreshStatus() {
   state.status = await api("/api/status");
   state.principal = state.status.user;
   state.permissions = {
-    admin: state.principal?.role === "admin",
-    upload: ["admin", "contributor"].includes(state.principal?.role),
-    download: true,
+    admin: state.principal?.role === "admin" && !state.principal?.must_change_password,
+    upload: ["admin", "contributor"].includes(state.principal?.role) && !state.principal?.must_change_password,
+    download: !state.principal?.must_change_password,
   };
   applyRoleNavigation();
   document.querySelector("#nav-games").textContent = state.status.games.toLocaleString();
@@ -875,17 +888,17 @@ function gameRows(items, deviceMode = false) {
       </tr>` : "";
     const artwork = !deviceMode && state.artworkId === game.id ? artworkPanel(game) : "";
     return `
-      <tr>
+      <tr class="game-row ${isAdmin() ? "" : "read-only-row"}">
         <td class="checkbox-cell">${isAdmin() ? `<input type="checkbox" aria-label="Select ${escapeHtml(game.display_name)}" data-${deviceMode ? "device" : "row"}-select="${game.id}" ${checked ? "checked" : ""}>` : ""}</td>
         <td class="artwork-cell">${artworkThumb(game, !deviceMode && (isAdmin() || Number(game.artwork_count) > 0))}</td>
         <td class="name-cell" title="${escapeHtml(game.primary_relpath)}"><strong>${escapeHtml(game.display_name)}</strong><span class="path-line">${escapeHtml(game.primary_relpath)}</span></td>
-        <td>${escapeHtml(game.platform)}</td>
+        <td class="platform-cell">${escapeHtml(game.platform)}</td>
         <td class="rating-cell">${gameRating(game)}</td>
-        ${deviceMode ? "" : `<td>${duplicateLabel(game.duplicate_status)}</td>`}
-        <td class="meta">${formatBytes(game.size)}</td>
+        ${deviceMode ? "" : `<td class="duplicate-cell">${duplicateLabel(game.duplicate_status)}</td>`}
+        <td class="meta size-cell">${formatBytes(game.size)}</td>
         <td class="meta optional-column">${game.file_count} ${game.file_count === 1 ? "file" : "files"}</td>
         <td class="meta optional-column">${deviceMode ? deviceTargetState(game) : deviceSummary(game, isAdmin())}</td>
-        ${deviceMode ? "" : `<td class="nowrap">
+        ${deviceMode ? "" : `<td class="nowrap actions-cell">
           <button class="button secondary small" data-download="${game.id}" data-name="${escapeHtml(game.display_name)}">Download</button>
           ${isAdmin() ? `<button class="button secondary small" data-rename="${game.id}">Rename</button><button class="button danger-subtle small" data-delete="${game.id}" data-name="${escapeHtml(game.display_name)}">Trash</button>` : ""}
         </td>`}
@@ -912,7 +925,7 @@ function gamesTable(data, deviceMode = false) {
     return `<div class="empty-state"><div><h2>${noLibrary ? "Your library has not been indexed" : "No ROMs match these filters"}</h2><p>${noLibrary ? "Mount the platform folders at the configured library root, then scan to build the searchable catalog." : "Try a different title, platform, or duplicate status."}</p>${noLibrary ? '<button class="button" data-scan>Scan library</button>' : '<button class="button secondary" data-clear-filters>Clear filters</button>'}</div></div>`;
   }
   return `
-    <div class="table-wrap">
+    <div class="table-wrap library-table">
       <table>
         <thead><tr>
           <th class="checkbox-cell">${isAdmin() ? '<input type="checkbox" aria-label="Select visible ROMs" data-select-all>' : ""}</th>
@@ -2544,8 +2557,8 @@ async function renderUsers() {
     contributor: "Browse, download, and submit staged uploads",
     admin: "Full library, device, save, cleanup, and user access",
   };
-  const rows = data.items.map((user) => `<tr><td class="name-cell"><strong>${escapeHtml(user.display_name)}</strong><span class="path-line">${escapeHtml(user.username)}${state.principal?.id === user.id ? " · You" : ""}</span></td><td><select data-user-role="${user.id}" aria-label="Role for ${escapeHtml(user.username)}">${data.roles.map((role) => `<option value="${role}" ${user.role === role ? "selected" : ""}>${escapeHtml(role)}</option>`).join("")}</select><span class="path-line">${escapeHtml(roleCopy[user.role] || "")}</span></td><td><label class="device-choice compact"><input type="checkbox" data-user-active="${user.id}" ${user.active ? "checked" : ""}><span>${user.active ? "Active" : "Disabled"}</span></label></td><td class="meta">${escapeHtml(user.last_login_at || "Never")}</td><td><form class="inline-password" data-user-password-form="${user.id}"><input class="input" name="password" type="password" required minlength="12" autocomplete="new-password" placeholder="New password" aria-label="New password for ${escapeHtml(user.username)}"><button class="button secondary small">Reset</button></form></td></tr>`).join("");
-  setViewHtml(`<section class="user-create"><div><h2>Add account</h2><p>Contributors submit uploads for administrator review. Viewers cannot change server data.</p></div><form class="user-create-form" id="user-create-form"><label class="field"><span>Username</span><input class="input" name="username" required maxlength="64" autocomplete="off"></label><label class="field"><span>Display name</span><input class="input" name="display_name" maxlength="100" autocomplete="off"></label><label class="field"><span>Initial password</span><input class="input" name="password" type="password" required minlength="12" autocomplete="new-password"></label><label class="field"><span>Role</span><select name="role"><option value="viewer">Viewer</option><option value="contributor">Contributor</option><option value="admin">Admin</option></select></label><button class="button" type="submit">Create account</button></form></section><div class="section-heading"><div><h2>Accounts</h2><p>Role and status changes take effect on the next request.</p></div><span class="meta">${data.items.length.toLocaleString()} total</span></div><div class="table-wrap"><table><thead><tr><th>User</th><th>Role</th><th>Status</th><th>Last login</th><th>Credentials</th></tr></thead><tbody>${rows}</tbody></table></div>`);
+  const rows = data.items.map((user) => `<tr><td class="name-cell"><strong>${escapeHtml(user.display_name)}</strong><span class="path-line">${escapeHtml(user.username)}${state.principal?.id === user.id ? " · You" : ""}</span></td><td><select data-user-role="${user.id}" aria-label="Role for ${escapeHtml(user.username)}">${data.roles.map((role) => `<option value="${role}" ${user.role === role ? "selected" : ""}>${escapeHtml(role)}</option>`).join("")}</select><span class="path-line">${escapeHtml(roleCopy[user.role] || "")}</span></td><td><label class="device-choice compact"><input type="checkbox" data-user-active="${user.id}" ${user.active ? "checked" : ""}><span>${user.active ? "Active" : "Disabled"}</span></label>${user.must_change_password ? '<span class="path-line credential-pending">Password change required</span>' : ""}</td><td class="meta">${escapeHtml(user.last_login_at || "Never")}</td><td><form class="inline-password" data-user-password-form="${user.id}"><input class="input" name="password" type="password" required minlength="12" autocomplete="new-password" placeholder="Temporary password" aria-label="Temporary password for ${escapeHtml(user.username)}"><button class="button secondary small">Reset</button></form></td></tr>`).join("");
+  setViewHtml(`<section class="user-create"><div><h2>Add account</h2><p>Set a temporary password of at least 12 characters. The new user must replace it at first login.</p></div><form class="user-create-form" id="user-create-form"><label class="field"><span>Username</span><input class="input" name="username" required maxlength="64" autocomplete="off"></label><label class="field"><span>Display name</span><input class="input" name="display_name" maxlength="100" autocomplete="off"></label><label class="field"><span>Temporary password</span><input class="input" name="password" type="password" required minlength="12" autocomplete="new-password"></label><label class="field"><span>Role</span><select name="role"><option value="viewer">Viewer</option><option value="contributor">Contributor</option><option value="admin">Admin</option></select></label><button class="button" type="submit">Create account</button></form></section><div class="section-heading"><div><h2>Accounts</h2><p>Role and status changes take effect on the next request. Password resets require another change at login.</p></div><span class="meta">${data.items.length.toLocaleString()} total</span></div><div class="table-wrap"><table><thead><tr><th>User</th><th>Role</th><th>Status</th><th>Last login</th><th>Credentials</th></tr></thead><tbody>${rows}</tbody></table></div>`);
   view.querySelector("#user-create-form")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
@@ -2574,8 +2587,9 @@ async function renderUsers() {
     const password = new FormData(event.currentTarget).get("password");
     try {
       await api(`/api/users/${event.currentTarget.dataset.userPasswordForm}`, { method: "PATCH", body: JSON.stringify({ password }) });
-      toast("Password reset; existing sessions were signed out");
+      toast("Temporary password set; existing sessions were signed out");
       event.currentTarget.reset();
+      await renderUsers();
     } catch (error) { toast(error.message, "error"); }
   }));
 }
@@ -2752,6 +2766,10 @@ async function offerPruneConfirmation(detail) {
 }
 
 async function renderCurrentView() {
+  if (state.principal?.must_change_password) {
+    renderPasswordChange(true);
+    return;
+  }
   view.setAttribute("aria-busy", "true");
   const requestedView = state.view;
   let renderVersion = state.renderVersion;
@@ -2783,8 +2801,12 @@ function renderAuthentication() {
     try {
       localStorage.removeItem("rommates-token");
       localStorage.removeItem("rom-manager-token");
-      await api("/api/auth/login", { method: "POST", body: JSON.stringify({ username: form.get("username"), password: form.get("password") }) });
+      const result = await api("/api/auth/login", { method: "POST", body: JSON.stringify({ username: form.get("username"), password: form.get("password") }) });
       await refreshStatus();
+      if (result.user.must_change_password) {
+        renderPasswordChange(true);
+        return;
+      }
       await loadReferenceData();
       navigateTo(isAdmin() ? "overview" : "library", {}, "replace");
     } catch (error) { toast(error.message, "error"); }
@@ -2808,6 +2830,40 @@ function renderAuthentication() {
   document.querySelector("#login-username").focus();
 }
 
+function renderPasswordChange(required = false) {
+  setHeading(required ? "Choose your password" : "Change password", required
+    ? "Replace the temporary password before using ROMmates."
+    : "Update your account credentials.");
+  setViewHtml(`<div class="auth-panel password-panel"><h2>${required ? "Temporary password" : "Account password"}</h2><p>${required ? "Your administrator can reset access, but only you should know the password you choose here." : "Changing your password signs out your other ROMmates sessions."}</p><form class="auth-form" id="password-change-form"><label class="field"><span>Current password</span><input class="input" name="current_password" type="password" autocomplete="current-password" required></label><label class="field"><span>New password</span><input class="input" name="new_password" type="password" autocomplete="new-password" minlength="12" required aria-describedby="password-requirement"></label><small class="field-help" id="password-requirement">At least 12 characters</small><label class="field"><span>Confirm new password</span><input class="input" name="confirm_password" type="password" autocomplete="new-password" minlength="12" required></label><div class="password-actions">${required ? "" : '<button class="button secondary" type="button" data-cancel-password>Cancel</button>'}<button class="button" type="submit">Change password</button></div></form></div>`);
+  view.querySelector("[data-cancel-password]")?.addEventListener("click", renderCurrentView);
+  view.querySelector("#password-change-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const newPassword = String(form.get("new_password") || "");
+    if (newPassword !== form.get("confirm_password")) {
+      toast("New passwords do not match", "error");
+      return;
+    }
+    const submit = event.currentTarget.querySelector("button[type='submit']");
+    submit.disabled = true;
+    try {
+      const result = await api("/api/auth/password", {
+        method: "POST",
+        body: JSON.stringify({ current_password: form.get("current_password"), new_password: newPassword }),
+      });
+      state.principal = result.user;
+      await refreshStatus();
+      await loadReferenceData();
+      toast("Password changed");
+      navigateTo(isAdmin() ? "overview" : "library", {}, "replace");
+    } catch (error) {
+      submit.disabled = false;
+      toast(error.message, "error");
+    }
+  });
+  view.querySelector("input[name='current_password']")?.focus();
+}
+
 function updateActiveNavigation(viewName) {
   document.querySelectorAll(".nav-item").forEach((item) => {
     const active = item.dataset.view === viewName;
@@ -2829,6 +2885,7 @@ function updateBrowserRoute(viewName, historyMode) {
 }
 
 function navigateTo(viewName, options = {}, historyMode = "push") {
+  setMobileNavigation(false);
   if (!VIEW_ROUTES[viewName]) viewName = "overview";
   if (state.principal && !allowedViews().has(viewName)) viewName = "library";
   updateBrowserRoute(viewName, historyMode);
@@ -2864,6 +2921,15 @@ document.querySelector("#navigation").addEventListener("click", (event) => {
   navigateTo(link.dataset.view);
 });
 
+mobileMenuButton.addEventListener("click", () => {
+  setMobileNavigation(!document.body.classList.contains("nav-open"));
+});
+navBackdrop.addEventListener("click", () => setMobileNavigation(false));
+sidebarCloseButton.addEventListener("click", () => {
+  setMobileNavigation(false);
+  mobileMenuButton.focus();
+});
+
 window.addEventListener("popstate", () => navigateTo(viewFromLocation(), {}, "none"));
 
 scanButton.addEventListener("click", () => startScan());
@@ -2874,6 +2940,11 @@ refreshButton.addEventListener("click", async () => {
 });
 
 document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && document.body.classList.contains("nav-open")) {
+    setMobileNavigation(false);
+    mobileMenuButton.focus();
+    return;
+  }
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
     event.preventDefault();
     document.querySelector("#search-input")?.focus();
@@ -2884,6 +2955,10 @@ async function initialize() {
   updateActiveNavigation(state.view);
   try {
     await refreshStatus();
+    if (state.principal?.must_change_password) {
+      renderPasswordChange(true);
+      return;
+    }
     await loadReferenceData();
     if (!allowedViews().has(state.view)) {
       updateBrowserRoute("library", "replace");
@@ -2910,5 +2985,7 @@ logoutButton.addEventListener("click", async () => {
   document.querySelector("#account-state")?.classList.add("hidden");
   renderAuthentication();
 });
+
+changePasswordButton.addEventListener("click", () => renderPasswordChange(false));
 
 initialize();

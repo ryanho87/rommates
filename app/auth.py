@@ -24,6 +24,7 @@ class Principal:
     display_name: str
     role: str
     bootstrap: bool = False
+    must_change_password: bool = False
 
     def payload(self) -> dict[str, object]:
         return {
@@ -32,6 +33,7 @@ class Principal:
             "display_name": self.display_name,
             "role": self.role,
             "bootstrap": self.bootstrap,
+            "must_change_password": self.must_change_password,
         }
 
 
@@ -137,10 +139,17 @@ class AuthService:
     def list_users(self) -> list[dict[str, object]]:
         with self.db.connect() as connection:
             rows = connection.execute(
-                "SELECT id,username,display_name,role,active,created_at,last_login_at "
+                "SELECT id,username,display_name,role,active,must_change_password,created_at,last_login_at "
                 "FROM users ORDER BY active DESC,username COLLATE NOCASE"
             ).fetchall()
-        return [{**dict(row), "active": bool(row["active"])} for row in rows]
+        return [
+            {
+                **dict(row),
+                "active": bool(row["active"]),
+                "must_change_password": bool(row["must_change_password"]),
+            }
+            for row in rows
+        ]
 
     def create_user(self, username: str, display_name: str, password: str, role: str) -> dict[str, object]:
         username = username.strip()
@@ -153,8 +162,8 @@ class AuthService:
         with self.db.write() as connection:
             try:
                 connection.execute(
-                    "INSERT INTO users(username,username_normalized,display_name,password_hash,role) "
-                    "VALUES(?,?,?,?,?)",
+                    "INSERT INTO users(username,username_normalized,display_name,password_hash,role,must_change_password) "
+                    "VALUES(?,?,?,?,?,1)",
                     (username, normalized, display_name.strip()[:100] or username, password_hash, role),
                 )
             except Exception as exc:
@@ -195,11 +204,42 @@ class AuthService:
             if password:
                 updates.append("password_hash=?")
                 values.append(hash_password(password))
+                updates.append("must_change_password=1")
             values.append(user_id)
             connection.execute(f"UPDATE users SET {','.join(updates)} WHERE id=?", values)
             if not next_active or password:
                 connection.execute("DELETE FROM auth_sessions WHERE user_id=?", (user_id,))
         return next(item for item in self.list_users() if item["id"] == user_id)
+
+    def change_password(
+        self,
+        user_id: int,
+        current_password: str,
+        new_password: str,
+        session_token: str,
+    ) -> Principal:
+        if not session_token:
+            raise LibraryError("Sign in with your ROMmates account to change its password")
+        with self.db.write() as connection:
+            current = connection.execute(
+                "SELECT * FROM users WHERE id=? AND active=1", (user_id,)
+            ).fetchone()
+            if not current or not verify_password(current_password, current["password_hash"]):
+                raise LibraryError("Current password was not accepted")
+            if verify_password(new_password, current["password_hash"]):
+                raise LibraryError("Choose a password you have not already been using")
+            password_hash = hash_password(new_password)
+            connection.execute(
+                "UPDATE users SET password_hash=?,must_change_password=0 WHERE id=?",
+                (password_hash, user_id),
+            )
+            current_token_hash = hashlib.sha256(session_token.encode()).hexdigest()
+            connection.execute(
+                "DELETE FROM auth_sessions WHERE user_id=? AND token_hash<>?",
+                (user_id, current_token_hash),
+            )
+            updated = connection.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
+        return self._principal(updated)
 
     @staticmethod
     def _principal(row) -> Principal:
@@ -208,4 +248,5 @@ class AuthService:
             username=str(row["username"]),
             display_name=str(row["display_name"]),
             role=str(row["role"]),
+            must_change_password=bool(row["must_change_password"]),
         )

@@ -340,6 +340,7 @@ CREATE TABLE IF NOT EXISTS users (
     password_hash TEXT NOT NULL,
     role TEXT NOT NULL CHECK(role IN ('viewer','contributor','admin')),
     active INTEGER NOT NULL DEFAULT 1,
+    must_change_password INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     last_login_at TEXT
 );
@@ -522,6 +523,14 @@ class Database:
                     "ALTER TABLE download_tickets ADD COLUMN requested_by INTEGER REFERENCES users(id)"
                 )
             connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(18)")
+            user_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(users)")
+            }
+            if "must_change_password" not in user_columns:
+                connection.execute(
+                    "ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0"
+                )
+            connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(19)")
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
