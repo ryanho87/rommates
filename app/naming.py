@@ -102,11 +102,20 @@ class NamingService:
             ).fetchall()
             where = "WHERE g.platform=?" if platform else ""
             params = (platform,) if platform else ()
+            # Exact DAT matching is useful for compact cartridge/disc bundles, but
+            # concatenating every hash in unpacked PS3/Vita/Wii U directories can
+            # create multi-megabyte SQLite values just to render Naming. Aggregate
+            # hashes only for small bundles and let metadata/name cleanup handle
+            # large folder games.
             games = connection.execute(
-                "SELECT g.*,COUNT(gf.relpath) AS file_count,"
-                "GROUP_CONCAT(CASE WHEN gf.kind='content' THEN gf.sha256 END) AS content_hashes "
-                "FROM games g LEFT JOIN game_files gf ON gf.game_id=g.id "
-                f"{where} GROUP BY g.id ORDER BY g.display_name COLLATE NOCASE",
+                "SELECT g.*,COALESCE(fc.file_count,0) AS file_count,h.content_hashes "
+                "FROM games g "
+                "LEFT JOIN (SELECT game_id,COUNT(*) AS file_count FROM game_files GROUP BY game_id) fc "
+                "ON fc.game_id=g.id "
+                "LEFT JOIN (SELECT gf.game_id,GROUP_CONCAT(gf.sha256) AS content_hashes "
+                "FROM game_files gf JOIN (SELECT game_id FROM game_files GROUP BY game_id HAVING COUNT(*)<=16) small "
+                "ON small.game_id=gf.game_id WHERE gf.kind='content' GROUP BY gf.game_id) h ON h.game_id=g.id "
+                f"{where} ORDER BY g.display_name COLLATE NOCASE",
                 params,
             ).fetchall()
             screenscraper_titles = {

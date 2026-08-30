@@ -148,6 +148,24 @@ class ScreenScraperTests(unittest.TestCase):
         self.assertEqual(status["status"], "complete")
         self.assertEqual(status["processed_games"], 1)
 
+    def test_bulk_run_can_target_platforms_or_selected_games(self):
+        service = ScreenScraperService(self.settings, self.db)
+        platform_run, created = service.create_bulk_run("cover", platforms=["gba"])
+        self.assertTrue(created)
+        self.assertEqual(platform_run["scope_type"], "platforms")
+        self.assertEqual(platform_run["scope_label"], "gba")
+        self.assertEqual(platform_run["total_games"], 1)
+        with self.db.write() as connection:
+            connection.execute(
+                "UPDATE artwork_bulk_runs SET status='cancelled',completed_at=CURRENT_TIMESTAMP WHERE id=?",
+                (platform_run["id"],),
+            )
+        game_run, created = service.create_bulk_run("full", game_ids=[self.game_id])
+        self.assertTrue(created)
+        self.assertEqual(game_run["scope_type"], "games")
+        self.assertEqual(game_run["scope_label"], "1 selected ROM")
+        self.assertEqual([run["id"] for run in service.bulk_runs()], [game_run["id"], platform_run["id"]])
+
     def test_bulk_run_pauses_for_daily_quota_then_resumes(self):
         service = ScreenScraperService(self.settings, self.db)
         run, _ = service.create_bulk_run("cover")

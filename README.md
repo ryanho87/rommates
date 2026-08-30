@@ -49,7 +49,7 @@ The MVP supports:
 - Safe stop controls for scans and device deployment jobs
 - Automatic infinite loading across library, device, duplicate, naming, save, snapshot, and job-issue results
 - Detailed job reports with timing, structured results, and scroll-loaded unreadable-file paths
-- Deduplicated RetroArch save snapshots with scheduling, retention, historical downloads, and guarded full-state restore
+- Deduplicated multi-emulator save snapshots with scheduling, retention, historical downloads, and guarded full-state restore
 - Read-only RetroArch save-to-ROM matching, orphan detection, and rename impact warnings
 - Snapshot-backed deletion of confirmed orphan save groups
 - ScreenScraper matching with ratings, within-platform ranking, and locally cached artwork
@@ -86,7 +86,7 @@ Every direct child of `devices` containing a `roms` directory is discovered as a
    openssl rand -hex 32
    ```
 
-   Put the generated value in `ROMMATES_ACCESS_TOKEN` and set `EMULATION_ROOT` to the absolute host directory containing `roms` and `devices`. Set `RETROARCH_CLOUD_ROOT` to the host directory that backs RetroArch's WebDAV cloud storage. ROMmates refuses to start when the token or Emulation root is missing.
+   Put the generated value in `ROMMATES_ACCESS_TOKEN` and set `EMULATION_ROOT` to the absolute host directory containing `roms`, `devices`, and the shared `saves` vault. ROMmates refuses to start when the token or Emulation root is missing.
 
 3. Create the state and trash directories as the same Linux user that owns the ROM library:
 
@@ -113,32 +113,33 @@ The token protects the application from unauthenticated and cross-site API reque
 
 The application refuses to start without a token, so a misconfigured launch fails loudly instead of exposing the API. If an authenticated reverse proxy already guards the app, set `ROMMATES_ALLOW_ANONYMOUS=true` to opt out deliberately.
 
-If `RETROARCH_CLOUD_ROOT` is not set, Compose mounts an empty local directory at
-`./data/retroarch-saves`. This keeps existing deployments compatible while the Saves UI
-explains that no cloud files have arrived. The account selected by `PUID` and `PGID` needs
-read/write access to both the WebDAV backing directory and `ROMMATES_DATA_ROOT`. Snapshot
-blobs are stored beneath that data root in `save-snapshots`.
+The save vault is read from `${EMULATION_ROOT}/saves` through the existing `/emulation`
+mount. The account selected by `PUID` and `PGID` needs read/write access to both the
+Emulation directory and `ROMMATES_DATA_ROOT`. Snapshot blobs are stored beneath that data
+root in `save-snapshots`.
 
-## RetroArch save snapshots
+## Shared save vault and snapshots
 
-ROMmates treats RetroArch's WebDAV directory as the live source and stores immutable,
-content-addressed versions under `/data/save-snapshots`. Unchanged files share a single SHA-256 blob,
-so frequent snapshots only consume space for changed save data.
+ROMmates treats `Emulation/saves` as the live Syncthing-backed source and stores immutable,
+content-addressed versions under `/data/save-snapshots`. The expected layout is one
+top-level directory per standalone emulator plus `retroarch/<core>`. Unchanged files share
+a single SHA-256 blob, so frequent snapshots only consume space for changed save data.
 
 The **Saves** screen provides:
 
-- Searchable current WebDAV files
-- A Save matching review queue for orphaned, normalized-name, and ambiguous ROM matches
+- Searchable files grouped by emulator, core, and file type
+- A Save matching review queue for filename-based RetroArch and standalone emulator saves
 - Recoverable orphan cleanup that forces a full safety snapshot before deletion
 - Manual snapshots with optional notes
 - Scheduled snapshots and tiered recent, daily, weekly, and monthly retention
 - Pinned snapshots that retention never removes
 - Complete change previews against the live save tree
-- Historical file downloads that do not alter WebDAV
+- Historical file downloads that do not alter the live vault
 - Full-tree restore with a mandatory pre-restore safety snapshot
 
-Restores include RetroArch's server manifests, not only `.srm` and state files. Close
-RetroArch on every device and allow the final cloud sync to finish before restoring. The
+Identifier-based layouts such as Dolphin memory cards and Ryujinx title-ID directories are
+inventoried and snapshotted, but are not guessed into ROM filename matches. Close every
+emulator on every device and allow Syncthing to finish before restoring. The
 restore job verifies that live files still match the preview, stages and hashes every
 historical file, creates a safety snapshot, and rolls the live directory back if the job
 fails or is stopped during mutation.
@@ -297,16 +298,17 @@ cached for 24 hours, while ROM fingerprints and artwork remain cached until thei
 changes or you explicitly refresh them. Closure, credential, and blocked-client responses
 stop the job with a specific error instead of being retried aggressively.
 
-Use **Fill missing artwork** at the top of Library to queue every game that needs media.
-The default covers-only mode minimizes API use and gets useful library art in place first;
-the full mode also requests a screenshot and logo. This queue is persisted in SQLite,
-skips locally cached assets, pauses when ScreenScraper reports a rate or daily quota limit,
-and resumes automatically after the allowed wait. An interrupted container resumes the
-same queue on startup. Stop cancels the remaining queue without removing completed assets.
+Open **Artwork** to queue missing media for the entire library, one or more platforms, or
+a hand-picked set of ROMs. Covers-only mode minimizes API use and gets useful library art
+in place first; full mode also requests a screenshot and logo. The page shows the active
+run, quota use, live progress, stop and report controls, and the results of past runs.
 
-Select games in Library and choose **Find ratings and artwork**, or use the artwork tile on
-one game. Clicking an existing cover performs an explicit refresh. Ambiguous name matches
-and unmapped platforms are skipped and listed in the job report rather than guessed.
+Artwork queues are persisted in SQLite, skip locally cached assets, pause when
+ScreenScraper reports a rate or daily quota limit, and resume automatically after the
+allowed wait. An interrupted container resumes the same queue on startup. Stop cancels the
+remaining queue without removing completed assets. Ambiguous name matches and unmapped
+platforms are skipped and listed in the job report rather than guessed. Library artwork
+tiles display cached media and link unmatched ROMs into the scoped Artwork workflow.
 
 On the first run, existing files in a device directory are considered unmanaged and will not be deleted. Select matching games in the UI to bring them under management.
 

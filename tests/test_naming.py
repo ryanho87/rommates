@@ -98,6 +98,19 @@ class NamingServiceTests(unittest.TestCase):
         self.assertEqual(suggestion["confidence"], "metadata")
         self.assertEqual(suggestion["source"], "ScreenScraper · hash match")
 
+    def test_large_folder_bundle_does_not_aggregate_every_content_hash(self):
+        for index in range(20):
+            self.write(f"ps3/Folder Game [TEST00001]/PS3_GAME/USRDIR/file-{index:02d}.bin", bytes([index]))
+        self.library.scan()
+        with self.db.connect() as connection:
+            game = connection.execute("SELECT * FROM games WHERE platform='ps3'").fetchone()
+        self.assertIsNotNone(game)
+        self.naming.import_dat("PS3.dat", "ps3", self.dat("Good Name.bin", bytes([0])))
+
+        result = self.naming.suggestions(platform="ps3")
+
+        self.assertEqual(result["total"], 0)
+
     def test_dat_rejects_entity_declarations(self):
         with self.assertRaisesRegex(LibraryError, "DTD or entity"):
             self.naming.import_dat("unsafe.dat", "gba", '<!DOCTYPE x [<!ENTITY x "bad">]><datafile/>')

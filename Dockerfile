@@ -15,8 +15,8 @@ COPY app ./app
 # World-readable so the image still works when compose overrides the runtime user with
 # PUID/PGID (an arbitrary uid with no entry in /etc/passwd). /data and /emulation are
 # bind mounts in practice, so their ownership comes from the host, not from here.
-RUN mkdir -p /data /emulation /saves /snapshots \
-    && chown -R rommates:rommates /app /data /emulation /saves /snapshots \
+RUN mkdir -p /data /emulation /snapshots \
+    && chown -R rommates:rommates /app /data /emulation /snapshots \
     && chmod -R a+rX /app
 
 # Default for a bare `docker run`. compose.yaml overrides this with PUID/PGID so the

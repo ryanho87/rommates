@@ -76,7 +76,7 @@ class Settings:
     # explicit confirmation. Guards against an unmounted library root cascading
     # into every device selection.
     scan_prune_limit: float = 0.5
-    saves_root: Path = Path("/saves")
+    saves_root: Path = Path("/emulation/saves")
     snapshots_root: Path = Path("/snapshots")
     save_snapshot_interval_minutes: int = 360
     save_snapshot_quiet_seconds: int = 2
@@ -151,7 +151,7 @@ class Settings:
                 "ROMMATES_HASH_MAX_BYTES", 512 * 1024 * 1024, 0, 1024 * 1024 * 1024 * 1024
             ),
             scan_prune_limit=_float_env("ROMMATES_SCAN_PRUNE_LIMIT", "ROM_SCAN_PRUNE_LIMIT", 0.5),
-            saves_root=Path(os.getenv("ROMMATES_SAVES_ROOT", "/saves")),
+            saves_root=Path(os.getenv("ROMMATES_SAVES_ROOT", "/emulation/saves")),
             snapshots_root=Path(os.getenv("ROMMATES_SNAPSHOTS_ROOT", "/snapshots")),
             save_snapshot_interval_minutes=_int_env(
                 "ROMMATES_SAVE_SNAPSHOT_INTERVAL_MINUTES", 360, 0, 10080

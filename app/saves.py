@@ -22,6 +22,7 @@ CancelCheck = Callable[[], None]
 
 SAVE_EXTENSIONS = frozenset({
     ".srm", ".sav", ".dsv", ".rtc", ".eep", ".fla", ".sra", ".mpk", ".nv", ".fs",
+    ".gci", ".raw",
 })
 STATE_NAME = re.compile(r"^(?P<name>.+)\.state(?:\d+|\.auto)?(?:\.png)?$", re.IGNORECASE)
 CORE_PLATFORMS = {
@@ -45,6 +46,21 @@ CORE_PLATFORMS = {
     "ppsspp": frozenset({"psp"}),
     "flycast": frozenset({"dreamcast"}),
 }
+
+# Standalone emulators whose save filenames normally retain the ROM stem. Other
+# emulators (notably Dolphin and Ryujinx) use game/title identifiers and are
+# inventoried and snapshotted, but deliberately excluded from filename matching.
+EMULATOR_PLATFORMS = {
+    "melonds": frozenset({"nds"}),
+    "mgba": frozenset({"gba", "gb", "gbc"}),
+    "duckstation": frozenset({"psx", "ps1"}),
+    "pcsx2": frozenset({"ps2"}),
+    "ppsspp": frozenset({"psp"}),
+    "rmg": frozenset({"n64"}),
+    "flycast": frozenset({"dreamcast"}),
+}
+
+IGNORED_SAVE_NAMES = frozenset({".ds_store", ".stfolder", ".stfolder (1)", ".stignore"})
 
 
 @dataclass(frozen=True)
@@ -138,18 +154,88 @@ class SaveSnapshotService:
         root = self.settings.saves_root
         if not root.is_dir():
             raise LibraryError(
-                f"RetroArch save source is unavailable at {root}. Mount its WebDAV backing directory there."
+                f"Save vault is unavailable at {root}. Mount the shared Emulation directory there."
             )
         paths: list[Path] = []
         try:
             for path in root.rglob("*"):
                 if path.is_symlink():
                     continue
+                relative = path.relative_to(root)
+                if self._ignored_relative(relative):
+                    continue
                 if path.is_file():
                     paths.append(path)
         except OSError as exc:
-            raise LibraryError(f"Could not read the RetroArch save source: {exc}") from exc
+            raise LibraryError(f"Could not read the save vault: {exc}") from exc
         return sorted(paths, key=lambda item: item.relative_to(root).as_posix())
+
+    @staticmethod
+    def _ignored_relative(relative: Path) -> bool:
+        """Exclude Syncthing markers, version stores, and Finder metadata."""
+        for part in relative.parts:
+            folded = part.casefold()
+            if folded in IGNORED_SAVE_NAMES or folded == ".stversions":
+                return True
+            if folded.startswith("._"):
+                return True
+        return False
+
+    def _classify(self, relpath: str) -> dict[str, object]:
+        """Describe both the legacy WebDAV tree and the shared emulator vault."""
+        parts = Path(relpath).parts
+        if not parts:
+            return {"emulator": "Unknown", "core": "", "kind": "other", "matchable": False}
+        first = parts[0]
+        first_key = self._core_key(first)
+        filename = parts[-1]
+        suffix = Path(filename).suffix.casefold()
+        state_match = STATE_NAME.match(filename)
+
+        # Legacy RetroArch WebDAV layout: saves/<core>/... and states/<core>/...
+        if first.casefold() in {"saves", "states"}:
+            kind = "save" if first.casefold() == "saves" else "state"
+            core = parts[1] if len(parts) >= 3 else ""
+            content_name = state_match.group("name") if state_match else Path(filename).stem
+            return {
+                "emulator": "RetroArch",
+                "core": core,
+                "kind": kind,
+                "content_name": content_name,
+                "matchable": bool(state_match or suffix in SAVE_EXTENSIONS),
+                "platforms": CORE_PLATFORMS.get(self._core_key(core)),
+                "match_strategy": "filename",
+            }
+
+        emulator = first
+        core = ""
+        if first_key == "retroarch":
+            core = parts[1] if len(parts) >= 3 else ""
+            allowed = CORE_PLATFORMS.get(self._core_key(core))
+            strategy = "filename"
+        else:
+            allowed = EMULATOR_PLATFORMS.get(first_key)
+            strategy = "filename" if allowed else "game_id"
+
+        folded_parts = {part.casefold() for part in parts[1:-1]}
+        if state_match or "states" in folded_parts:
+            kind = "state"
+            content_name = state_match.group("name") if state_match else Path(filename).stem
+        elif suffix in SAVE_EXTENSIONS or "saves" in folded_parts or first_key == "retroarch":
+            kind = "save"
+            content_name = Path(filename).stem
+        else:
+            kind = "other"
+            content_name = Path(filename).stem
+        return {
+            "emulator": "RetroArch" if first_key == "retroarch" else emulator,
+            "core": core,
+            "kind": kind,
+            "content_name": content_name,
+            "matchable": strategy == "filename" and kind in {"save", "state"},
+            "platforms": allowed,
+            "match_strategy": strategy,
+        }
 
     def _quick_signature(self) -> tuple[tuple[str, int, int], ...]:
         root = self.settings.saves_root
@@ -270,12 +356,12 @@ class SaveSnapshotService:
                     stable = True
                     break
             if not stable:
-                raise LibraryError("RetroArch saves kept changing; close content and try the snapshot again")
+                raise LibraryError("Save files kept changing; close all emulators and try the snapshot again")
             try:
                 files, new_bytes = self._capture_files(progress_callback, cancel_check)
                 if self._quick_signature() != after:
                     raise LibraryError(
-                        "RetroArch saves changed before the snapshot could finish; no snapshot was published"
+                        "Save files changed before the snapshot could finish; no snapshot was published"
                     )
             except Exception:
                 # A failed capture may have completed new immutable blobs before a
@@ -314,8 +400,8 @@ class SaveSnapshotService:
             with self.db.write() as connection:
                 connection.execute(
                     "INSERT INTO save_snapshots("
-                    "trigger,note,tree_hash,file_count,logical_bytes,new_bytes,added_count,changed_count,removed_count"
-                    ") VALUES(?,?,?,?,?,?,?,?,?)",
+                    "trigger,note,tree_hash,file_count,logical_bytes,new_bytes,added_count,changed_count,removed_count,source_root"
+                    ") VALUES(?,?,?,?,?,?,?,?,?,?)",
                     (
                         trigger,
                         note.strip()[:500],
@@ -326,6 +412,7 @@ class SaveSnapshotService:
                         added,
                         changed,
                         removed,
+                        str(self.settings.saves_root.resolve()),
                     ),
                 )
                 snapshot_id = connection.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
@@ -375,7 +462,12 @@ class SaveSnapshotService:
                     stat = path.stat()
                 except OSError:
                     continue
-                items.append({"relpath": relpath, "size": stat.st_size, "mtime_ns": stat.st_mtime_ns})
+                items.append({
+                    "relpath": relpath,
+                    "size": stat.st_size,
+                    "mtime_ns": stat.st_mtime_ns,
+                    **self._classify(relpath),
+                })
         total = len(items)
         return {
             "items": items[offset:offset + limit],
@@ -395,22 +487,37 @@ class SaveSnapshotService:
                 "save_files": 0,
                 "state_files": 0,
                 "latest_mtime_ns": 0,
+                "emulators": [],
             }
         root = self.settings.saves_root
         files = total_bytes = save_files = state_files = latest_mtime_ns = 0
+        emulators: dict[str, dict[str, object]] = {}
         for path in self._source_paths():
             try:
                 stat = path.stat()
             except OSError:
                 continue
-            relpath = path.relative_to(root).as_posix().casefold()
+            relpath = path.relative_to(root).as_posix()
+            classification = self._classify(relpath)
             files += 1
             total_bytes += stat.st_size
             latest_mtime_ns = max(latest_mtime_ns, stat.st_mtime_ns)
-            if relpath.startswith("saves/"):
+            if classification["kind"] == "save":
                 save_files += 1
-            elif relpath.startswith("states/"):
+            elif classification["kind"] == "state":
                 state_files += 1
+            emulator = str(classification["emulator"])
+            summary = emulators.setdefault(emulator, {
+                "emulator": emulator, "files": 0, "bytes": 0,
+                "save_files": 0, "state_files": 0, "latest_mtime_ns": 0,
+            })
+            summary["files"] += 1
+            summary["bytes"] += stat.st_size
+            summary["latest_mtime_ns"] = max(int(summary["latest_mtime_ns"]), stat.st_mtime_ns)
+            if classification["kind"] == "save":
+                summary["save_files"] += 1
+            elif classification["kind"] == "state":
+                summary["state_files"] += 1
         return {
             "available": True,
             "files": files,
@@ -418,6 +525,9 @@ class SaveSnapshotService:
             "save_files": save_files,
             "state_files": state_files,
             "latest_mtime_ns": latest_mtime_ns,
+            "emulators": sorted(
+                emulators.values(), key=lambda item: (-int(item["files"]), str(item["emulator"]).casefold())
+            ),
         }
 
     @staticmethod
@@ -431,26 +541,21 @@ class SaveSnapshotService:
         groups: dict[tuple[str, str], dict[str, object]] = {}
         for path in self._source_paths():
             relpath = path.relative_to(root).as_posix()
-            parts = Path(relpath).parts
-            if not parts or parts[0].casefold() not in {"saves", "states"}:
+            classification = self._classify(relpath)
+            if not classification["matchable"]:
                 continue
-            filename = parts[-1]
-            state_match = STATE_NAME.match(filename)
-            if state_match:
-                content_name = state_match.group("name")
-                kind = "state"
-            elif Path(filename).suffix.casefold() in SAVE_EXTENSIONS:
-                content_name = Path(filename).stem
-                kind = "save"
-            else:
-                continue
-            core = parts[1] if len(parts) >= 3 else ""
-            key = (self._core_key(core), content_name.casefold())
+            content_name = str(classification["content_name"])
+            kind = str(classification["kind"])
+            core = str(classification["core"] or classification["emulator"])
+            scope_key = self._core_key(core)
+            key = (scope_key, content_name.casefold())
             group = groups.setdefault(
                 key,
                 {
                     "key": "\x1f".join(key),
                     "core": core,
+                    "emulator": classification["emulator"],
+                    "platforms": classification["platforms"],
                     "content_name": content_name,
                     "files": [],
                     "save_files": 0,
@@ -496,7 +601,7 @@ class SaveSnapshotService:
         rank = {"none": 0, "possible": 1, "exact": 2, "ambiguous": 3}
         groups = self._save_groups()
         for group in groups:
-            allowed = CORE_PLATFORMS.get(self._core_key(str(group["core"])))
+            allowed = group.get("platforms")
 
             def narrow(candidates: list[dict[str, object]]) -> list[dict[str, object]]:
                 if not allowed:
@@ -706,8 +811,20 @@ class SaveSnapshotService:
 
     def compare(self, snapshot_id: int) -> dict[str, object]:
         with self.db.connect() as connection:
-            if not connection.execute("SELECT 1 FROM save_snapshots WHERE id=?", (snapshot_id,)).fetchone():
+            snapshot = connection.execute(
+                "SELECT source_root FROM save_snapshots WHERE id=?", (snapshot_id,)
+            ).fetchone()
+            if not snapshot:
                 raise LibraryError("Save snapshot was not found")
+            current_root = str(self.settings.saves_root.resolve())
+            if not snapshot["source_root"] or snapshot["source_root"] != current_root:
+                return {
+                    "snapshot_id": snapshot_id,
+                    "compatible": False,
+                    "reason": "This snapshot belongs to a previous save source and is download-only.",
+                    "restore": [], "overwrite": [], "delete": [], "unchanged": 0,
+                    "current_tree_hash": "",
+                }
             desired = {
                 row["relpath"]: dict(row)
                 for row in connection.execute(
@@ -725,6 +842,7 @@ class SaveSnapshotService:
         )
         return {
             "snapshot_id": snapshot_id,
+            "compatible": True,
             "current_tree_hash": self._tree_hash(current_list),
             "restore": restore,
             "overwrite": overwrite,
@@ -740,6 +858,17 @@ class SaveSnapshotService:
         cancel_check: CancelCheck | None = None,
     ) -> dict[str, object]:
         with self._operation_lock:
+            with self.db.connect() as connection:
+                snapshot = connection.execute(
+                    "SELECT source_root FROM save_snapshots WHERE id=?", (snapshot_id,)
+                ).fetchone()
+            if not snapshot:
+                raise LibraryError("Save snapshot was not found")
+            if (
+                not snapshot["source_root"]
+                or snapshot["source_root"] != str(self.settings.saves_root.resolve())
+            ):
+                raise LibraryError("This snapshot belongs to a previous save source and cannot be restored")
             current = self._current_hashed(cancel_check)
             if self._tree_hash(current) != expected_tree_hash:
                 raise LibraryError("Save files changed after the restore preview. Refresh the comparison and try again.")

@@ -1,6 +1,7 @@
 const VIEW_ROUTES = Object.freeze({
   overview: "/",
   library: "/library",
+  artwork: "/artwork",
   transfers: "/transfers",
   duplicates: "/duplicates",
   naming: "/naming",
@@ -67,6 +68,12 @@ const state = {
   artworkId: null,
   artworkDetail: null,
   artworkObserver: null,
+  artworkScope: "library",
+  artworkAssetMode: "cover",
+  artworkPlatforms: new Set(),
+  artworkGames: new Map(),
+  artworkSearch: "",
+  artworkPlatform: "",
   renderVersion: 0,
   navigationCache: new Map(),
   prefetchStarted: false,
@@ -445,13 +452,7 @@ function scheduleStatusRefresh() {
       await refreshStatus();
       const isRunning = state.status?.job && ACTIVE_JOB_STATUSES.includes(state.status.job.status);
       if (isRunning && state.view === "jobs") await renderJobs();
-      if (isRunning && state.view === "library" && state.status.job.kind === "artwork_bulk") {
-        const panel = document.querySelector(".artwork-bulk");
-        if (panel) {
-          panel.outerHTML = artworkBulkPanel(await api("/api/artwork/bulk"));
-          bindArtworkBulkEvents();
-        }
-      }
+      if (isRunning && state.view === "artwork" && state.status.job.kind === "artwork_bulk") await renderArtwork();
       if (wasRunning && !isRunning) {
         await reportJobOutcome(state.status.job);
         await loadReferenceData();
@@ -474,8 +475,8 @@ function setHeading(title, subtitle) {
   document.title = title === "Overview" ? "ROMmates" : `${title} · ROMmates`;
 }
 
-function platformOptions(items = state.platforms, countSuffix = "") {
-  return `<option value="">All platforms</option>${items.map((item) => `<option value="${escapeHtml(item.platform)}" ${state.platform === item.platform ? "selected" : ""}>${escapeHtml(item.platform)} (${Number(item.count).toLocaleString()}${escapeHtml(countSuffix)})</option>`).join("")}`;
+function platformOptions(items = state.platforms, countSuffix = "", selectedValue = state.platform) {
+  return `<option value="">All platforms</option>${items.map((item) => `<option value="${escapeHtml(item.platform)}" ${selectedValue === item.platform ? "selected" : ""}>${escapeHtml(item.platform)} (${Number(item.count).toLocaleString()}${escapeHtml(countSuffix)})</option>`).join("")}`;
 }
 
 function duplicateLabel(status) {
@@ -886,7 +887,7 @@ function artworkPanel(game) {
     ? detail.assets.map((asset) => `<figure class="asset-card"><img data-artwork-src="${asset.id}" alt="${escapeHtml(asset.kind)} for ${escapeHtml(game.display_name)}"><figcaption>${escapeHtml(asset.kind)} <span>${formatBytes(asset.size)}</span></figcaption></figure>`).join("")
     : '<div class="artwork-empty"><strong>No artwork cached</strong><p>Match this game with ScreenScraper to add a cover, screenshot, and logo.</p></div>';
   return `<tr class="inline-editor"><td colspan="10"><div class="artwork-panel">
-    <div class="assignment-head"><div><h3>${escapeHtml(metadata?.title || game.display_name)}</h3><p>${metadata ? `Matched by ${escapeHtml(metadata.match_method)} · ScreenScraper game ${escapeHtml(metadata.source_game_id)}` : "No ScreenScraper match yet"}</p></div><div class="bulk-actions"><button class="button secondary small" data-refresh-artwork="${game.id}" data-name="${escapeHtml(game.display_name)}">${detail.assets.length ? "Refresh artwork" : "Find artwork"}</button><button class="button secondary small" data-close-artwork>Close</button></div></div>
+    <div class="assignment-head"><div><h3>${escapeHtml(metadata?.title || game.display_name)}</h3><p>${metadata ? `Matched by ${escapeHtml(metadata.match_method)} · ScreenScraper game ${escapeHtml(metadata.source_game_id)}` : "No ScreenScraper match yet"}</p></div><div class="bulk-actions"><button class="button secondary small" data-manage-game-artwork="${game.id}" data-name="${escapeHtml(game.display_name)}" data-platform="${escapeHtml(game.platform)}">Manage artwork</button><button class="button secondary small" data-close-artwork>Close</button></div></div>
     ${metadata?.description ? `<p class="artwork-description">${escapeHtml(metadata.description)}</p>` : ""}
     <div class="asset-grid">${cards}</div>
   </div></td></tr>`;
@@ -933,7 +934,7 @@ function bulkBarHtml() {
   const hint = offScreen
     ? `<span class="meta"> · ${offScreen} not shown by the current filters</span>`
     : `<span class="meta"> for library cleanup</span>`;
-  return `<div class="bulk-bar"><div><strong>${count} selected</strong>${hint}</div><div class="bulk-actions"><button class="button secondary" data-clear-selection>Clear selection</button><button class="button secondary" data-scrape-selected>Find ratings and artwork</button><button class="button danger" data-delete-selected>Move ${count} to trash</button></div></div>`;
+  return `<div class="bulk-bar"><div><strong>${count} selected</strong>${hint}</div><div class="bulk-actions"><button class="button secondary" data-clear-selection>Clear selection</button><button class="button danger" data-delete-selected>Move ${count} to trash</button></div></div>`;
 }
 
 // Row selection is client-side state, so refresh just this strip instead of refetching
@@ -954,7 +955,6 @@ function bindBulkBarEvents() {
     renderBulkBar();
   });
   view.querySelector("[data-delete-selected]")?.addEventListener("click", deleteSelected);
-  view.querySelector("[data-scrape-selected]")?.addEventListener("click", scrapeSelectedArtwork);
 }
 
 function syncSelectAll() {
@@ -1059,7 +1059,7 @@ async function renderOverview() {
     <section class="dashboard-panel syncthing-panel"><div class="dashboard-panel-head"><div><h2>Syncthing devices</h2><p>${data.syncthing.available ? `${data.syncthing.online.toLocaleString()} of ${data.syncthing.total.toLocaleString()} online${data.syncthing.checked_at ? ` · checked ${dashboardDate(data.syncthing.checked_at)}` : ""}` : "Live connection status from the NUC."}</p></div><button class="text-button" data-refresh-syncthing ${data.syncthing.configured ? "" : "disabled"}>Refresh</button></div>${syncthingHtml}</section>
     <section class="dashboard-panel device-panel"><div class="dashboard-panel-head"><div><h2>Device sync</h2><p>Desired games compared with managed deployments.</p></div><button class="text-button" data-dashboard-view="devices">Manage devices</button></div>${devicesHtml}</section>
     <section class="dashboard-panel coverage-panel"><div class="dashboard-panel-head"><div><h2>Coverage</h2><p>Metadata and recovery readiness.</p></div></div>${coverageBar(data.artwork.games, collection.games, "Games with artwork")}${coverageBar(data.artwork.covers, collection.games, "Games with cover art")}<div class="coverage-facts"><div><span>Cached artwork</span><strong>${data.artwork.assets.toLocaleString()} assets · ${formatBytes(data.artwork.bytes)}</strong></div><div><span>Save snapshots</span><strong>${data.saves.snapshots.toLocaleString()}${data.saves.latest_snapshot ? ` · latest #${data.saves.latest_snapshot.id}` : ""}</strong></div></div></section>
-    <section class="dashboard-panel saves-panel"><div class="dashboard-panel-head"><div><h2>RetroArch cloud</h2><p>${data.saves.error ? escapeHtml(data.saves.error) : "Live files visible to ROMmates."}</p></div><button class="text-button" data-dashboard-view="saves">Open saves</button></div><dl class="save-facts"><div><dt>Battery saves</dt><dd>${data.saves.save_files.toLocaleString()}</dd></div><div><dt>Save states</dt><dd>${data.saves.state_files.toLocaleString()}</dd></div><div><dt>All cloud files</dt><dd>${data.saves.files.toLocaleString()} · ${formatBytes(data.saves.bytes)}</dd></div><div><dt>Last changed</dt><dd>${escapeHtml(savesUpdated)}</dd></div></dl></section>
+    <section class="dashboard-panel saves-panel"><div class="dashboard-panel-head"><div><h2>Save vault</h2><p>${data.saves.error ? escapeHtml(data.saves.error) : "Syncthing-backed emulator saves visible to ROMmates."}</p></div><button class="text-button" data-dashboard-view="saves">Open saves</button></div><dl class="save-facts"><div><dt>Battery saves</dt><dd>${data.saves.save_files.toLocaleString()}</dd></div><div><dt>Save states</dt><dd>${data.saves.state_files.toLocaleString()}</dd></div><div><dt>All vault files</dt><dd>${data.saves.files.toLocaleString()} · ${formatBytes(data.saves.bytes)}</dd></div><div><dt>Last changed</dt><dd>${escapeHtml(savesUpdated)}</dd></div></dl></section>
     <section class="dashboard-panel activity-panel"><div class="dashboard-panel-head"><div><h2>Recent jobs</h2><p>Latest filesystem and metadata work.</p></div><button class="text-button" data-dashboard-view="jobs">All jobs</button></div>${recentJobs}</section>
   </div>`);
 
@@ -1089,88 +1089,17 @@ async function renderOverview() {
   }
 }
 
-function artworkBulkPanel(data) {
-  const run = data.run;
-  const active = run && ACTIVE_JOB_STATUSES.includes(run.status);
-  const processed = Number(run?.processed_games || 0);
-  const total = Number(run?.total_games || 0);
-  const progress = total ? Math.min(100, Math.round(processed * 100 / total)) : 0;
-  const dailyUsed = Number(data.quota?.requests_today || 0);
-  const dailyLimit = Number(data.quota?.max_requests_per_day || 0);
-  const quotaText = dailyLimit
-    ? `${dailyUsed.toLocaleString()} of ${dailyLimit.toLocaleString()} API requests used today`
-    : "ROMmates will follow the limits reported by your ScreenScraper account";
-  const runDetail = active
-    ? `<div class="artwork-bulk-progress"><div><span class="badge ${run.status === "paused" ? "possible" : "unique"}">${escapeHtml(run.status)}</span><strong>${processed.toLocaleString()} of ${total.toLocaleString()} games processed</strong></div><div class="coverage-track" role="progressbar" aria-label="Bulk artwork progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${progress}"><span style="width:${progress}%"></span></div><p>${escapeHtml(run.last_error || (run.status === "queued" ? "Waiting to start" : "Missing artwork is downloading in the background"))}</p></div>`
-    : run
-      ? `<p class="artwork-bulk-last">Last run ${escapeHtml(run.status)}: ${Number(run.matched_games).toLocaleString()} matched, ${Number(run.downloaded_assets).toLocaleString()} assets downloaded, ${Number(run.skipped_games).toLocaleString()} skipped.</p>`
-      : "";
-  return `<section class="artwork-bulk" aria-labelledby="artwork-bulk-title">
-    <div class="artwork-bulk-copy">
-      <h2 id="artwork-bulk-title">Fill missing artwork</h2>
-      <p><strong>${data.missing_covers.toLocaleString()}</strong> games need covers. <strong>${data.missing_full.toLocaleString()}</strong> need a complete cover, screenshot, and logo set.</p>
-      <small>${escapeHtml(quotaText)}. Progress survives container restarts.</small>
-    </div>
-    <div class="artwork-bulk-actions">
-      <label><span class="sr-only">Artwork to download</span><select id="artwork-bulk-mode" ${active ? "disabled" : ""}><option value="cover" ${!data.missing_covers ? "disabled" : ""}>Covers only</option><option value="full" ${!data.missing_covers ? "selected" : ""} ${!data.missing_full ? "disabled" : ""}>Covers, screenshots, and logos</option></select></label>
-      ${active
-        ? `<button class="button secondary" data-open-bulk-job="${run.job_id || ""}" ${!run.job_id ? "disabled" : ""}>View job</button><button class="button danger-subtle" data-cancel-bulk-job="${run.job_id}" ${run.status === "cancelling" || !run.job_id ? "disabled" : ""}>${run.status === "cancelling" ? "Stopping…" : "Stop"}</button>`
-        : `<button class="button" data-start-bulk-artwork ${!data.configured || (!data.missing_covers && !data.missing_full) ? "disabled" : ""}>Download missing artwork</button>`}
-    </div>
-    ${runDetail}
-  </section>`;
-}
-
-function bindArtworkBulkEvents() {
-  view.querySelector("[data-start-bulk-artwork]")?.addEventListener("click", async (event) => {
-    const button = event.currentTarget;
-    button.disabled = true;
-    try {
-      const assetMode = view.querySelector("#artwork-bulk-mode").value;
-      const response = await api("/api/artwork/scrape-all", {
-        method: "POST",
-        body: JSON.stringify({ asset_mode: assetMode }),
-      });
-      toast(response.already_complete
-        ? "Nothing is missing for that artwork mode"
-        : `Bulk artwork queued for ${Number(response.requested).toLocaleString()} games`);
-      await refreshStatus();
-      await renderLibrary();
-    } catch (error) {
-      button.disabled = false;
-      toast(error.message, "error");
-    }
-  });
-  view.querySelector("[data-open-bulk-job]")?.addEventListener("click", (event) => {
-    navigateTo("jobs", { jobId: Number(event.currentTarget.dataset.openBulkJob) || null });
-  });
-  view.querySelector("[data-cancel-bulk-job]")?.addEventListener("click", async (event) => {
-    const button = event.currentTarget;
-    button.disabled = true;
-    try {
-      await api(`/api/jobs/${button.dataset.cancelBulkJob}/cancel`, { method: "POST" });
-      toast("Bulk artwork will stop at the next safe checkpoint");
-      await refreshStatus();
-      await renderLibrary();
-    } catch (error) {
-      button.disabled = false;
-      toast(error.message, "error");
-    }
-  });
-}
-
 async function renderLibrary() {
   const renderVersion = beginPageRender();
   setHeading("Library", "Browse, rename, and clean the canonical collection.");
-  const [response, artworkBulk] = await Promise.all([getGames(), api("/api/artwork/bulk")]);
+  const response = await getGames();
   const ranking = state.rankingOpen && state.platform
     ? await api(`/api/rankings/${encodeURIComponent(state.platform)}`)
     : null;
   if (!pageRenderIsCurrent(renderVersion, "library")) return;
   const key = `library\u001f${state.search}\u001f${state.platform}\u001f${state.duplicate}\u001f${state.sort}`;
   const data = mergeInfinitePage(key, response);
-  setViewHtml(`${artworkBulkPanel(artworkBulk)}${libraryToolbar(true)}${rankingPanel(ranking)}${gamesTable(data)}<div id="bulk-bar-slot"></div>`);
-  bindArtworkBulkEvents();
+  setViewHtml(`${libraryToolbar(true)}${rankingPanel(ranking)}${gamesTable(data)}<div id="bulk-bar-slot"></div>`);
   renderBulkBar();
   syncSelectAll();
   bindFilters(renderLibrary);
@@ -1178,6 +1107,109 @@ async function renderLibrary() {
   bindGameEvents(data, false);
   bindInfiniteScroll(data, renderLibrary);
   loadArtworkImages();
+}
+
+function artworkCurrentRun(run) {
+  if (!run || !ACTIVE_JOB_STATUSES.includes(run.status)) {
+    return `<section class="artwork-current empty"><div><h2>No artwork scan running</h2><p>Start a full-library scan or choose a smaller scope below.</p></div></section>`;
+  }
+  const processed = Number(run.processed_games || 0);
+  const total = Number(run.total_games || 0);
+  const progress = total ? Math.min(100, Math.round(processed * 100 / total)) : 0;
+  const status = ACTIVE_JOB_STATUSES.includes(run.job_status) ? run.job_status : run.status;
+  return `<section class="artwork-current" aria-labelledby="artwork-current-title">
+    <div class="artwork-current-head"><div><span class="badge ${status === "paused" ? "possible" : "unique"}">${escapeHtml(status)}</span><h2 id="artwork-current-title">${escapeHtml(run.scope_label)}</h2><p>${run.asset_mode === "cover" ? "Covers" : "Covers, screenshots, and logos"} · ${processed.toLocaleString()} of ${total.toLocaleString()} ROMs processed</p></div><div class="bulk-actions"><button class="button secondary" data-artwork-job="${run.job_id || ""}" ${run.job_id ? "" : "disabled"}>View report</button><button class="button danger-subtle" data-stop-artwork="${run.job_id || ""}" ${!run.job_id || status === "cancelling" ? "disabled" : ""}>${status === "cancelling" ? "Stopping…" : "Stop scan"}</button></div></div>
+    <div class="coverage-track artwork-progress" role="progressbar" aria-label="Artwork scan progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${progress}"><span style="width:${progress}%"></span></div>
+    <div class="artwork-current-facts"><span>${progress}% complete</span><span>${Number(run.matched_games || 0).toLocaleString()} matched</span><span>${Number(run.downloaded_assets || 0).toLocaleString()} assets downloaded</span><span>${Number(run.skipped_games || 0).toLocaleString()} skipped</span></div>
+    ${run.last_error ? `<p class="issue-warning">${escapeHtml(run.last_error)}</p>` : ""}
+  </section>`;
+}
+
+function artworkScopePicker(gameData) {
+  const scope = state.artworkScope;
+  const scopeReady = scope === "library" || (scope === "platforms" ? state.artworkPlatforms.size > 0 : state.artworkGames.size > 0);
+  const selectedGames = [...state.artworkGames.values()];
+  const resultRows = gameData?.items?.filter((game) => !state.artworkGames.has(game.id)).slice(0, 50) || [];
+  const platforms = state.platforms.map((item) => `<label class="artwork-platform-choice"><input type="checkbox" data-artwork-platform="${escapeHtml(item.platform)}" ${state.artworkPlatforms.has(item.platform) ? "checked" : ""}><span><strong>${escapeHtml(item.platform)}</strong><small>${Number(item.count).toLocaleString()} ROMs</small></span></label>`).join("");
+  const selected = selectedGames.length
+    ? `<div class="artwork-selected-games">${selectedGames.map((game) => `<span>${escapeHtml(game.display_name)} <small>${escapeHtml(game.platform)}</small><button type="button" data-remove-artwork-game="${game.id}" aria-label="Remove ${escapeHtml(game.display_name)}">×</button></span>`).join("")}</div>`
+    : `<p class="meta">No ROMs selected yet.</p>`;
+  const results = resultRows.length
+    ? `<div class="artwork-game-results">${resultRows.map((game) => `<label><input type="checkbox" data-add-artwork-game="${game.id}"><span><strong>${escapeHtml(game.display_name)}</strong><small>${escapeHtml(game.platform)} · ${escapeHtml(game.primary_relpath)}</small></span></label>`).join("")}</div>`
+    : state.artworkSearch || state.artworkPlatform ? `<p class="meta">No matching ROMs.</p>` : `<p class="meta">Search or filter to choose ROMs.</p>`;
+  return `<section class="artwork-scope" aria-labelledby="artwork-scope-title">
+    <div class="section-heading"><div><h2 id="artwork-scope-title">Start an artwork scan</h2><p>Only missing local assets are queued. ScreenScraper limits and automatic backoff still apply.</p></div></div>
+    <div class="artwork-scope-tabs" role="radiogroup" aria-label="Scan scope">
+      <label><input type="radio" name="artwork-scope" value="library" ${scope === "library" ? "checked" : ""}><span>Full library</span></label>
+      <label><input type="radio" name="artwork-scope" value="platforms" ${scope === "platforms" ? "checked" : ""}><span>Platforms</span></label>
+      <label><input type="radio" name="artwork-scope" value="games" ${scope === "games" ? "checked" : ""}><span>ROMs</span></label>
+    </div>
+    ${scope === "platforms" ? `<div class="artwork-platform-grid">${platforms}</div>` : ""}
+    ${scope === "games" ? `<div class="artwork-game-picker">${selected}<div class="toolbar"><label class="search-field"><span class="sr-only">Search ROMs for artwork</span><input id="artwork-search" type="search" value="${escapeHtml(state.artworkSearch)}" placeholder="Search ROMs" autocomplete="off"></label><label><span class="sr-only">Filter ROMs by platform</span><select id="artwork-platform-filter">${platformOptions(state.platforms, "", state.artworkPlatform)}</select></label></div>${results}</div>` : ""}
+    <div class="artwork-start-row"><label class="field"><span>Assets</span><select id="artwork-asset-mode"><option value="cover" ${state.artworkAssetMode === "cover" ? "selected" : ""}>Covers only</option><option value="full" ${state.artworkAssetMode === "full" ? "selected" : ""}>Covers, screenshots, and logos</option></select></label><button class="button" data-start-artwork-scan ${scopeReady ? "" : "disabled"}>Start ${scope === "library" ? "full" : "partial"} scan</button></div>
+  </section>`;
+}
+
+function artworkHistory(runs) {
+  if (!runs.length) return `<section class="artwork-history"><div class="section-heading"><div><h2>Past scans</h2><p>Completed artwork work will appear here.</p></div></div></section>`;
+  return `<section class="artwork-history"><div class="section-heading"><div><h2>Past scans</h2><p>Scope, results, and completion status for previous runs.</p></div></div><div class="table-wrap"><table><thead><tr><th>Scope</th><th>Assets</th><th>Status</th><th>Processed</th><th>Matched</th><th>Downloaded</th><th>Started</th><th>Action</th></tr></thead><tbody>${runs.map((run) => `<tr><td class="name-cell"><strong>${escapeHtml(run.scope_label)}</strong><span>${escapeHtml(run.scope_type)}</span></td><td>${run.asset_mode === "cover" ? "Covers" : "Full set"}</td><td><span class="badge ${run.status === "complete" ? "unique" : run.status === "failed" ? "exact" : run.status === "cancelled" ? "cancelled" : "possible"}">${escapeHtml(run.status)}</span></td><td>${Number(run.processed_games).toLocaleString()} / ${Number(run.total_games).toLocaleString()}</td><td>${Number(run.matched_games).toLocaleString()}</td><td>${Number(run.downloaded_assets).toLocaleString()}</td><td class="meta">${escapeHtml(run.created_at)} UTC</td><td><button class="button secondary small" data-artwork-job="${run.job_id || ""}" ${run.job_id ? "" : "disabled"}>Report</button></td></tr>`).join("")}</tbody></table></div></section>`;
+}
+
+async function renderArtwork() {
+  const renderVersion = beginPageRender();
+  setHeading("Artwork", "Scan ScreenScraper by library, platform, or selected ROMs.");
+  const gameParams = new URLSearchParams({ search: state.artworkSearch, platform: state.artworkPlatform, duplicate: "all", sort: "name_asc", limit: "100", offset: "0" });
+  const requests = [api("/api/artwork/bulk"), api("/api/artwork/runs?limit=100")];
+  if (state.artworkScope === "games") requests.push(api(`/api/games?${gameParams}`));
+  const [summary, runs, gameData = null] = await Promise.all(requests);
+  if (!pageRenderIsCurrent(renderVersion, "artwork")) return;
+  const quotaUsed = Number(summary.quota?.requests_today || 0);
+  const quotaLimit = Number(summary.quota?.max_requests_per_day || 0);
+  const quota = quotaLimit ? `${quotaUsed.toLocaleString()} of ${quotaLimit.toLocaleString()} requests used today` : "Account limits are read from ScreenScraper";
+  const pastRuns = runs.filter((run) => !ACTIVE_JOB_STATUSES.includes(run.status));
+  setViewHtml(`<div class="artwork-summary"><div><span>Coverage</span><strong>${Number(summary.covers).toLocaleString()} / ${Number(summary.games).toLocaleString()} covers</strong></div><div><span>Complete sets</span><strong>${Number(summary.full).toLocaleString()} / ${Number(summary.games).toLocaleString()}</strong></div><div><span>Quota</span><strong>${escapeHtml(quota)}</strong></div></div>${artworkCurrentRun(summary.run)}${artworkScopePicker(gameData)}${artworkHistory(pastRuns)}`);
+  bindArtworkPageEvents();
+}
+
+function bindArtworkPageEvents() {
+  view.querySelectorAll('input[name="artwork-scope"]').forEach((input) => input.addEventListener("change", () => { state.artworkScope = input.value; renderArtwork(); }));
+  view.querySelectorAll("[data-artwork-platform]").forEach((input) => input.addEventListener("change", () => {
+    if (input.checked) state.artworkPlatforms.add(input.dataset.artworkPlatform);
+    else state.artworkPlatforms.delete(input.dataset.artworkPlatform);
+  }));
+  view.querySelector("#artwork-asset-mode")?.addEventListener("change", (event) => { state.artworkAssetMode = event.target.value; });
+  const search = view.querySelector("#artwork-search");
+  let searchTimer;
+  search?.addEventListener("input", () => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => { state.artworkSearch = search.value; renderArtwork(); }, 220);
+  });
+  view.querySelector("#artwork-platform-filter")?.addEventListener("change", (event) => { state.artworkPlatform = event.target.value; renderArtwork(); });
+  view.querySelectorAll("[data-add-artwork-game]").forEach((input) => input.addEventListener("change", () => {
+    const id = Number(input.dataset.addArtworkGame);
+    const row = input.closest("label");
+    state.artworkGames.set(id, { id, display_name: row.querySelector("strong").textContent, platform: row.querySelector("small").textContent.split(" · ")[0] });
+    renderArtwork();
+  }));
+  view.querySelectorAll("[data-remove-artwork-game]").forEach((button) => button.addEventListener("click", () => { state.artworkGames.delete(Number(button.dataset.removeArtworkGame)); renderArtwork(); }));
+  view.querySelector("[data-start-artwork-scan]")?.addEventListener("click", startArtworkScan);
+  view.querySelectorAll("[data-artwork-job]").forEach((button) => button.addEventListener("click", () => navigateTo("jobs", { jobId: Number(button.dataset.artworkJob) || null })));
+  view.querySelector("[data-stop-artwork]")?.addEventListener("click", (event) => cancelJob(Number(event.currentTarget.dataset.stopArtwork), event.currentTarget));
+}
+
+async function startArtworkScan(event) {
+  const button = event.currentTarget;
+  const platforms = state.artworkScope === "platforms" ? [...state.artworkPlatforms] : [];
+  const gameIds = state.artworkScope === "games" ? [...state.artworkGames.keys()] : [];
+  if (state.artworkScope === "platforms" && !platforms.length) return toast("Choose at least one platform", "error");
+  if (state.artworkScope === "games" && !gameIds.length) return toast("Choose at least one ROM", "error");
+  button.disabled = true;
+  try {
+    const response = await api("/api/artwork/scrape-all", { method: "POST", body: JSON.stringify({ asset_mode: state.artworkAssetMode, platforms, game_ids: gameIds }) });
+    toast(response.already_complete ? "Nothing is missing in that scope" : response.already_running ? "An artwork scan is already running" : `Queued ${Number(response.requested).toLocaleString()} ROMs`);
+    await refreshStatus();
+    await renderArtwork();
+  } catch (error) { toast(error.message, "error"); button.disabled = false; }
 }
 
 async function renderTransfers() {
@@ -1461,7 +1493,13 @@ function bindGameEvents(data, deviceMode) {
   view.querySelectorAll("[data-artwork-view]").forEach((button) => button.addEventListener("click", async () => {
     const gameId = Number(button.dataset.artworkView);
     if (Number(button.dataset.artworkExisting) === 0) {
-      await scrapeArtwork([gameId], button.dataset.artworkName, true);
+      state.artworkScope = "games";
+      state.artworkGames = new Map([[gameId, {
+        id: gameId,
+        display_name: button.dataset.artworkName,
+        platform: button.closest("tr")?.children?.[3]?.textContent?.trim() || "",
+      }]]);
+      navigateTo("artwork");
       return;
     }
     if (state.artworkId === gameId) {
@@ -1485,11 +1523,15 @@ function bindGameEvents(data, deviceMode) {
     state.artworkDetail = null;
     renderCurrentView();
   });
-  view.querySelector("[data-refresh-artwork]")?.addEventListener("click", (event) => scrapeArtwork(
-    [Number(event.currentTarget.dataset.refreshArtwork)],
-    event.currentTarget.dataset.name,
-    !state.artworkDetail?.assets?.length,
-  ));
+  view.querySelector("[data-manage-game-artwork]")?.addEventListener("click", (event) => {
+    state.artworkScope = "games";
+    state.artworkGames = new Map([[Number(event.currentTarget.dataset.manageGameArtwork), {
+      id: Number(event.currentTarget.dataset.manageGameArtwork),
+      display_name: event.currentTarget.dataset.name,
+      platform: event.currentTarget.dataset.platform,
+    }]]);
+    navigateTo("artwork");
+  });
   view.querySelectorAll("[data-assign-devices]").forEach((button) => button.addEventListener("click", async () => {
     const gameId = Number(button.dataset.assignDevices);
     if (state.assigningId === gameId) {
@@ -1532,41 +1574,6 @@ function bindGameEvents(data, deviceMode) {
   }));
   view.querySelector("[data-clear-filters]")?.addEventListener("click", () => { state.search = ""; state.platform = ""; state.duplicate = state.view === "duplicates" ? "exact" : "all"; renderCurrentView(); });
   view.querySelector("[data-scan]")?.addEventListener("click", () => startScan());
-}
-
-async function scrapeArtwork(gameIds, label, missingOnly = true) {
-  try {
-    if (!state.status?.screenscraper?.configured) {
-      throw new Error("Add ScreenScraper developer credentials to Compose before scraping artwork.");
-    }
-    if (!missingOnly) {
-      const confirmed = await confirmAction({
-        title: `Refresh artwork for “${label}”?`,
-        content: "<p>This replaces locally cached ScreenScraper artwork for this game with the current preferred cover, screenshot, and logo.</p>",
-        confirmLabel: "Refresh artwork",
-        cancelLabel: "Keep current artwork",
-        danger: false,
-      });
-      if (!confirmed) return;
-    }
-    const result = await requestJob(
-      "/api/artwork/scrape",
-      { method: "POST", body: JSON.stringify({ game_ids: gameIds, missing_only: missingOnly }) },
-      `Artwork job queued for ${gameIds.length} ${gameIds.length === 1 ? "game" : "games"}`,
-    );
-    toast(`Downloaded ${result.downloaded || 0} assets for ${result.matched || 0} matched games`);
-    if (gameIds.length === 1 && state.artworkId === gameIds[0]) {
-      state.artworkDetail = await api(`/api/games/${gameIds[0]}/artwork`);
-    }
-    await refreshStatus();
-    await renderCurrentView();
-  } catch (error) { toast(error.message, "error"); }
-}
-
-async function scrapeSelectedArtwork() {
-  const gameIds = [...state.selectedRows.keys()];
-  if (!gameIds.length) return;
-  await scrapeArtwork(gameIds, `${gameIds.length} selected games`, true);
 }
 
 async function deleteOne(id, name) {
@@ -1893,7 +1900,7 @@ function saveMatchesHtml(data) {
       <option value="ambiguous" ${state.saveMatchStatus === "ambiguous" ? "selected" : ""}>Needs choice (${summary.ambiguous})</option>
     </select></label>
   </div>`;
-  if (!data.available) return `${toolbar}<div class="empty-state save-empty"><div><h2>Save source is not mounted</h2><p>ROMmates needs the live WebDAV directory to match saves against the ROM library.</p></div></div>`;
+  if (!data.available) return `${toolbar}<div class="empty-state save-empty"><div><h2>Save vault is not mounted</h2><p>ROMmates needs the shared Emulation/saves directory to match filename-based saves against the ROM library.</p></div></div>`;
   if (!data.items.length) return `${toolbar}<div class="empty-state save-empty"><div><h2>No save matches need review</h2><p>${state.saveMatchSearch || state.saveMatchStatus !== "all" ? "Try broader filters." : "Every recognized save and state group has one exact ROM match."}</p></div></div>`;
   const rows = data.items.map((item, index) => {
     const candidates = item.games?.length
@@ -1902,27 +1909,30 @@ function saveMatchesHtml(data) {
     const paths = item.files.map((file) => `<li><code class="save-path">${escapeHtml(file.relpath)}</code></li>`).join("");
     return `<tr><td class="name-cell"><strong>${escapeHtml(item.content_name)}</strong><span class="path-line">${escapeHtml(item.core || "No core directory")}</span><details class="save-paths"><summary>${item.files.length} ${item.files.length === 1 ? "file" : "files"}</summary><ul>${paths}</ul></details></td><td><span class="badge ${saveMatchClass(item.status)}">${saveMatchLabel(item.status)}</span></td><td>${candidates}</td><td class="meta">${item.save_files} saves · ${item.state_files} states<br>${formatBytes(item.bytes)}</td><td class="meta">${new Date(Number(item.latest_mtime_ns) / 1e6).toLocaleString()}</td><td>${item.status === "orphan" ? `<button class="button danger-subtle small" data-delete-save-group="${index}">Review delete</button>` : '<span class="meta">Resolve match first</span>'}</td></tr>`;
   }).join("");
-  return `${toolbar}<p class="save-match-note">Exact filenames are matched first. Orphans can be deleted after ROMmates creates a full safety snapshot; possible and ambiguous matches remain protected.</p><div class="table-wrap"><table><thead><tr><th>RetroArch content name</th><th>Status</th><th>Candidate ROM</th><th>Files</th><th>Last changed</th><th>Action</th></tr></thead><tbody>${rows}</tbody></table></div>${infiniteFooter(data, data.total === 1 ? "save group" : "save groups")}`;
+  return `${toolbar}<p class="save-match-note">ROMmates matches filename-based saves from RetroArch and compatible standalone emulators. Identifier-based saves such as Dolphin and Ryujinx remain protected and are not labeled as orphans.</p><div class="table-wrap"><table><thead><tr><th>Save content name</th><th>Status</th><th>Candidate ROM</th><th>Files</th><th>Last changed</th><th>Action</th></tr></thead><tbody>${rows}</tbody></table></div>${infiniteFooter(data, data.total === 1 ? "save group" : "save groups")}`;
 }
 
 function saveHeader(overview) {
   const settings = overview.settings;
   const latest = overview.latest_snapshot;
   return `<div class="save-strip">
-    <div class="save-source"><div><span class="badge ${settings.available ? "unique" : "exact"}">${settings.available ? "Source available" : "Source unavailable"}</span><strong>RetroArch cloud saves</strong></div><code title="${escapeHtml(settings.source_root)}">${escapeHtml(settings.source_root)}</code><span class="meta">${latest ? `Last snapshot ${escapeHtml(latest.created_at)} UTC` : "No snapshots yet"}</span></div>
+    <div class="save-source"><div><span class="badge ${settings.available ? "unique" : "exact"}">${settings.available ? "Source available" : "Source unavailable"}</span><strong>Syncthing save vault</strong></div><code title="${escapeHtml(settings.source_root)}">${escapeHtml(settings.source_root)}</code><span class="meta">${latest ? `Last snapshot ${escapeHtml(latest.created_at)} UTC` : "No snapshots yet"}</span></div>
     <form class="snapshot-now" data-snapshot-form><label class="field"><span>Snapshot note (optional)</span><input class="input" name="note" maxlength="500" placeholder="Before a long trip, before testing a core…"></label><button class="button" ${settings.available ? "" : "disabled"}>Snapshot now</button></form>
   </div>`;
 }
 
-function currentSavesHtml(data) {
+function currentSavesHtml(data, inventory) {
   const toolbar = `<div class="toolbar"><label class="search-field"><span class="sr-only">Search current saves</span><input id="save-search" type="search" value="${escapeHtml(state.saveSearch)}" placeholder="Search save paths" autocomplete="off"></label></div>`;
   if (!data.available) {
-    return `${toolbar}<div class="empty-state save-empty"><div><h2>Save source is not mounted</h2><p>Mount the WebDAV backing directory at the configured save source path, then refresh ROMmates.</p></div></div>`;
+    return `${toolbar}<div class="empty-state save-empty"><div><h2>Save vault is not mounted</h2><p>Mount the Emulation directory and ensure it contains the top-level saves folder, then refresh ROMmates.</p></div></div>`;
   }
+  const emulatorSummary = inventory?.emulators?.length
+    ? `<div class="save-emulator-grid">${inventory.emulators.map((item) => `<div class="save-emulator-card"><strong>${escapeHtml(item.emulator)}</strong><span>${item.files.toLocaleString()} files · ${formatBytes(item.bytes)}</span><small>${item.save_files.toLocaleString()} saves · ${item.state_files.toLocaleString()} states</small></div>`).join("")}</div>`
+    : "";
   if (!data.items.length) {
-    return `${toolbar}<div class="empty-state save-empty"><div><h2>${state.saveSearch ? "No saves match this search" : "No save files found"}</h2><p>${state.saveSearch ? "Try part of the filename or relative directory." : "RetroArch has not uploaded anything to this WebDAV directory yet."}</p></div></div>`;
+    return `${emulatorSummary}${toolbar}<div class="empty-state save-empty"><div><h2>${state.saveSearch ? "No saves match this search" : "No save files found"}</h2><p>${state.saveSearch ? "Try part of the filename, emulator, or relative directory." : "No emulator save data has arrived through Syncthing yet."}</p></div></div>`;
   }
-  return `${toolbar}<div class="table-wrap"><table><thead><tr><th>Save path</th><th>Size</th><th>Modified</th></tr></thead><tbody>${data.items.map((item) => `<tr><td class="name-cell"><code class="save-path">${escapeHtml(item.relpath)}</code></td><td class="meta">${formatBytes(item.size)}</td><td class="meta">${new Date(Number(item.mtime_ns) / 1e6).toLocaleString()}</td></tr>`).join("")}</tbody></table></div>${infiniteFooter(data, data.total === 1 ? "save file" : "save files")}`;
+  return `${emulatorSummary}${toolbar}<div class="table-wrap"><table><thead><tr><th>Save path</th><th>Emulator</th><th>Type</th><th>Size</th><th>Modified</th></tr></thead><tbody>${data.items.map((item) => `<tr><td class="name-cell"><code class="save-path">${escapeHtml(item.relpath)}</code>${item.core ? `<span class="path-line">${escapeHtml(item.core)}</span>` : ""}</td><td>${escapeHtml(item.emulator)}</td><td><span class="badge ${item.kind === "save" ? "unique" : item.kind === "state" ? "possible" : "cancelled"}">${escapeHtml(item.kind)}</span></td><td class="meta">${formatBytes(item.size)}</td><td class="meta">${new Date(Number(item.mtime_ns) / 1e6).toLocaleString()}</td></tr>`).join("")}</tbody></table></div>${infiniteFooter(data, data.total === 1 ? "vault file" : "vault files")}`;
 }
 
 function snapshotChangeSummary(snapshot) {
@@ -1932,7 +1942,7 @@ function snapshotChangeSummary(snapshot) {
 
 function snapshotDetailHtml(detail, comparison) {
   const snapshot = detail.snapshot;
-  const sourceAvailable = Boolean(comparison);
+  const sourceAvailable = Boolean(comparison && comparison.compatible !== false);
   const files = detail.files.length
     ? `<div class="table-wrap snapshot-files"><table><thead><tr><th>Historical file</th><th>Size</th><th>Action</th></tr></thead><tbody>${detail.files.map((item) => `<tr><td class="name-cell"><code class="save-path">${escapeHtml(item.relpath)}</code></td><td class="meta">${formatBytes(item.size)}</td><td><button class="button secondary small" data-download-save="${escapeHtml(item.relpath)}">Download</button></td></tr>`).join("")}</tbody></table></div>${infiniteFooter({ items: detail.files, total: detail.total }, detail.total === 1 ? "historical file" : "historical files")}`
     : `<p class="report-empty">This snapshot contains no files.</p>`;
@@ -1942,12 +1952,12 @@ function snapshotDetailHtml(detail, comparison) {
     ...comparison.delete.map((path) => ["Delete current", path]),
   ] : [];
   const changeReview = !sourceAvailable
-    ? `<p class="issue-warning" role="note">The live save source is unavailable. Historical files can still be inspected and downloaded, but comparison and restore are disabled.</p>`
+    ? `<p class="issue-warning" role="note">${escapeHtml(comparison?.reason || "The live save source is unavailable.")} Historical files can still be inspected and downloaded, but comparison and restore are disabled.</p>`
     : changes.length
     ? `<details class="restore-changes"><summary>Review all ${changes.length.toLocaleString()} filesystem changes</summary><div class="table-wrap"><table><thead><tr><th>Action</th><th>Path</th></tr></thead><tbody>${changes.map(([action, path]) => `<tr><td>${escapeHtml(action)}</td><td><code class="save-path">${escapeHtml(path)}</code></td></tr>`).join("")}</tbody></table></div></details>`
     : `<p class="report-empty">The live cloud state already matches this snapshot.</p>`;
   const fileSearch = `<div class="toolbar snapshot-search"><label class="search-field"><span class="sr-only">Search snapshot files</span><input id="snapshot-search" type="search" value="${escapeHtml(state.saveSnapshotSearch)}" placeholder="Search files in this snapshot" autocomplete="off"></label></div>`;
-  return `<section class="snapshot-detail" aria-labelledby="snapshot-detail-title"><div class="section-heading report-heading"><div><h2 id="snapshot-detail-title">Snapshot #${snapshot.id}</h2><p>${escapeHtml(snapshot.created_at)} UTC · ${escapeHtml(snapshot.trigger)}${snapshot.note ? ` · ${escapeHtml(snapshot.note)}` : ""}</p></div><button class="button secondary small" data-close-snapshot>Close</button></div><dl class="report-grid report-summary"><div><dt>Files</dt><dd>${snapshot.file_count.toLocaleString()}</dd></div><div><dt>Logical size</dt><dd>${formatBytes(snapshot.logical_bytes)}</dd></div><div><dt>New storage</dt><dd>${formatBytes(snapshot.new_bytes)}</dd></div><div><dt>Restore missing</dt><dd>${sourceAvailable ? comparison.restore.length.toLocaleString() : "Unavailable"}</dd></div><div><dt>Overwrite</dt><dd>${sourceAvailable ? comparison.overwrite.length.toLocaleString() : "Unavailable"}</dd></div><div><dt>Delete current</dt><dd>${sourceAvailable ? comparison.delete.length.toLocaleString() : "Unavailable"}</dd></div></dl>${changeReview}<div class="restore-panel"><div><h3>Restore this complete cloud state</h3><p>ROMmates will first make a safety snapshot, then restore saves and RetroArch sync manifests together. If the live files changed after this comparison, the job will stop.</p><label class="restore-check"><input type="checkbox" data-retroarch-closed ${sourceAvailable ? "" : "disabled"}> <span>I closed RetroArch on every device and let the last sync finish.</span></label></div><button class="button danger" data-restore-snapshot ${sourceAvailable && changes.length ? "" : "disabled"}>Review restore</button></div><div class="section-heading snapshot-file-heading"><div><h3>Files in this snapshot</h3><p>Historical files can be downloaded without changing the live WebDAV directory.</p></div></div>${fileSearch}${files}</section>`;
+  return `<section class="snapshot-detail" aria-labelledby="snapshot-detail-title"><div class="section-heading report-heading"><div><h2 id="snapshot-detail-title">Snapshot #${snapshot.id}</h2><p>${escapeHtml(snapshot.created_at)} UTC · ${escapeHtml(snapshot.trigger)}${snapshot.note ? ` · ${escapeHtml(snapshot.note)}` : ""}</p></div><button class="button secondary small" data-close-snapshot>Close</button></div><dl class="report-grid report-summary"><div><dt>Files</dt><dd>${snapshot.file_count.toLocaleString()}</dd></div><div><dt>Logical size</dt><dd>${formatBytes(snapshot.logical_bytes)}</dd></div><div><dt>New storage</dt><dd>${formatBytes(snapshot.new_bytes)}</dd></div><div><dt>Restore missing</dt><dd>${sourceAvailable ? comparison.restore.length.toLocaleString() : "Unavailable"}</dd></div><div><dt>Overwrite</dt><dd>${sourceAvailable ? comparison.overwrite.length.toLocaleString() : "Unavailable"}</dd></div><div><dt>Delete current</dt><dd>${sourceAvailable ? comparison.delete.length.toLocaleString() : "Unavailable"}</dd></div></dl>${changeReview}<div class="restore-panel"><div><h3>Restore this complete vault state</h3><p>ROMmates will first make a safety snapshot, then restore the entire shared save tree. If live files change after this comparison, the job will stop.</p><label class="restore-check"><input type="checkbox" data-retroarch-closed ${sourceAvailable ? "" : "disabled"}> <span>I closed every emulator on every device and let Syncthing finish.</span></label></div><button class="button danger" data-restore-snapshot ${sourceAvailable && changes.length ? "" : "disabled"}>Review restore</button></div><div class="section-heading snapshot-file-heading"><div><h3>Files in this snapshot</h3><p>Historical files can be downloaded without changing the live save vault.</p></div></div>${fileSearch}${files}</section>`;
 }
 
 function snapshotsHtml(data, detail, comparison) {
@@ -1963,7 +1973,7 @@ function saveSettingsHtml(settings) {
 
 async function renderSaves() {
   const renderVersion = beginPageRender();
-  setHeading("Saves", "Snapshot and restore the complete RetroArch cloud state.");
+  setHeading("Saves", "Inspect, version, and restore the shared emulator save vault.");
   const overview = await navigationApi("/api/saves");
   let content = "";
   let currentData = null;
@@ -1975,7 +1985,7 @@ async function renderSaves() {
     const params = new URLSearchParams({ search: state.saveSearch, limit: 250, offset: state.saveOffset });
     const response = await navigationApi(`/api/saves/current?${params}`);
     currentData = mergeInfinitePage(`saves-current\u001f${state.saveSearch}`, response, (item) => item.relpath);
-    content = currentSavesHtml(currentData);
+    content = currentSavesHtml(currentData, overview.inventory);
   } else if (state.saveTab === "snapshots") {
     snapshotData = await navigationApi("/api/saves/snapshots?limit=100");
     if (state.saveSnapshotId && snapshotData.items.some((item) => item.id === state.saveSnapshotId)) {
@@ -2065,7 +2075,7 @@ async function renderSaves() {
     const paths = group.files.map((file) => `<li><code>${escapeHtml(file.relpath)}</code> (${formatBytes(file.size)})</li>`).join("");
     const confirmed = await confirmAction({
       title: `Delete orphan saves for “${group.content_name}”?`,
-      content: `<p class="warning-copy">ROMmates will create a full safety snapshot, then delete <strong>${group.files.length} ${group.files.length === 1 ? "file" : "files"}</strong> from the live RetroArch WebDAV directory. Restoring the safety snapshot restores the complete cloud state, not only this group.</p><ul class="confirm-list">${paths}</ul>`,
+      content: `<p class="warning-copy">ROMmates will create a full safety snapshot, then delete <strong>${group.files.length} ${group.files.length === 1 ? "file" : "files"}</strong> from the shared save vault. Restoring the safety snapshot restores the complete vault state, not only this group.</p><ul class="confirm-list">${paths}</ul>`,
       confirmLabel: `Snapshot and delete ${group.files.length}`,
       cancelLabel: "Keep saves",
       danger: true,
@@ -2120,12 +2130,12 @@ async function renderSaves() {
   view.querySelector("[data-restore-snapshot]")?.addEventListener("click", async () => {
     if (!comparison) return;
     if (!view.querySelector("[data-retroarch-closed]")?.checked) {
-      toast("Confirm that RetroArch is closed on every device first", "error");
+      toast("Confirm that every emulator is closed and Syncthing is finished first", "error");
       return;
     }
     const confirmed = await confirmAction({
       title: `Restore save snapshot #${state.saveSnapshotId}?`,
-      content: `<p class="warning-copy">ROMmates will create a safety snapshot, then overwrite <strong>${comparison.overwrite.length}</strong>, restore <strong>${comparison.restore.length}</strong>, and remove <strong>${comparison.delete.length}</strong> current files. RetroArch sync manifests are restored with the saves.</p>`,
+      content: `<p class="warning-copy">ROMmates will create a safety snapshot, then overwrite <strong>${comparison.overwrite.length}</strong>, restore <strong>${comparison.restore.length}</strong>, and remove <strong>${comparison.delete.length}</strong> current files from the shared vault.</p>`,
       confirmLabel: "Restore complete snapshot",
       cancelLabel: "Keep current saves",
       danger: true,
@@ -2527,7 +2537,7 @@ async function renderCurrentView() {
   const requestedView = state.view;
   let renderVersion = state.renderVersion;
   try {
-    const renderers = { overview: renderOverview, library: renderLibrary, transfers: renderTransfers, duplicates: renderDuplicates, naming: renderNaming, devices: renderDevices, saves: renderSaves, jobs: renderJobs, trash: renderTrash };
+    const renderers = { overview: renderOverview, library: renderLibrary, artwork: renderArtwork, transfers: renderTransfers, duplicates: renderDuplicates, naming: renderNaming, devices: renderDevices, saves: renderSaves, jobs: renderJobs, trash: renderTrash };
     const renderPromise = renderers[requestedView]();
     renderVersion = state.renderVersion;
     await renderPromise;

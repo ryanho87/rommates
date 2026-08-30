@@ -227,6 +227,8 @@ CREATE INDEX IF NOT EXISTS idx_job_issues_job ON job_issues(job_id, id);
 CREATE TABLE IF NOT EXISTS artwork_bulk_runs (
     id INTEGER PRIMARY KEY,
     asset_mode TEXT NOT NULL CHECK(asset_mode IN ('cover','full')),
+    scope_type TEXT NOT NULL DEFAULT 'library' CHECK(scope_type IN ('library','platforms','games')),
+    scope_label TEXT NOT NULL DEFAULT 'Entire library',
     status TEXT NOT NULL DEFAULT 'queued' CHECK(status IN ('queued','running','paused','complete','cancelled','failed')),
     total_games INTEGER NOT NULL DEFAULT 0,
     processed_games INTEGER NOT NULL DEFAULT 0,
@@ -273,6 +275,7 @@ CREATE TABLE IF NOT EXISTS save_snapshots (
     added_count INTEGER NOT NULL DEFAULT 0,
     changed_count INTEGER NOT NULL DEFAULT 0,
     removed_count INTEGER NOT NULL DEFAULT 0,
+    source_root TEXT NOT NULL DEFAULT '',
     pinned INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -414,6 +417,26 @@ class Database:
             connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(11)")
             connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(12)")
             connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(13)")
+            artwork_run_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(artwork_bulk_runs)")
+            }
+            if "scope_type" not in artwork_run_columns:
+                connection.execute(
+                    "ALTER TABLE artwork_bulk_runs ADD COLUMN scope_type TEXT NOT NULL DEFAULT 'library'"
+                )
+            if "scope_label" not in artwork_run_columns:
+                connection.execute(
+                    "ALTER TABLE artwork_bulk_runs ADD COLUMN scope_label TEXT NOT NULL DEFAULT 'Entire library'"
+                )
+            connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(14)")
+            save_snapshot_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(save_snapshots)")
+            }
+            if "source_root" not in save_snapshot_columns:
+                connection.execute(
+                    "ALTER TABLE save_snapshots ADD COLUMN source_root TEXT NOT NULL DEFAULT ''"
+                )
+            connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(15)")
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:

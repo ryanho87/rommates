@@ -90,6 +90,70 @@ class SaveSnapshotTests(unittest.TestCase):
         self.assertEqual(impacts[gba_id]["status"], "exact")
         self.assertEqual(impacts[snes_id]["status"], "none")
 
+    def test_shared_vault_classifies_emulators_and_ignores_transport_metadata(self):
+        self.write("retroarch/mGBA/Pokemon Emerald (USA).srm", b"retroarch-save")
+        self.write("melonds/saves/Advance Wars.sav", b"standalone-save")
+        self.write("melonds/states/Advance Wars.state1", b"standalone-state")
+        self.write("dolphin/saves/USA/Card A/GALE01.gci", b"game-id-save")
+        self.write("ryujinx/user/save/profile/title/main", b"title-id-save")
+        self.write("._Finder metadata", b"ignored")
+        self.write(".stfolder/marker", b"ignored")
+
+        current = self.service.current_files(limit=100)
+        self.assertEqual(current["total"], 5)
+        by_path = {item["relpath"]: item for item in current["items"]}
+        self.assertEqual(by_path["retroarch/mGBA/Pokemon Emerald (USA).srm"]["emulator"], "RetroArch")
+        self.assertEqual(by_path["retroarch/mGBA/Pokemon Emerald (USA).srm"]["core"], "mGBA")
+        self.assertEqual(by_path["melonds/states/Advance Wars.state1"]["kind"], "state")
+        self.assertEqual(by_path["dolphin/saves/USA/Card A/GALE01.gci"]["match_strategy"], "game_id")
+
+        summary = self.service.source_summary()
+        self.assertEqual(summary["files"], 5)
+        self.assertEqual(summary["save_files"], 3)
+        self.assertEqual(summary["state_files"], 1)
+        self.assertEqual({item["emulator"] for item in summary["emulators"]}, {
+            "RetroArch", "melonds", "dolphin", "ryujinx",
+        })
+
+    def test_shared_vault_matches_only_filename_based_save_layouts(self):
+        gba_id = self.add_game("gba", "Pokemon Emerald (USA)", "gba/Pokemon Emerald (USA).gba")
+        nds_id = self.add_game("nds", "Advance Wars", "nds/Advance Wars.nds")
+        self.add_game("gc", "Super Smash Bros. Melee", "gc/Super Smash Bros. Melee.iso")
+        self.write("retroarch/mGBA/Pokemon Emerald (USA).srm", b"retroarch-save")
+        self.write("melonds/saves/Advance Wars.sav", b"standalone-save")
+        self.write("dolphin/saves/USA/Card A/GALE01.gci", b"game-id-save")
+
+        impacts = self.service.save_impacts()
+        self.assertEqual(impacts[gba_id]["status"], "exact")
+        self.assertEqual(impacts[nds_id]["status"], "exact")
+        summary = self.service.match_summary()
+        self.assertEqual(summary["groups"], 2)
+        self.assertEqual(summary["orphan"], 0)
+
+    def test_snapshot_excludes_syncthing_and_finder_metadata(self):
+        self.write("retroarch/mGBA/Game.srm", b"save")
+        self.write(".DS_Store", b"finder")
+        self.write("retroarch/._Game.srm", b"apple-double")
+        self.write(".stignore", b"ignore-rules")
+
+        snapshot = self.service.create_snapshot()
+        detail = self.service.snapshot_detail(snapshot["snapshot_id"])
+        self.assertEqual(detail["total"], 1)
+        self.assertEqual(detail["files"][0]["relpath"], "retroarch/mGBA/Game.srm")
+
+    def test_snapshot_from_previous_source_is_download_only(self):
+        self.write("retroarch/mGBA/Game.srm", b"save")
+        snapshot = self.service.create_snapshot()
+        with self.db.write() as connection:
+            connection.execute(
+                "UPDATE save_snapshots SET source_root='' WHERE id=?", (snapshot["snapshot_id"],)
+            )
+
+        comparison = self.service.compare(snapshot["snapshot_id"])
+        self.assertFalse(comparison["compatible"])
+        with self.assertRaisesRegex(LibraryError, "previous save source"):
+            self.service.restore_snapshot(snapshot["snapshot_id"], "")
+
     def test_orphan_delete_creates_safety_snapshot_and_removes_only_the_group(self):
         orphan = self.write("saves/mGBA/Old Game.srm", b"old-save")
         state = self.write("states/mGBA/Old Game.state", b"old-state")

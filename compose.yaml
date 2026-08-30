@@ -14,7 +14,7 @@ services:
       ROMMATES_DEVICES_ROOT: /emulation/devices
       ROMMATES_TRASH_ROOT: /emulation/.rommates-trash
       ROMMATES_DATABASE_PATH: /data/rommates.db
-      ROMMATES_SAVES_ROOT: /saves
+      ROMMATES_SAVES_ROOT: /emulation/saves
       ROMMATES_SNAPSHOTS_ROOT: /data/save-snapshots
       ROMMATES_SAVE_SNAPSHOT_INTERVAL_MINUTES: "${ROMMATES_SAVE_SNAPSHOT_INTERVAL_MINUTES:-360}"
       ROMMATES_SAVE_RETENTION_RECENT: "${ROMMATES_SAVE_RETENTION_RECENT:-24}"
@@ -48,6 +48,5 @@ services:
     volumes:
       - "${ROMMATES_DATA_ROOT:-./data}:/data"
       - "${EMULATION_ROOT:?Set EMULATION_ROOT in .env}:/emulation"
-      - "${RETROARCH_CLOUD_ROOT:-./data/retroarch-saves}:/saves"
     security_opt:
       - no-new-privileges:true

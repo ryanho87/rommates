@@ -102,6 +102,7 @@ class ApiIntegrationTests(unittest.TestCase):
         for path in (
             "/",
             "/library",
+            "/artwork",
             "/transfers",
             "/duplicates",
             "/naming",
@@ -654,6 +655,8 @@ class ApiIntegrationTests(unittest.TestCase):
 
         overview = self.client.get("/api/saves", headers=self.headers).json()
         self.assertGreaterEqual(overview["snapshot_count"], 2)
+        self.assertTrue(overview["inventory"]["available"])
+        self.assertIn("emulators", overview["inventory"])
 
     def test_orphan_save_cleanup_is_snapshot_backed(self):
         orphan = self.root / "saves/saves/mGBA/Abandoned Game.srm"

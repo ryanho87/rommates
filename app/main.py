@@ -575,6 +575,8 @@ class ArtworkScrapeRequest(BaseModel):
 
 class ArtworkBulkRequest(BaseModel):
     asset_mode: str = Field(default="cover", pattern="^(cover|full)$")
+    platforms: list[str] = Field(default_factory=list, max_length=100)
+    game_ids: list[int] = Field(default_factory=list, max_length=500)
 
 
 class RatingScrapeRequest(BaseModel):
@@ -646,6 +648,7 @@ async def transfer_error_handler(_: Request, exc: TransferError):
 
 @app.get("/", include_in_schema=False)
 @app.get("/library", include_in_schema=False)
+@app.get("/artwork", include_in_schema=False)
 @app.get("/transfers", include_in_schema=False)
 @app.get("/duplicates", include_in_schema=False)
 @app.get("/naming", include_in_schema=False)
@@ -1238,6 +1241,11 @@ def artwork_bulk_status():
     return screenscraper.bulk_status()
 
 
+@app.get("/api/artwork/runs")
+def artwork_runs(limit: int = Query(100, ge=1, le=500)):
+    return screenscraper.bulk_runs(limit)
+
+
 @app.post("/api/artwork/scrape-all", status_code=202)
 def scrape_all_artwork(payload: ArtworkBulkRequest):
     if not screenscraper.configured:
@@ -1245,7 +1253,13 @@ def scrape_all_artwork(payload: ArtworkBulkRequest):
             status_code=400,
             detail="ScreenScraper developer credentials are not configured",
         )
-    run, created = screenscraper.create_bulk_run(payload.asset_mode)
+    if payload.platforms and payload.game_ids:
+        raise HTTPException(status_code=400, detail="Choose platforms or ROMs, not both")
+    run, created = screenscraper.create_bulk_run(
+        payload.asset_mode,
+        platforms=payload.platforms,
+        game_ids=payload.game_ids,
+    )
     if not created:
         return {
             "run_id": run["id"],
@@ -1263,7 +1277,8 @@ def scrape_all_artwork(payload: ArtworkBulkRequest):
     try:
         job_id = enqueue_job(
             "artwork_bulk",
-            f"Downloading missing {'covers' if payload.asset_mode == 'cover' else 'artwork'} for {run['total_games']} games",
+            f"Downloading missing {'covers' if payload.asset_mode == 'cover' else 'artwork'} for "
+            f"{run['total_games']} games: {run['scope_label']}",
             screenscraper.scrape_bulk,
             run["id"],
         )
@@ -1644,6 +1659,7 @@ def save_overview():
     snapshots = saves.list_snapshots(limit=1)
     return {
         "settings": saves.settings_payload(),
+        "inventory": saves.source_summary(),
         "latest_snapshot": snapshots["items"][0] if snapshots["items"] else None,
         "snapshot_count": snapshots["total"],
         "matching": saves.match_summary(),
@@ -1765,7 +1781,7 @@ def restore_save_snapshot(snapshot_id: int, payload: SaveRestoreRequest):
     if not payload.retroarch_closed:
         raise HTTPException(
             status_code=400,
-            detail="Confirm that RetroArch is closed on every device before restoring",
+            detail="Confirm that every emulator is closed and Syncthing has finished before restoring",
         )
     with db.connect() as connection:
         if not connection.execute(

@@ -629,9 +629,27 @@ class ScreenScraperService:
             self.db.activity(action, detail)
         return {"requested": len(game_ids), "matched": matched, "downloaded": downloaded, "skipped": skipped, "issues": issues}
 
-    def create_bulk_run(self, asset_mode: str) -> tuple[dict[str, object], bool]:
+    def create_bulk_run(
+        self,
+        asset_mode: str,
+        *,
+        platforms: list[str] | None = None,
+        game_ids: list[int] | None = None,
+    ) -> tuple[dict[str, object], bool]:
         if asset_mode not in {"cover", "full"}:
             raise LibraryError("Artwork mode must be cover or full")
+        platforms = sorted({platform.strip() for platform in (platforms or []) if platform.strip()})
+        game_ids = sorted({int(game_id) for game_id in (game_ids or [])})
+        if platforms and game_ids:
+            raise LibraryError("Choose platforms or ROMs, not both")
+        scope_type = "platforms" if platforms else "games" if game_ids else "library"
+        scope_label = (
+            ", ".join(platforms)
+            if platforms
+            else f"{len(game_ids)} selected ROM{'s' if len(game_ids) != 1 else ''}"
+            if game_ids
+            else "Entire library"
+        )
         with self.db.write() as connection:
             active = connection.execute(
                 "SELECT * FROM artwork_bulk_runs WHERE status IN ('queued','running','paused') "
@@ -648,24 +666,41 @@ class ScreenScraperService:
                     f"NOT EXISTS(SELECT 1 FROM game_assets ga WHERE ga.game_id=g.id AND ga.kind='{kind}')"
                     for kind in ASSET_CHOICES
                 )
-            game_ids = [
+            where = [f"({missing_sql})"]
+            params: list[object] = []
+            if platforms:
+                where.append(f"g.platform IN ({','.join('?' for _ in platforms)})")
+                params.extend(platforms)
+            elif game_ids:
+                where.append(f"g.id IN ({','.join('?' for _ in game_ids)})")
+                params.extend(game_ids)
+            selected_game_ids = [
                 row["id"] for row in connection.execute(
-                    f"SELECT g.id FROM games g WHERE {missing_sql} ORDER BY g.id"
+                    f"SELECT g.id FROM games g WHERE {' AND '.join(where)} ORDER BY g.id",
+                    params,
                 )
             ]
-            status = "queued" if game_ids else "complete"
+            status = "queued" if selected_game_ids else "complete"
             connection.execute(
-                "INSERT INTO artwork_bulk_runs(asset_mode,status,total_games,completed_at) "
-                "VALUES(?,?,?,CASE WHEN ?='complete' THEN CURRENT_TIMESTAMP END)",
-                (asset_mode, status, len(game_ids), status),
+                "INSERT INTO artwork_bulk_runs(asset_mode,scope_type,scope_label,status,total_games,completed_at) "
+                "VALUES(?,?,?,?,?,CASE WHEN ?='complete' THEN CURRENT_TIMESTAMP END)",
+                (asset_mode, scope_type, scope_label, status, len(selected_game_ids), status),
             )
             run_id = connection.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
             connection.executemany(
                 "INSERT INTO artwork_bulk_items(run_id,game_id) VALUES(?,?)",
-                ((run_id, game_id) for game_id in game_ids),
+                ((run_id, game_id) for game_id in selected_game_ids),
             )
             run = connection.execute("SELECT * FROM artwork_bulk_runs WHERE id=?", (run_id,)).fetchone()
         return dict(run), True
+
+    def bulk_runs(self, limit: int = 100) -> list[dict[str, object]]:
+        with self.db.connect() as connection:
+            rows = connection.execute(
+                "SELECT r.*,j.status AS job_status FROM artwork_bulk_runs r "
+                "LEFT JOIN jobs j ON j.id=r.job_id ORDER BY r.id DESC LIMIT ?", (limit,)
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def attach_bulk_job(self, run_id: int, job_id: int) -> None:
         with self.db.write() as connection:
@@ -693,7 +728,8 @@ class ScreenScraperService:
                 "FROM games g"
             ).fetchone())
             latest = connection.execute(
-                "SELECT * FROM artwork_bulk_runs ORDER BY id DESC LIMIT 1"
+                "SELECT r.*,j.status AS job_status FROM artwork_bulk_runs r "
+                "LEFT JOIN jobs j ON j.id=r.job_id ORDER BY r.id DESC LIMIT 1"
             ).fetchone()
         games = int(coverage.get("games") or 0)
         covers = int(coverage.get("covers") or 0)
