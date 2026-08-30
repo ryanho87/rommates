@@ -916,7 +916,7 @@ dialog form { padding: 18px; }
     position: fixed;
     z-index: 400;
     inset: 0 auto 0 0;
-    width: min(86vw, 320px);
+    width: min(82vw, 300px);
     height: 100dvh;
     padding: max(12px, env(safe-area-inset-top)) 12px max(12px, env(safe-area-inset-bottom));
     overflow-y: auto;
@@ -951,11 +951,17 @@ dialog form { padding: 18px; }
     z-index: 350;
     inset: 0;
     display: block;
+    margin: 0;
+    padding: 0;
     border: 0;
+    border-radius: 0;
     background: oklch(12% 0.012 285 / 64%);
-    cursor: default;
+    cursor: pointer;
     opacity: 0;
     pointer-events: none;
+    -webkit-appearance: none;
+    appearance: none;
+    touch-action: manipulation;
     transition: opacity 160ms cubic-bezier(.22,1,.36,1);
   }
   body.nav-open .nav-backdrop { opacity: 1; pointer-events: auto; }

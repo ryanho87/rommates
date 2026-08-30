@@ -120,9 +120,12 @@ function allowedViews() {
 }
 
 function setMobileNavigation(open) {
+  open = Boolean(open && window.matchMedia("(max-width: 720px)").matches);
   document.body.classList.toggle("nav-open", open);
   mobileMenuButton.setAttribute("aria-expanded", String(open));
   mobileMenuButton.setAttribute("aria-label", open ? "Close navigation" : "Open navigation");
+  navBackdrop.setAttribute("aria-hidden", String(!open));
+  document.querySelector("#main-content").inert = open;
   if (open) window.requestAnimationFrame(() => sidebarCloseButton.focus());
 }
 
@@ -2931,6 +2934,10 @@ sidebarCloseButton.addEventListener("click", () => {
 });
 
 window.addEventListener("popstate", () => navigateTo(viewFromLocation(), {}, "none"));
+window.addEventListener("pageshow", () => setMobileNavigation(false));
+window.matchMedia("(min-width: 721px)").addEventListener("change", (event) => {
+  if (event.matches) setMobileNavigation(false);
+});
 
 scanButton.addEventListener("click", () => startScan());
 stopJobButton.addEventListener("click", () => cancelJob(Number(stopJobButton.dataset.jobId), stopJobButton));

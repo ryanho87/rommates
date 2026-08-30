@@ -118,7 +118,7 @@ class ApiIntegrationTests(unittest.TestCase):
                 self.assertEqual(response.status_code, 200)
                 self.assertIn('<nav id="navigation">', response.text)
                 self.assertIn('id="mobile-menu-button"', response.text)
-                self.assertIn('id="nav-backdrop"', response.text)
+                self.assertIn('<div class="nav-backdrop" id="nav-backdrop"', response.text)
 
         self.assertEqual(self.client.get("/not-a-rommates-page").status_code, 404)
 
