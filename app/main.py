@@ -15,6 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import BaseModel, Field, ValidationError
 
+from .auth import AuthService, PASSWORD_MIN_LENGTH, Principal, ROLES
 from .config import Settings
 from .db import Database
 from .library import JobCancelled, LibraryError, LibraryService
@@ -67,6 +68,7 @@ ranking_service = RankingService(settings, db)
 transfers = TransferService(settings, db, library)
 syncthing = SyncthingService(settings)
 notifications = NotificationService(settings, db)
+auth = AuthService(db)
 job_cancellations: dict[int, threading.Event] = {}
 job_cancellations_lock = threading.Lock()
 library_job_lock = threading.Lock()
@@ -541,6 +543,7 @@ async def lifespan(_: FastAPI):
     saves.initialize()
     transfers.initialize()
     notifications.initialize()
+    auth.initialize()
     scheduler_stop = threading.Event()
     scheduler_thread = threading.Thread(target=save_scheduler, args=(scheduler_stop,), daemon=True)
     scheduler_thread.start()
@@ -696,25 +699,90 @@ class NotificationSettingsRequest(BaseModel):
     events: dict[str, bool]
 
 
+class LoginRequest(BaseModel):
+    username: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=1, max_length=1024)
+
+
+class UserCreateRequest(BaseModel):
+    username: str = Field(min_length=1, max_length=64)
+    display_name: str = Field(default="", max_length=100)
+    password: str = Field(min_length=PASSWORD_MIN_LENGTH, max_length=1024)
+    role: str = Field(pattern="^(viewer|contributor|admin)$")
+
+
+class UserUpdateRequest(BaseModel):
+    role: str | None = Field(default=None, pattern="^(viewer|contributor|admin)$")
+    active: bool | None = None
+    password: str = Field(default="", max_length=1024)
+
+
+class UploadReviewRequest(BaseModel):
+    note: str = Field(default="", max_length=500)
+
+
+def request_principal(request: Request) -> Principal:
+    principal = getattr(request.state, "principal", None)
+    if not principal:
+        raise HTTPException(status_code=401, detail="Sign in to continue")
+    return principal
+
+
+def role_allows(role: str, method: str, path: str) -> bool:
+    if role == "admin":
+        return True
+    if path in {"/api/auth/me", "/api/auth/logout"}:
+        return True
+    if method == "GET" and (
+        path in {"/api/status", "/api/platforms"}
+        or path.startswith("/api/games")
+        or path.startswith("/api/artwork/assets/")
+        or path.startswith("/api/rankings/")
+    ):
+        return True
+    if method == "POST" and path.startswith("/api/games/") and path.endswith("/download-ticket"):
+        return True
+    if (
+        role == "contributor"
+        and path.startswith("/api/uploads")
+        and not path.endswith(("/approve", "/reject"))
+    ):
+        return True
+    return False
+
+
 @app.middleware("http")
 async def protect_private_api(request: Request, call_next):
     public_download = (
         request.url.path.startswith("/api/downloads/")
         and request.method in {"GET", "HEAD"}
     )
-    private_path = request.url.path.startswith("/api/") or request.url.path.startswith("/mcp")
-    if private_path and request.url.path != "/api/health" and not public_download:
-        if settings.access_token:
-            authorization = request.headers.get("authorization", "")
-            expected = f"Bearer {settings.access_token}"
-            if not secrets.compare_digest(authorization, expected):
-                return JSONResponse(status_code=401, content={"detail": "Access token is required"})
-        if request.method not in {"GET", "HEAD", "OPTIONS"}:
-            if request.headers.get("sec-fetch-site", "").lower() == "cross-site":
-                return JSONResponse(status_code=403, content={"detail": "Cross-site requests are not allowed"})
-            origin = request.headers.get("origin")
-            if origin and origin.rstrip("/") != str(request.base_url).rstrip("/"):
-                return JSONResponse(status_code=403, content={"detail": "Request origin is not allowed"})
+    path = request.url.path
+    private_path = path.startswith("/api/") or path.startswith("/mcp")
+    if private_path and request.method not in {"GET", "HEAD", "OPTIONS"}:
+        if request.headers.get("sec-fetch-site", "").lower() == "cross-site":
+            return JSONResponse(status_code=403, content={"detail": "Cross-site requests are not allowed"})
+        origin = request.headers.get("origin")
+        if origin and origin.rstrip("/") != str(request.base_url).rstrip("/"):
+            return JSONResponse(status_code=403, content={"detail": "Request origin is not allowed"})
+    public_api = path in {"/api/health", "/api/auth/login"} or public_download
+    if private_path and not public_api:
+        principal = None
+        authorization = request.headers.get("authorization", "")
+        expected = f"Bearer {settings.access_token}"
+        if settings.access_token and secrets.compare_digest(authorization, expected):
+            principal = Principal(None, "bootstrap-admin", "Bootstrap administrator", "admin", True)
+        if principal is None:
+            principal = auth.from_session(request.cookies.get("rommates_session", ""))
+        if principal is None and settings.allow_anonymous:
+            principal = Principal(None, "proxy-admin", "Authenticated proxy user", "admin", True)
+        if principal is None:
+            return JSONResponse(status_code=401, content={"detail": "Sign in to continue"})
+        request.state.principal = principal
+        if path.startswith("/mcp") and principal.role != "admin":
+            return JSONResponse(status_code=403, content={"detail": "Administrator access is required"})
+        if path.startswith("/api/") and not role_allows(principal.role, request.method, path):
+            return JSONResponse(status_code=403, content={"detail": "Your role does not allow this action"})
     return await call_next(request)
 
 
@@ -753,6 +821,7 @@ async def transfer_error_handler(_: Request, exc: TransferError):
 @app.get("/jobs", include_in_schema=False)
 @app.get("/trash", include_in_schema=False)
 @app.get("/notifications", include_in_schema=False)
+@app.get("/users", include_in_schema=False)
 def index():
     return FileResponse(STATIC_DIR / "index.html")
 
@@ -760,6 +829,80 @@ def index():
 @app.get("/api/health")
 def health():
     return {"status": "ok"}
+
+
+@app.post("/api/auth/login")
+def login(payload: LoginRequest, request: Request):
+    principal, token, expires_at = auth.authenticate(
+        payload.username,
+        payload.password,
+        request.client.host if request.client else "unknown",
+    )
+    response = JSONResponse({"user": principal.payload(), "expires_at": expires_at})
+    response.set_cookie(
+        "rommates_session",
+        token,
+        max_age=expires_at - int(time.time()),
+        httponly=True,
+        secure=(
+            settings.public_url.startswith("https://")
+            or request.url.scheme == "https"
+            or request.headers.get("x-forwarded-proto", "").split(",", 1)[0].strip() == "https"
+        ),
+        samesite="strict",
+        path="/",
+    )
+    return response
+
+
+@app.post("/api/auth/logout")
+def logout(request: Request):
+    auth.logout(request.cookies.get("rommates_session", ""))
+    response = JSONResponse({"signed_out": True})
+    response.delete_cookie("rommates_session", path="/", samesite="strict")
+    return response
+
+
+@app.get("/api/auth/me")
+def current_user(request: Request):
+    principal = request_principal(request)
+    return {
+        "user": principal.payload(),
+        "roles": list(ROLES),
+        "permissions": {
+            "admin": principal.role == "admin",
+            "upload": principal.role in {"admin", "contributor"},
+            "download": True,
+        },
+    }
+
+
+@app.get("/api/users")
+def users():
+    return {"items": auth.list_users(), "roles": list(ROLES)}
+
+
+@app.post("/api/users", status_code=201)
+def create_user(payload: UserCreateRequest):
+    user = auth.create_user(
+        payload.username, payload.display_name, payload.password, payload.role
+    )
+    db.activity("user", f"Created {user['role']} account {user['username']}")
+    return user
+
+
+@app.patch("/api/users/{user_id}")
+def update_user(user_id: int, payload: UserUpdateRequest, request: Request):
+    principal = request_principal(request)
+    user = auth.update_user(
+        user_id,
+        role=payload.role,
+        active=payload.active,
+        password=payload.password,
+        actor_id=principal.id,
+    )
+    db.activity("user", f"Updated account {user['username']} ({user['role']})")
+    return user
 
 
 @app.get("/api/notifications")
@@ -778,7 +921,8 @@ def test_notification():
 
 
 @app.get("/api/status")
-def status():
+def status(request: Request):
+    principal = request_principal(request)
     with db.connect() as connection:
         counts = connection.execute(
             "SELECT COUNT(*) AS games,COUNT(DISTINCT platform) AS platforms,COALESCE(SUM(size),0) AS bytes FROM games"
@@ -801,18 +945,19 @@ def status():
         "trash": trash,
         "duplicates": duplicates,
         "save_snapshots": save_snapshots,
-        "job": job_payload(current_job) if current_job else None,
+        "job": job_payload(current_job) if current_job and principal.role == "admin" else None,
         "roots": {
-            "library": str(settings.library_root),
-            "devices": str(settings.devices_root),
-            "trash": str(settings.trash_root),
-            "saves": str(settings.saves_root),
-            "snapshots": str(settings.snapshots_root),
-            "media": str(settings.media_root),
+            "library": str(settings.library_root) if principal.role == "admin" else "ROM library",
+            "devices": str(settings.devices_root) if principal.role == "admin" else "Device library",
+            "trash": str(settings.trash_root) if principal.role == "admin" else "Trash",
+            "saves": str(settings.saves_root) if principal.role == "admin" else "Save vault",
+            "snapshots": str(settings.snapshots_root) if principal.role == "admin" else "Snapshots",
+            "media": str(settings.media_root) if principal.role == "admin" else "Artwork cache",
         },
         "screenscraper": screenscraper.status(),
         "rawg": {"configured": ranking_service.configured},
         "syncthing": {"configured": syncthing.configured},
+        "user": principal.payload(),
     }
 
 
@@ -945,6 +1090,7 @@ def platforms():
 
 @app.get("/api/games")
 def games(
+    request: Request,
     search: str = "",
     platform: str = "",
     duplicate: str = Query("all", pattern="^(all|exact|possible|unique)$"),
@@ -956,6 +1102,9 @@ def games(
     limit: int = Query(200, ge=1, le=1000),
     offset: int = Query(0, ge=0),
 ):
+    principal = request_principal(request)
+    if principal.role != "admin" and (device_id is not None or device_scope != "all"):
+        raise HTTPException(status_code=403, detail="Administrator access is required for device views")
     if device_scope != "all" and device_id is None:
         raise HTTPException(status_code=400, detail="A device is required for this view")
     present_relpaths = (
@@ -1157,6 +1306,10 @@ def games(
         for item in items:
             item["devices"].sort(key=lambda device: str(device["name"]).casefold())
             item["device_count"] = len(item["devices"])
+    if principal.role != "admin":
+        for item in items:
+            item["devices"] = []
+            item["device_count"] = 0
     return {
         "items": items,
         "total": total,
@@ -1329,17 +1482,18 @@ def trash_duplicate_groups(payload: BulkDuplicateTrashRequest):
 
 
 @app.get("/api/games/{game_id}")
-def game_detail(game_id: int):
+def game_detail(game_id: int, request: Request):
+    principal = request_principal(request)
     game, files = library.game_bundle(game_id)
-    with db.connect() as connection:
-        devices = [dict(row) for row in connection.execute(
-            "SELECT d.id,d.name,EXISTS(SELECT 1 FROM device_selections ds WHERE ds.device_id=d.id AND ds.game_id=?) AS selected "
-            "FROM devices d ORDER BY d.name", (game_id,)
-        )]
-    impact = saves.save_impacts([game_id]).get(
-        game_id,
-        {"status": "none", "groups": 0, "files": 0, "save_files": 0, "state_files": 0, "paths": [], "content_names": []},
-    )
+    devices: list[dict[str, object]] = []
+    impact = {"status": "none", "groups": 0, "files": 0, "save_files": 0, "state_files": 0, "paths": [], "content_names": []}
+    if principal.role == "admin":
+        with db.connect() as connection:
+            devices = [dict(row) for row in connection.execute(
+                "SELECT d.id,d.name,EXISTS(SELECT 1 FROM device_selections ds WHERE ds.device_id=d.id AND ds.game_id=?) AS selected "
+                "FROM devices d ORDER BY d.name", (game_id,)
+            )]
+        impact = saves.save_impacts([game_id]).get(game_id, impact)
     return {"game": game, "files": files, "devices": devices, "artwork": screenscraper.detail(game_id), "save_impact": impact}
 
 
@@ -1673,12 +1827,14 @@ def bulk_purge(payload: BulkPurgeRequest):
 
 
 @app.get("/api/uploads")
-def upload_sessions():
-    return transfers.list_sessions()
+def upload_sessions(request: Request):
+    principal = request_principal(request)
+    return transfers.list_sessions(principal.id, principal.role == "admin")
 
 
 @app.post("/api/uploads", status_code=201)
 async def create_upload(request: Request):
+    principal = request_principal(request)
     content_length = request.headers.get("content-length")
     if content_length:
         try:
@@ -1700,11 +1856,13 @@ async def create_upload(request: Request):
         payload.bundle_name,
         payload.folder_mode,
         [item.model_dump() for item in payload.files],
+        principal.id,
     )
 
 
 @app.put("/api/uploads/{session_id}/files/{file_index}")
 async def upload_chunk(session_id: str, file_index: int, request: Request):
+    principal = request_principal(request)
     try:
         offset = int(request.headers.get("upload-offset", ""))
     except ValueError:
@@ -1717,12 +1875,28 @@ async def upload_chunk(session_id: str, file_index: int, request: Request):
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid Content-Length") from None
     return await transfers.write_chunk(
-        session_id, file_index, offset, request.stream()
+        session_id,
+        file_index,
+        offset,
+        request.stream(),
+        principal.id,
+        principal.role == "admin",
     )
 
 
-@app.post("/api/uploads/{session_id}/finalize", status_code=202)
-def finalize_upload(session_id: str):
+@app.post("/api/uploads/{session_id}/finalize")
+def finalize_upload(session_id: str, request: Request):
+    principal = request_principal(request)
+    if principal.role == "contributor":
+        upload = transfers.submit(session_id, principal.id)
+        safe_notify(
+            "upload",
+            "ROM upload awaiting review",
+            f"{upload['platform']}/{upload['bundle_name'] or upload['files'][0]['relative_path']} was submitted by {principal.display_name}.",
+            "transfers",
+            dedupe_key=f"upload-review:{session_id}",
+        )
+        return {"submitted": True, "session": upload}
     job_id = enqueue_job(
         "upload_finalize",
         f"Finalizing upload {session_id}",
@@ -1733,14 +1907,42 @@ def finalize_upload(session_id: str):
     return {"job_id": job_id}
 
 
+@app.post("/api/uploads/{session_id}/approve", status_code=202)
+def approve_upload(session_id: str, request: Request):
+    principal = request_principal(request)
+    job_id = enqueue_job(
+        "upload_finalize",
+        f"Approving upload {session_id}",
+        transfers.finalize,
+        session_id,
+        coalesce=True,
+    )
+    with db.write() as connection:
+        connection.execute(
+            "UPDATE upload_sessions SET reviewed_by=?,reviewed_at=CURRENT_TIMESTAMP WHERE id=?",
+            (principal.id, session_id),
+        )
+    return {"job_id": job_id}
+
+
+@app.post("/api/uploads/{session_id}/reject")
+def reject_upload(session_id: str, payload: UploadReviewRequest, request: Request):
+    principal = request_principal(request)
+    return transfers.reject(session_id, principal.id, payload.note)
+
+
 @app.delete("/api/uploads/{session_id}")
-def cancel_upload(session_id: str):
-    return transfers.cancel(session_id)
+def cancel_upload(session_id: str, request: Request):
+    principal = request_principal(request)
+    return transfers.cancel(session_id, principal.id, principal.role == "admin")
 
 
 @app.post("/api/games/{game_id}/download-ticket")
-def game_download_ticket(game_id: int):
-    return transfers.create_download_ticket(game_id)
+def game_download_ticket(game_id: int, request: Request):
+    principal = request_principal(request)
+    ticket = transfers.create_download_ticket(game_id, principal.id)
+    db.activity("download", f"{principal.display_name} requested game {game_id}")
+    return ticket
 
 
 @app.get("/api/downloads/{token}")

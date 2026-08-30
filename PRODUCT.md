@@ -6,7 +6,7 @@ product
 
 ## Users
 
-A single owner manages a large, inconsistently named ROM library on a private Ubuntu server. They work primarily from desktop browsers, often reviewing hundreds or thousands of files at once, and deploy selected games into per-device directories that Syncthing distributes to handhelds.
+An owner manages a large, inconsistently named ROM library on a private Ubuntu server. Trusted family members browse and download games, while selected contributors can submit new ROMs without receiving cleanup or server-management access. They work primarily from desktop browsers, often reviewing hundreds or thousands of files at once, and deploy selected games into per-device directories that Syncthing distributes to handhelds.
 
 ## Product Purpose
 
@@ -27,6 +27,7 @@ Do not resemble a decorative retro-gaming launcher, an arcade cabinet skin, a ge
 3. Treat a game and its dependent files as one understandable bundle.
 4. Separate canonical library cleanup from device deployment while keeping their effects visible.
 5. Prefer recoverable operations and a legible activity history over irreversible convenience.
+6. Give non-admin users the smallest useful permission set, with staged review before contributed files enter the canonical library.
 
 ## Accessibility & Inclusion
 

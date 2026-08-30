@@ -585,6 +585,22 @@ input[type="checkbox"] { width: 15px; height: 15px; margin: 0; accent-color: var
 .notification-event small, .notification-error { display: block; color: var(--text-muted); font-size: 0.7rem; }
 .notification-error { margin-top: 3px; color: var(--danger); }
 .notification-actions { display: flex; gap: 8px; padding-top: 16px; }
+.account-state { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-bottom: 10px; border-bottom: 1px solid var(--border); }
+.account-state > div { min-width: 0; display: grid; }
+.account-state strong { overflow: hidden; text-overflow: ellipsis; font-size: 0.76rem; }
+.account-state span { color: var(--text-muted); font-size: 0.68rem; text-transform: capitalize; }
+.bootstrap-login { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border); }
+.bootstrap-login summary { cursor: pointer; color: var(--text-muted); font-size: 0.76rem; }
+.bootstrap-login .auth-form { margin-top: 12px; }
+.user-create { display: grid; grid-template-columns: minmax(220px, 0.7fr) minmax(520px, 1.3fr); gap: 28px; padding-bottom: 22px; border-bottom: 1px solid var(--border); }
+.user-create h2 { margin: 0 0 4px; font-size: 1rem; }
+.user-create p { max-width: 48ch; margin: 0; color: var(--text-muted); font-size: 0.76rem; }
+.user-create-form { display: grid; grid-template-columns: repeat(2, minmax(160px, 1fr)); gap: 10px; align-items: end; }
+.user-create-form .button { justify-self: start; }
+.inline-password { display: flex; align-items: center; gap: 6px; min-width: 250px; }
+.inline-password .input { min-width: 150px; }
+.upload-review-actions { display: flex; align-items: center; gap: 8px; }
+.upload-review-actions > .input { width: min(260px, 30vw); }
 .retention-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .settings-paths { display: grid; gap: 5px; margin: 14px 0; color: var(--text-muted); font-size: 0.75rem; }
 .settings-paths code { color: var(--text); }
@@ -858,6 +874,10 @@ dialog form { padding: 18px; }
   .conflict-versions > div { grid-template-columns: 1fr; gap: 2px; }
   .settings-section { grid-template-columns: 1fr; }
   .settings-section > p, .settings-section > .field, .settings-section > .device-choice, .settings-section > .retention-grid, .notification-event-list { grid-column: 1; }
+  .user-create { grid-template-columns: 1fr; }
+  .user-create-form { grid-template-columns: 1fr; }
+  .upload-review-actions { align-items: stretch; flex-direction: column; }
+  .upload-review-actions > .input { width: 100%; }
   .rename-arrow { display: none; }
   .duplicate-group-head { align-items: stretch; flex-direction: column; }
   .duplicate-group-head .button { align-self: flex-start; }

@@ -9,6 +9,7 @@ const VIEW_ROUTES = Object.freeze({
   saves: "/saves",
   jobs: "/jobs",
   notifications: "/notifications",
+  users: "/users",
   trash: "/trash",
 });
 
@@ -88,6 +89,8 @@ const state = {
   uploadPlatform: "",
   uploadProgress: null,
   trashSelected: new Map(),
+  principal: null,
+  permissions: { admin: false, upload: false, download: false },
 };
 
 const view = document.querySelector("#view");
@@ -101,6 +104,28 @@ const dialogTitle = document.querySelector("#dialog-title");
 const dialogContent = document.querySelector("#dialog-content");
 const dialogConfirm = document.querySelector("#dialog-confirm");
 const dialogCancel = document.querySelector("#dialog-cancel");
+const logoutButton = document.querySelector("#logout-button");
+
+function isAdmin() { return state.permissions.admin; }
+function canUpload() { return state.permissions.upload; }
+
+function allowedViews() {
+  if (isAdmin()) return new Set(Object.keys(VIEW_ROUTES));
+  return new Set(["library", ...(canUpload() ? ["transfers"] : [])]);
+}
+
+function applyRoleNavigation() {
+  const allowed = allowedViews();
+  document.querySelectorAll("[data-view]").forEach((item) => {
+    item.classList.toggle("hidden", !allowed.has(item.dataset.view));
+  });
+  scanButton.classList.toggle("hidden", !isAdmin());
+  document.querySelector(".root-state")?.classList.toggle("hidden", !isAdmin());
+  const account = document.querySelector("#account-state");
+  account?.classList.remove("hidden");
+  document.querySelector("#account-name").textContent = state.principal?.display_name || "ROMmates user";
+  document.querySelector("#account-role").textContent = state.principal?.bootstrap ? "Bootstrap admin" : state.principal?.role || "";
+}
 
 // Views re-render by replacing their whole subtree, which destroys the element the
 // user is typing into. Capturing the focused control and its caret keeps search and
@@ -323,7 +348,7 @@ function navigationApi(path, options = {}) {
 function prefetchNavigationData() {
   if (state.prefetchStarted) return;
   state.prefetchStarted = true;
-  const paths = [
+  const paths = isAdmin() ? [
     `/api/games?${new URLSearchParams({ search: "", platform: "", duplicate: "all", limit: state.limit, offset: 0 })}`,
     `/api/duplicates?${new URLSearchParams({ kind: "exact", search: "", platform: "", limit: 30, offset: 0 })}`,
     `/api/naming/suggestions?${new URLSearchParams({ search: "", platform: "", confidence: "all", save_impact: "all", limit: state.limit, offset: 0 })}`,
@@ -333,6 +358,8 @@ function prefetchNavigationData() {
     "/api/jobs",
     "/api/activity",
     "/api/trash",
+  ] : [
+    `/api/games?${new URLSearchParams({ search: "", platform: "", duplicate: "all", limit: state.limit, offset: 0 })}`,
   ];
   // Device views intentionally are not prefetched. Reconciling actual device
   // files and storage relationships is useful when opened, but should never
@@ -421,6 +448,13 @@ async function requestJob(path, options, queuedMessage) {
 
 async function refreshStatus() {
   state.status = await api("/api/status");
+  state.principal = state.status.user;
+  state.permissions = {
+    admin: state.principal?.role === "admin",
+    upload: ["admin", "contributor"].includes(state.principal?.role),
+    download: true,
+  };
+  applyRoleNavigation();
   document.querySelector("#nav-games").textContent = state.status.games.toLocaleString();
   document.querySelector("#nav-duplicates").textContent = state.status.duplicates.toLocaleString();
   document.querySelector("#nav-devices").textContent = state.status.devices.toLocaleString();
@@ -468,7 +502,10 @@ function scheduleStatusRefresh() {
 }
 
 async function loadReferenceData() {
-  [state.platforms, state.devices] = await Promise.all([api("/api/platforms"), api("/api/devices")]);
+  [state.platforms, state.devices] = await Promise.all([
+    api("/api/platforms"),
+    isAdmin() ? api("/api/devices") : Promise.resolve([]),
+  ]);
   if (!state.deviceId && state.devices.length) state.deviceId = state.devices[0].id;
 }
 
@@ -528,7 +565,7 @@ function libraryToolbar(includeDuplicate = true, platformItems = state.platforms
   const missingRatings = selectedPlatform
     ? Math.max(0, Number(selectedPlatform.count) - Number(selectedPlatform.rated_count || 0))
     : 0;
-  const ratingAction = state.view !== "duplicates"
+  const ratingAction = state.view !== "duplicates" && isAdmin()
     ? `<button class="button secondary" type="button" data-fetch-ratings ${!selectedPlatform || missingRatings === 0 ? "disabled" : ""}>${selectedPlatform ? missingRatings ? `Fetch ${missingRatings.toLocaleString()} missing ratings` : "Ratings complete" : "Choose a platform for ratings"}</button>`
     : "";
   const rankingAction = state.view === "library"
@@ -592,7 +629,7 @@ function bindFilters(callback) {
 
 function uploadPanel() {
   const selection = state.uploadSelection;
-  const sessions = state.uploadSessions.filter((item) => ["uploading", "finalizing"].includes(item.status));
+  const sessions = state.uploadSessions;
   const fileSummary = selection
     ? `<div class="upload-selection"><strong>${escapeHtml(selection.bundleName || selection.files[0]?.name || "Selected ROM")}</strong><span>${selection.files.length.toLocaleString()} ${selection.files.length === 1 ? "file" : "files"} · ${formatBytes(selection.files.reduce((sum, file) => sum + file.size, 0))}</span></div>`
     : `<p class="meta">Choose one ROM file, a related multi-file set, or an entire game folder. Archives are stored as-is and are never extracted.</p>`;
@@ -600,16 +637,16 @@ function uploadPanel() {
     ? `<div class="upload-progress"><div><strong>${escapeHtml(state.uploadProgress.label)}</strong><span>${state.uploadProgress.percent}%</span></div><progress max="100" value="${state.uploadProgress.percent}"></progress></div>`
     : "";
   const active = sessions.length
-    ? `<div class="upload-sessions"><strong>Resumable uploads</strong>${sessions.map((session) => `<div><span>${escapeHtml(session.bundle_name)} · ${formatBytes(session.received_size)} of ${formatBytes(session.total_size)}</span><button class="text-button" data-cancel-upload="${session.id}">Cancel</button></div>`).join("")}</div>`
+    ? `<div class="upload-sessions"><strong>${isAdmin() ? "Uploads and review queue" : "Your uploads"}</strong>${sessions.map((session) => `<div><span><strong>${escapeHtml(session.bundle_name || session.files?.[0]?.relative_path || session.id)}</strong>${isAdmin() && session.owner_display_name ? ` · submitted by ${escapeHtml(session.owner_display_name)}` : ""} · ${formatBytes(session.received_size)} of ${formatBytes(session.total_size)} · <span class="badge ${session.status === "pending_review" ? "possible" : session.status === "rejected" ? "exact" : session.status === "finalizing" ? "naming-strong" : "cancelled"}">${escapeHtml(session.status.replaceAll("_", " "))}</span>${session.review_note ? `<small>${escapeHtml(session.review_note)}</small>` : ""}</span><span class="upload-review-actions">${isAdmin() && session.status === "pending_review" ? `<input class="input" data-review-note="${session.id}" maxlength="500" placeholder="Optional rejection reason" aria-label="Rejection reason"><span class="bulk-actions"><button class="button small" data-approve-upload="${session.id}">Approve</button><button class="button danger-subtle small" data-reject-upload="${session.id}">Reject</button></span>` : ""}${session.status === "uploading" ? `<button class="text-button" data-cancel-upload="${session.id}">Cancel</button>` : ""}</span></div>`).join("")}</div>`
     : "";
   return `<section class="upload-panel" aria-label="Upload ROMs">
-    <div class="upload-head"><div><h2>Add ROMs to the library</h2><p>Uploads are staged, checked, then moved into the selected platform without overwriting existing files.</p></div></div>
+    <div class="upload-head"><div><h2>${isAdmin() ? "Add ROMs to the library" : "Submit ROMs for review"}</h2><p>${isAdmin() ? "Uploads are staged, checked, then moved into the selected platform without overwriting existing files." : "Uploads remain isolated until an administrator approves them. You cannot overwrite or directly change the library."}</p></div></div>
     <form id="upload-form" class="upload-form">
       <label class="field"><span>Platform</span><select id="upload-platform" required><option value="">Choose platform</option>${state.platforms.map((item) => `<option value="${escapeHtml(item.platform)}" ${(state.uploadPlatform || state.platform) === item.platform ? "selected" : ""}>${escapeHtml(item.platform)}</option>`).join("")}</select></label>
       <label class="field"><span>Bundle name</span><input class="input" id="upload-bundle-name" maxlength="255" value="${escapeHtml(selection?.bundleName || "")}" placeholder="Filled from your selection"></label>
       <div class="upload-pickers"><label class="button secondary file-picker">Choose files<input id="upload-files" type="file" multiple></label><label class="button secondary file-picker">Choose game folder<input id="upload-folder" type="file" webkitdirectory multiple></label></div>
       ${fileSummary}${progress}
-      <button class="button" type="submit" ${selection && !state.uploadProgress ? "" : "disabled"}>Upload to library</button>
+      <button class="button" type="submit" ${selection && !state.uploadProgress ? "" : "disabled"}>${isAdmin() ? "Upload to library" : "Upload and submit"}</button>
     </form>${active}
   </section>`;
 }
@@ -687,16 +724,15 @@ async function runUpload(form) {
       offset = end;
     }
   }
-  setUploadProgress("Adding ROM to the library", total, total);
-  const result = await requestJob(
-    `/api/uploads/${encodeURIComponent(session.id)}/finalize`,
-    { method: "POST" },
-    "Upload complete; indexing the new ROM",
-  );
+  setUploadProgress(isAdmin() ? "Adding ROM to the library" : "Submitting for review", total, total);
+  const response = await api(`/api/uploads/${encodeURIComponent(session.id)}/finalize`, { method: "POST" });
+  const result = response.submitted
+    ? null
+    : await (async () => { toast("Upload complete; indexing the new ROM"); await refreshStatus(); return waitForJob(response.job_id); })();
   state.uploadSelection = null;
   state.uploadProgress = null;
   state.uploadSessions = [];
-  toast(`Added ${result.files.toLocaleString()} ${result.files === 1 ? "file" : "files"} to ${platform}`);
+  toast(response.submitted ? "Upload submitted for administrator review" : `Added ${result.files.toLocaleString()} ${result.files === 1 ? "file" : "files"} to ${platform}`);
   await refreshStatus();
   await loadReferenceData();
   await refreshTransfersIfActive();
@@ -722,6 +758,22 @@ function bindUploadEvents() {
     try {
       await api(`/api/uploads/${encodeURIComponent(button.dataset.cancelUpload)}`, { method: "DELETE" });
       toast("Upload cancelled and staged data removed");
+      await refreshTransfersIfActive();
+    } catch (error) { toast(error.message, "error"); }
+  }));
+  view.querySelectorAll("[data-approve-upload]").forEach((button) => button.addEventListener("click", async (event) => {
+    try {
+      await requestJob(`/api/uploads/${encodeURIComponent(event.currentTarget.dataset.approveUpload)}/approve`, { method: "POST" }, "Upload approved; adding it to the library");
+      toast("Upload approved and indexed");
+      await refreshTransfersIfActive();
+    } catch (error) { toast(error.message, "error"); }
+  }));
+  view.querySelectorAll("[data-reject-upload]").forEach((button) => button.addEventListener("click", async (event) => {
+    const sessionId = event.currentTarget.dataset.rejectUpload;
+    const reason = view.querySelector(`[data-review-note="${CSS.escape(sessionId)}"]`)?.value || "Rejected by administrator";
+    try {
+      await api(`/api/uploads/${encodeURIComponent(sessionId)}/reject`, { method: "POST", body: JSON.stringify({ note: reason }) });
+      toast("Upload rejected and staged files removed");
       await refreshTransfersIfActive();
     } catch (error) { toast(error.message, "error"); }
   }));
@@ -769,7 +821,7 @@ function rankingPanel(data) {
   const body = rows
     ? `<div class="ranking-table"><table><thead><tr><th>Rank</th><th>Game</th><th>Metacritic</th><th>Library match</th></tr></thead><tbody>${rows}</tbody></table></div>`
     : `<div class="ranking-empty"><strong>No ranking cached</strong><span>Fetch RAWG's Metacritic list for this platform.</span></div>`;
-  return `<section class="ranking-panel"><div class="ranking-head"><div><h2>Top 100 coverage</h2><p><strong>${counts.owned}</strong> owned, <strong>${counts.possible}</strong> need review, <strong>${counts.missing}</strong> missing.</p></div><button class="button secondary small" data-refresh-ranking>${rows ? "Refresh list" : "Fetch top 100"}</button></div>${body}<p class="ranking-attribution">Metacritic ranking data provided by <a href="https://rawg.io" target="_blank" rel="noopener noreferrer">RAWG</a>. Possible matches never count as owned until filenames match.</p></section>`;
+  return `<section class="ranking-panel"><div class="ranking-head"><div><h2>Top 100 coverage</h2><p><strong>${counts.owned}</strong> owned, <strong>${counts.possible}</strong> need review, <strong>${counts.missing}</strong> missing.</p></div>${isAdmin() ? `<button class="button secondary small" data-refresh-ranking>${rows ? "Refresh list" : "Fetch top 100"}</button>` : ""}</div>${body}<p class="ranking-attribution">Metacritic ranking data provided by <a href="https://rawg.io" target="_blank" rel="noopener noreferrer">RAWG</a>. Possible matches never count as owned until filenames match.</p></section>`;
 }
 
 async function refreshRanking() {
@@ -797,7 +849,7 @@ function gameRating(game) {
 
 function gameRows(items, deviceMode = false) {
   return items.map((game) => {
-    const checked = deviceMode ? game.selected : state.selectedRows.has(game.id);
+    const checked = isAdmin() && (deviceMode ? game.selected : state.selectedRows.has(game.id));
     const editor = state.editingId === game.id ? `
       <tr class="inline-editor">
         <td colspan="${deviceMode ? 8 : 10}">
@@ -824,19 +876,18 @@ function gameRows(items, deviceMode = false) {
     const artwork = !deviceMode && state.artworkId === game.id ? artworkPanel(game) : "";
     return `
       <tr>
-        <td class="checkbox-cell"><input type="checkbox" aria-label="Select ${escapeHtml(game.display_name)}" data-${deviceMode ? "device" : "row"}-select="${game.id}" ${checked ? "checked" : ""}></td>
-        <td class="artwork-cell">${artworkThumb(game, !deviceMode)}</td>
+        <td class="checkbox-cell">${isAdmin() ? `<input type="checkbox" aria-label="Select ${escapeHtml(game.display_name)}" data-${deviceMode ? "device" : "row"}-select="${game.id}" ${checked ? "checked" : ""}>` : ""}</td>
+        <td class="artwork-cell">${artworkThumb(game, !deviceMode && (isAdmin() || Number(game.artwork_count) > 0))}</td>
         <td class="name-cell" title="${escapeHtml(game.primary_relpath)}"><strong>${escapeHtml(game.display_name)}</strong><span class="path-line">${escapeHtml(game.primary_relpath)}</span></td>
         <td>${escapeHtml(game.platform)}</td>
         <td class="rating-cell">${gameRating(game)}</td>
         ${deviceMode ? "" : `<td>${duplicateLabel(game.duplicate_status)}</td>`}
         <td class="meta">${formatBytes(game.size)}</td>
         <td class="meta optional-column">${game.file_count} ${game.file_count === 1 ? "file" : "files"}</td>
-        <td class="meta optional-column">${deviceMode ? deviceTargetState(game) : deviceSummary(game, true)}</td>
+        <td class="meta optional-column">${deviceMode ? deviceTargetState(game) : deviceSummary(game, isAdmin())}</td>
         ${deviceMode ? "" : `<td class="nowrap">
           <button class="button secondary small" data-download="${game.id}" data-name="${escapeHtml(game.display_name)}">Download</button>
-          <button class="button secondary small" data-rename="${game.id}" ${deviceMode ? "disabled" : ""}>Rename</button>
-          <button class="button danger-subtle small" data-delete="${game.id}" data-name="${escapeHtml(game.display_name)}" ${deviceMode ? "disabled" : ""}>Trash</button>
+          ${isAdmin() ? `<button class="button secondary small" data-rename="${game.id}">Rename</button><button class="button danger-subtle small" data-delete="${game.id}" data-name="${escapeHtml(game.display_name)}">Trash</button>` : ""}
         </td>`}
       </tr>${editor}${assignment}${artwork}`;
   }).join("");
@@ -864,7 +915,7 @@ function gamesTable(data, deviceMode = false) {
     <div class="table-wrap">
       <table>
         <thead><tr>
-          <th class="checkbox-cell"><input type="checkbox" aria-label="Select visible ROMs" data-select-all></th>
+          <th class="checkbox-cell">${isAdmin() ? '<input type="checkbox" aria-label="Select visible ROMs" data-select-all>' : ""}</th>
           <th class="artwork-cell">Art</th><th>Filename</th><th>Platform</th><th>Rating</th>${deviceMode ? "" : "<th>Duplicate status</th>"}<th>Size</th><th class="optional-column">Bundle</th><th class="optional-column">${deviceMode ? "Target state" : "Devices"}</th>${deviceMode ? "" : "<th>Actions</th>"}
         </tr></thead>
         <tbody>${gameRows(data.items, deviceMode)}</tbody>
@@ -890,7 +941,7 @@ function artworkPanel(game) {
     ? detail.assets.map((asset) => `<figure class="asset-card"><img data-artwork-src="${asset.id}" alt="${escapeHtml(asset.kind)} for ${escapeHtml(game.display_name)}"><figcaption>${escapeHtml(asset.kind)} <span>${formatBytes(asset.size)}</span></figcaption></figure>`).join("")
     : '<div class="artwork-empty"><strong>No artwork cached</strong><p>Match this game with ScreenScraper to add a cover, screenshot, and logo.</p></div>';
   return `<tr class="inline-editor"><td colspan="10"><div class="artwork-panel">
-    <div class="assignment-head"><div><h3>${escapeHtml(metadata?.title || game.display_name)}</h3><p>${metadata ? `Matched by ${escapeHtml(metadata.match_method)} · ScreenScraper game ${escapeHtml(metadata.source_game_id)}` : "No ScreenScraper match yet"}</p></div><div class="bulk-actions"><button class="button secondary small" data-manage-game-artwork="${game.id}" data-name="${escapeHtml(game.display_name)}" data-platform="${escapeHtml(game.platform)}">Manage artwork</button><button class="button secondary small" data-close-artwork>Close</button></div></div>
+    <div class="assignment-head"><div><h3>${escapeHtml(metadata?.title || game.display_name)}</h3><p>${metadata ? `Matched by ${escapeHtml(metadata.match_method)} · ScreenScraper game ${escapeHtml(metadata.source_game_id)}` : "No ScreenScraper match yet"}</p></div><div class="bulk-actions">${isAdmin() ? `<button class="button secondary small" data-manage-game-artwork="${game.id}" data-name="${escapeHtml(game.display_name)}" data-platform="${escapeHtml(game.platform)}">Manage artwork</button>` : ""}<button class="button secondary small" data-close-artwork>Close</button></div></div>
     ${metadata?.description ? `<p class="artwork-description">${escapeHtml(metadata.description)}</p>` : ""}
     <div class="asset-grid">${cards}</div>
   </div></td></tr>`;
@@ -926,6 +977,7 @@ async function loadArtworkImages() {
 }
 
 function bulkBarHtml() {
+  if (!isAdmin()) return "";
   const count = state.selectedRows.size;
   if (!count) return "";
   // Selections survive filter changes, so say plainly when some are no longer on screen.
@@ -2482,6 +2534,52 @@ async function renderNotifications() {
   });
 }
 
+async function renderUsers() {
+  const renderVersion = beginPageRender();
+  setHeading("Users", "Control who can browse, transfer, or administer ROMmates.");
+  const data = await api("/api/users");
+  if (!pageRenderIsCurrent(renderVersion, "users")) return;
+  const roleCopy = {
+    viewer: "Browse and download ROMs",
+    contributor: "Browse, download, and submit staged uploads",
+    admin: "Full library, device, save, cleanup, and user access",
+  };
+  const rows = data.items.map((user) => `<tr><td class="name-cell"><strong>${escapeHtml(user.display_name)}</strong><span class="path-line">${escapeHtml(user.username)}${state.principal?.id === user.id ? " · You" : ""}</span></td><td><select data-user-role="${user.id}" aria-label="Role for ${escapeHtml(user.username)}">${data.roles.map((role) => `<option value="${role}" ${user.role === role ? "selected" : ""}>${escapeHtml(role)}</option>`).join("")}</select><span class="path-line">${escapeHtml(roleCopy[user.role] || "")}</span></td><td><label class="device-choice compact"><input type="checkbox" data-user-active="${user.id}" ${user.active ? "checked" : ""}><span>${user.active ? "Active" : "Disabled"}</span></label></td><td class="meta">${escapeHtml(user.last_login_at || "Never")}</td><td><form class="inline-password" data-user-password-form="${user.id}"><input class="input" name="password" type="password" required minlength="12" autocomplete="new-password" placeholder="New password" aria-label="New password for ${escapeHtml(user.username)}"><button class="button secondary small">Reset</button></form></td></tr>`).join("");
+  setViewHtml(`<section class="user-create"><div><h2>Add account</h2><p>Contributors submit uploads for administrator review. Viewers cannot change server data.</p></div><form class="user-create-form" id="user-create-form"><label class="field"><span>Username</span><input class="input" name="username" required maxlength="64" autocomplete="off"></label><label class="field"><span>Display name</span><input class="input" name="display_name" maxlength="100" autocomplete="off"></label><label class="field"><span>Initial password</span><input class="input" name="password" type="password" required minlength="12" autocomplete="new-password"></label><label class="field"><span>Role</span><select name="role"><option value="viewer">Viewer</option><option value="contributor">Contributor</option><option value="admin">Admin</option></select></label><button class="button" type="submit">Create account</button></form></section><div class="section-heading"><div><h2>Accounts</h2><p>Role and status changes take effect on the next request.</p></div><span class="meta">${data.items.length.toLocaleString()} total</span></div><div class="table-wrap"><table><thead><tr><th>User</th><th>Role</th><th>Status</th><th>Last login</th><th>Credentials</th></tr></thead><tbody>${rows}</tbody></table></div>`);
+  view.querySelector("#user-create-form")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    try {
+      await api("/api/users", { method: "POST", body: JSON.stringify(Object.fromEntries(form)) });
+      toast("Account created");
+      await renderUsers();
+    } catch (error) { toast(error.message, "error"); }
+  });
+  view.querySelectorAll("[data-user-role]").forEach((select) => select.addEventListener("change", async (event) => {
+    try {
+      await api(`/api/users/${event.currentTarget.dataset.userRole}`, { method: "PATCH", body: JSON.stringify({ role: event.currentTarget.value }) });
+      toast("Role updated");
+      await renderUsers();
+    } catch (error) { toast(error.message, "error"); await renderUsers(); }
+  }));
+  view.querySelectorAll("[data-user-active]").forEach((input) => input.addEventListener("change", async (event) => {
+    try {
+      await api(`/api/users/${event.currentTarget.dataset.userActive}`, { method: "PATCH", body: JSON.stringify({ active: event.currentTarget.checked }) });
+      toast(event.currentTarget.checked ? "Account enabled" : "Account disabled");
+      await renderUsers();
+    } catch (error) { toast(error.message, "error"); await renderUsers(); }
+  }));
+  view.querySelectorAll("[data-user-password-form]").forEach((form) => form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const password = new FormData(event.currentTarget).get("password");
+    try {
+      await api(`/api/users/${event.currentTarget.dataset.userPasswordForm}`, { method: "PATCH", body: JSON.stringify({ password }) });
+      toast("Password reset; existing sessions were signed out");
+      event.currentTarget.reset();
+    } catch (error) { toast(error.message, "error"); }
+  }));
+}
+
 function resultLabel(key) {
   return key.replaceAll("_", " ").replace(/^./, (letter) => letter.toUpperCase());
 }
@@ -2658,7 +2756,7 @@ async function renderCurrentView() {
   const requestedView = state.view;
   let renderVersion = state.renderVersion;
   try {
-    const renderers = { overview: renderOverview, library: renderLibrary, artwork: renderArtwork, transfers: renderTransfers, duplicates: renderDuplicates, naming: renderNaming, devices: renderDevices, saves: renderSaves, jobs: renderJobs, notifications: renderNotifications, trash: renderTrash };
+    const renderers = { overview: renderOverview, library: renderLibrary, artwork: renderArtwork, transfers: renderTransfers, duplicates: renderDuplicates, naming: renderNaming, devices: renderDevices, saves: renderSaves, jobs: renderJobs, notifications: renderNotifications, users: renderUsers, trash: renderTrash };
     const renderPromise = renderers[requestedView]();
     renderVersion = state.renderVersion;
     await renderPromise;
@@ -2677,8 +2775,20 @@ async function renderCurrentView() {
 }
 
 function renderAuthentication() {
-  setHeading("Private access", "Enter the token configured on your ROMmates server.");
-  setViewHtml(`<div class="auth-panel"><h2>Access token required</h2><p>The token stays in this browser and is sent only to this ROMmates server.</p><form class="auth-form" id="auth-form"><label class="field" for="access-token"><span>Access token</span><input class="input" id="access-token" name="token" type="password" autocomplete="current-password" required minlength="16"></label><button class="button">Unlock ROMmates</button></form></div>`);
+  setHeading("Sign in", "Use your ROMmates account or the bootstrap administrator token.");
+  setViewHtml(`<div class="auth-panel"><h2>ROMmates account</h2><p>Your permissions follow your assigned role.</p><form class="auth-form" id="account-login-form"><label class="field" for="login-username"><span>Username</span><input class="input" id="login-username" name="username" autocomplete="username" required maxlength="64"></label><label class="field" for="login-password"><span>Password</span><input class="input" id="login-password" name="password" type="password" autocomplete="current-password" required></label><button class="button">Sign in</button></form><details class="bootstrap-login"><summary>Use bootstrap administrator token</summary><form class="auth-form" id="auth-form"><label class="field" for="access-token"><span>Access token</span><input class="input" id="access-token" name="token" type="password" autocomplete="current-password" required minlength="16"></label><button class="button secondary">Unlock as administrator</button></form></details></div>`);
+  document.querySelector("#account-login-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    try {
+      localStorage.removeItem("rommates-token");
+      localStorage.removeItem("rom-manager-token");
+      await api("/api/auth/login", { method: "POST", body: JSON.stringify({ username: form.get("username"), password: form.get("password") }) });
+      await refreshStatus();
+      await loadReferenceData();
+      navigateTo(isAdmin() ? "overview" : "library", {}, "replace");
+    } catch (error) { toast(error.message, "error"); }
+  });
   document.querySelector("#auth-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     const token = new FormData(event.currentTarget).get("token").trim();
@@ -2695,7 +2805,7 @@ function renderAuthentication() {
       toast(error.status === 401 ? "That access token was not accepted" : error.message, "error");
     }
   });
-  document.querySelector("#access-token").focus();
+  document.querySelector("#login-username").focus();
 }
 
 function updateActiveNavigation(viewName) {
@@ -2720,6 +2830,7 @@ function updateBrowserRoute(viewName, historyMode) {
 
 function navigateTo(viewName, options = {}, historyMode = "push") {
   if (!VIEW_ROUTES[viewName]) viewName = "overview";
+  if (state.principal && !allowedViews().has(viewName)) viewName = "library";
   updateBrowserRoute(viewName, historyMode);
   state.view = viewName;
   state.offset = 0;
@@ -2774,6 +2885,11 @@ async function initialize() {
   try {
     await refreshStatus();
     await loadReferenceData();
+    if (!allowedViews().has(state.view)) {
+      updateBrowserRoute("library", "replace");
+      state.view = "library";
+      updateActiveNavigation("library");
+    }
     await renderCurrentView();
     prefetchNavigationData();
   } catch (error) {
@@ -2784,5 +2900,15 @@ async function initialize() {
     setViewHtml(`<div class="empty-state"><div><h2>ROMmates could not start</h2><p>${escapeHtml(error.message)}</p></div></div>`);
   }
 }
+
+logoutButton.addEventListener("click", async () => {
+  try { await api("/api/auth/logout", { method: "POST" }); } catch { /* clear locally regardless */ }
+  localStorage.removeItem("rommates-token");
+  localStorage.removeItem("rom-manager-token");
+  state.principal = null;
+  state.permissions = { admin: false, upload: false, download: false };
+  document.querySelector("#account-state")?.classList.add("hidden");
+  renderAuthentication();
+});
 
 initialize();

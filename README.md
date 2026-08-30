@@ -108,11 +108,30 @@ Every direct child of `devices` containing a `roms` directory is discovered as a
    docker compose up -d --build
    ```
 
-6. Open `http://SERVER-IP:8080`, enter `ROMMATES_ACCESS_TOKEN`, and let the startup scan finish.
+6. Open `http://SERVER-IP:8080`, enter `ROMMATES_ACCESS_TOKEN`, and let the startup scan finish. Open **Users** to create named accounts.
 
 The token protects the application from unauthenticated and cross-site API requests. It is still intended for a trusted private network. Bind `ROMMATES_BIND=127.0.0.1` when placing it behind a reverse proxy.
 
 The application refuses to start without a token, so a misconfigured launch fails loudly instead of exposing the API. If an authenticated reverse proxy already guards the app, set `ROMMATES_ALLOW_ANONYMOUS=true` to opt out deliberately.
+
+### Accounts and roles
+
+`ROMMATES_ACCESS_TOKEN` remains the bootstrap administrator credential. Use it to create
+named accounts, recover access, and manage roles. Named sessions use an HttpOnly,
+SameSite cookie and expire after 30 days. Passwords are salted and hashed with scrypt.
+
+- **Viewer:** browse the library, inspect cached artwork and rankings, and create a
+  short-lived, single-use ROM download.
+- **Contributor:** Viewer access plus resumable uploads. Completed uploads remain in the
+  isolated staging directory until an administrator approves them.
+- **Admin:** complete access to scans, cleanup, naming, devices, saves, jobs,
+  notifications, upload review, and user management.
+
+Disabled accounts and password resets invalidate their active sessions. Cloudflare Access
+can remain the outer identity gate, but ROMmates roles are the authorization layer inside
+the service. Do not set `ROMMATES_ALLOW_ANONYMOUS=true` when you want per-user roles;
+anonymous proxy access is intentionally treated as administrator access for backward
+compatibility.
 
 The save vault is read from `${EMULATION_ROOT}/saves` through the existing `/emulation`
 mount. The account selected by `PUID` and `PGID` needs read/write access to both the
@@ -125,6 +144,17 @@ ROMmates treats `Emulation/saves` as the live Syncthing-backed source and stores
 content-addressed versions under `/data/save-snapshots`. The expected layout is one
 top-level directory per standalone emulator plus `retroarch/<core>`. Unchanged files share
 a single SHA-256 blob, so frequent snapshots only consume space for changed save data.
+
+If you are moving from the old RetroArch WebDAV arrangement, remove that separate mount
+from ROMmates and point every device's Syncthing save folder at the shared host directory
+`${EMULATION_ROOT}/saves`. Configure RetroArch to write beneath `saves/retroarch` and each
+standalone emulator beneath its own directory. Compose already mounts this location at
+`/emulation/saves`; no additional ROMmates environment variable is required. Let Syncthing
+finish before taking the first snapshot, and keep `/data/save-snapshots` on persistent
+storage. Configure the save folder as **Send & Receive** on the NUC and every handheld so
+changes can flow in either direction and Syncthing can surface concurrent edits as conflict
+files for ROMmates to review. Close the relevant emulator before resolving a conflict or
+restoring a snapshot, then let Syncthing settle before reopening it.
 
 The **Saves** screen provides:
 
@@ -414,8 +444,12 @@ after every declared byte arrives. Existing library paths are never overwritten.
 uploads follow the same descriptor and folder-bundle rules as the scanner, and archives
 are stored as ROM files rather than extracted on the server.
 
+Contributor uploads stop after validation and enter the administrator review queue on the
+same page. Approval runs the normal atomic finalize and indexing job. Rejection deletes
+the staged bytes and retains the decision in upload history until normal expiry cleanup.
+
 Use **Download** beside a game in Library. The authenticated API creates a short-lived,
-opaque download URL. Single-file games stream directly; multi-file games stream as an
+opaque, single-use download URL. Single-file games stream directly; multi-file games stream as an
 uncompressed ZIP without first creating another full copy on disk. Download URLs expire
 quickly and are revalidated against the indexed library before use.
 

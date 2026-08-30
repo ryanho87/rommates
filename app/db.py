@@ -138,6 +138,7 @@ CREATE TABLE IF NOT EXISTS download_tickets (
     game_id INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
     expires_at INTEGER NOT NULL,
     used_at INTEGER,
+    requested_by INTEGER REFERENCES users(id),
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_download_tickets_expiry ON download_tickets(expires_at);
@@ -331,6 +332,28 @@ ON notification_deliveries(id DESC);
 CREATE INDEX IF NOT EXISTS idx_notification_deliveries_dedupe
 ON notification_deliveries(event,dedupe_key);
 
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY,
+    username TEXT NOT NULL,
+    username_normalized TEXT NOT NULL UNIQUE,
+    display_name TEXT NOT NULL,
+    password_hash TEXT NOT NULL,
+    role TEXT NOT NULL CHECK(role IN ('viewer','contributor','admin')),
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_login_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS auth_sessions (
+    token_hash TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    expires_at INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_auth_sessions_expiry ON auth_sessions(expires_at);
+
 CREATE TABLE IF NOT EXISTS activity (
     id INTEGER PRIMARY KEY,
     action TEXT NOT NULL,
@@ -479,6 +502,26 @@ class Database:
             connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(15)")
             connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(16)")
             connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(17)")
+            upload_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(upload_sessions)")
+            }
+            for name, declaration in (
+                ("owner_user_id", "INTEGER REFERENCES users(id)"),
+                ("submitted_at", "TEXT"),
+                ("reviewed_by", "INTEGER REFERENCES users(id)"),
+                ("reviewed_at", "TEXT"),
+                ("review_note", "TEXT NOT NULL DEFAULT ''"),
+            ):
+                if name not in upload_columns:
+                    connection.execute(f"ALTER TABLE upload_sessions ADD COLUMN {name} {declaration}")
+            download_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(download_tickets)")
+            }
+            if "requested_by" not in download_columns:
+                connection.execute(
+                    "ALTER TABLE download_tickets ADD COLUMN requested_by INTEGER REFERENCES users(id)"
+                )
+            connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(18)")
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:

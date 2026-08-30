@@ -110,6 +110,7 @@ class ApiIntegrationTests(unittest.TestCase):
             "/saves",
             "/jobs",
             "/notifications",
+            "/users",
             "/trash",
         ):
             with self.subTest(path=path):
@@ -137,6 +138,96 @@ class ApiIntegrationTests(unittest.TestCase):
         test = self.client.post("/api/notifications/test", headers=self.headers)
         self.assertEqual(test.status_code, 400)
         self.assertIn("ROMMATES_DISCORD_WEBHOOK_URL", test.json()["detail"])
+
+    def test_viewer_can_browse_and_download_but_cannot_mutate(self):
+        scan = self.client.post("/api/scan", headers=self.headers)
+        self.assertEqual(self.wait_for_job(scan.json()["job_id"])["status"], "complete")
+        created = self.client.post(
+            "/api/users",
+            headers=self.headers,
+            json={
+                "username": "viewer-test",
+                "display_name": "Viewer Test",
+                "password": "viewer-test-password",
+                "role": "viewer",
+            },
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        login = self.client.post(
+            "/api/auth/login",
+            json={"username": "viewer-test", "password": "viewer-test-password"},
+        )
+        self.assertEqual(login.status_code, 200, login.text)
+        self.assertTrue(login.cookies.get("rommates_session"))
+        games = self.client.get("/api/games")
+        self.assertEqual(games.status_code, 200)
+        self.assertEqual(games.json()["items"][0]["devices"], [])
+        self.assertEqual(games.json()["items"][0]["device_count"], 0)
+        game_id = games.json()["items"][0]["id"]
+        detail = self.client.get(f"/api/games/{game_id}")
+        self.assertEqual(detail.status_code, 200)
+        self.assertEqual(detail.json()["devices"], [])
+        self.assertEqual(detail.json()["save_impact"]["status"], "none")
+        self.assertEqual(
+            self.client.get("/api/games", params={"device_id": 1}).status_code, 403
+        )
+        self.assertEqual(
+            self.client.post(f"/api/games/{game_id}/download-ticket").status_code, 200
+        )
+        self.assertEqual(self.client.post("/api/scan").status_code, 403)
+        self.assertEqual(self.client.get("/api/users").status_code, 403)
+        self.client.post("/api/auth/logout")
+
+    def test_contributor_upload_waits_for_administrator_approval(self):
+        created = self.client.post(
+            "/api/users",
+            headers=self.headers,
+            json={
+                "username": "contributor-test",
+                "display_name": "Contributor Test",
+                "password": "contributor-test-password",
+                "role": "contributor",
+            },
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        login = self.client.post(
+            "/api/auth/login",
+            json={"username": "contributor-test", "password": "contributor-test-password"},
+        )
+        self.assertEqual(login.status_code, 200, login.text)
+        created_upload = self.client.post(
+            "/api/uploads",
+            json={
+                "platform": "gba",
+                "files": [{"relative_path": "Contributor Upload.gba", "size": 4}],
+            },
+        )
+        self.assertEqual(created_upload.status_code, 201, created_upload.text)
+        session_id = created_upload.json()["id"]
+        chunk = self.client.put(
+            f"/api/uploads/{session_id}/files/0",
+            headers={"Content-Type": "application/octet-stream", "Upload-Offset": "0"},
+            content=b"safe",
+        )
+        self.assertEqual(chunk.status_code, 200, chunk.text)
+        submitted = self.client.post(f"/api/uploads/{session_id}/finalize")
+        self.assertEqual(submitted.status_code, 200, submitted.text)
+        self.assertTrue(submitted.json()["submitted"])
+        self.assertFalse((self.root / "roms/gba/Contributor Upload.gba").exists())
+        self.assertEqual(
+            self.client.post(f"/api/uploads/{session_id}/approve").status_code, 403
+        )
+        approved = self.client.post(
+            f"/api/uploads/{session_id}/approve", headers=self.headers
+        )
+        self.assertEqual(approved.status_code, 202, approved.text)
+        job = self.wait_for_job(approved.json()["job_id"])
+        self.assertEqual(job["status"], "complete", job)
+        self.assertTrue((self.root / "roms/gba/Contributor Upload.gba").exists())
+        self.client.post("/api/auth/logout")
+        (self.root / "roms/gba/Contributor Upload.gba").unlink()
+        cleanup = self.client.post("/api/scan?confirm_prune=true", headers=self.headers)
+        self.assertEqual(self.wait_for_job(cleanup.json()["job_id"])["status"], "complete")
 
     def test_syncthing_status_is_private_and_explains_unconfigured_state(self):
         self.assertEqual(self.client.get("/api/syncthing/status").status_code, 401)
@@ -185,7 +276,7 @@ class ApiIntegrationTests(unittest.TestCase):
         download = self.client.get(ticket.json()["url"])
         self.assertEqual(download.status_code, 200)
         self.assertEqual(download.content, b"upld-rom-ok")
-        self.assertEqual(self.client.get(ticket.json()["url"]).status_code, 200)
+        self.assertEqual(self.client.get(ticket.json()["url"]).status_code, 404)
 
     def test_upload_rejects_path_traversal(self):
         response = self.client.post(

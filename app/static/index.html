@@ -34,11 +34,16 @@
           </a>
           <a class="nav-item" href="/jobs" data-view="jobs"><span>Jobs</span></a>
           <a class="nav-item" href="/notifications" data-view="notifications"><span>Notifications</span></a>
+          <a class="nav-item" href="/users" data-view="users"><span>Users</span></a>
           <a class="nav-item" href="/trash" data-view="trash">
             <span>Trash</span><span class="nav-count" id="nav-trash">0</span>
           </a>
         </nav>
         <div class="sidebar-foot">
+          <div class="account-state hidden" id="account-state">
+            <div><strong id="account-name"></strong><span id="account-role"></span></div>
+            <button class="button secondary small" id="logout-button">Sign out</button>
+          </div>
           <div class="root-state">
             <span>Library root</span>
             <code id="library-root">/roms</code>

@@ -120,12 +120,21 @@ class TransferService:
         root = self.settings.upload_root.resolve()
         return _inside(root, root / session_id)
 
-    def _load_session(self, session_id: str) -> tuple[dict, list[dict]]:
+    def _load_session(
+        self,
+        session_id: str,
+        owner_user_id: int | None = None,
+        admin: bool = True,
+    ) -> tuple[dict, list[dict]]:
         with self.db.connect() as connection:
             row = connection.execute(
-                "SELECT * FROM upload_sessions WHERE id=?", (session_id,)
+                "SELECT s.*,u.username AS owner_username,u.display_name AS owner_display_name "
+                "FROM upload_sessions s LEFT JOIN users u ON u.id=s.owner_user_id WHERE s.id=?",
+                (session_id,),
             ).fetchone()
             if not row:
+                raise TransferError("Upload session was not found", 404)
+            if not admin and row["owner_user_id"] != owner_user_id:
                 raise TransferError("Upload session was not found", 404)
             files = connection.execute(
                 "SELECT * FROM upload_files WHERE session_id=? ORDER BY file_index",
@@ -133,25 +142,36 @@ class TransferService:
             ).fetchall()
         return dict(row), [dict(item) for item in files]
 
-    def _payload(self, session_id: str) -> dict[str, object]:
-        session, files = self._load_session(session_id)
+    def _payload(
+        self, session_id: str, owner_user_id: int | None = None, admin: bool = True
+    ) -> dict[str, object]:
+        session, files = self._load_session(session_id, owner_user_id, admin)
         session["folder_mode"] = bool(session["folder_mode"])
         session["files"] = files
         session["chunk_bytes"] = self.settings.upload_chunk_bytes
         return session
 
-    def list_sessions(self) -> dict[str, object]:
+    def list_sessions(
+        self, owner_user_id: int | None = None, admin: bool = True
+    ) -> dict[str, object]:
         self.cleanup_expired()
         with self.db.connect() as connection:
-            ids = [
-                row["id"]
-                for row in connection.execute(
-                    "SELECT id FROM upload_sessions WHERE status='uploading' "
-                    "ORDER BY updated_at DESC LIMIT 20"
+            if admin:
+                rows = connection.execute(
+                    "SELECT id FROM upload_sessions WHERE status IN "
+                    "('uploading','pending_review','finalizing','rejected') "
+                    "ORDER BY updated_at DESC LIMIT 100"
                 )
-            ]
+            else:
+                rows = connection.execute(
+                    "SELECT id FROM upload_sessions WHERE owner_user_id=? AND status IN "
+                    "('uploading','pending_review','finalizing','rejected') "
+                    "ORDER BY updated_at DESC LIMIT 20",
+                    (owner_user_id,),
+                )
+            ids = [row["id"] for row in rows]
         return {
-            "items": [self._payload(session_id) for session_id in ids],
+            "items": [self._payload(session_id, owner_user_id, admin) for session_id in ids],
             "max_bytes": self.settings.upload_max_bytes,
             "chunk_bytes": self.settings.upload_chunk_bytes,
         }
@@ -162,6 +182,7 @@ class TransferService:
         bundle_name: str,
         folder_mode: bool,
         files: list[dict[str, object]],
+        owner_user_id: int | None = None,
     ) -> dict[str, object]:
         self.cleanup_expired()
         platform_root = self._platform_root(platform)
@@ -220,11 +241,12 @@ class TransferService:
         with self.db.connect() as connection:
             existing = connection.execute(
                 "SELECT id FROM upload_sessions WHERE manifest_hash=? AND status='uploading' "
+                "AND owner_user_id IS ? "
                 "ORDER BY created_at DESC LIMIT 1",
-                (manifest_hash,),
+                (manifest_hash, owner_user_id),
             ).fetchone()
         if existing:
-            return self._payload(existing["id"])
+            return self._payload(existing["id"], owner_user_id, owner_user_id is None)
 
         session_id = secrets.token_urlsafe(18)
         session_root = self._session_root(session_id)
@@ -232,8 +254,8 @@ class TransferService:
         try:
             with self.db.write() as connection:
                 connection.execute(
-                    "INSERT INTO upload_sessions(id,platform,bundle_name,folder_mode,total_size,file_count,manifest_hash) "
-                    "VALUES(?,?,?,?,?,?,?)",
+                    "INSERT INTO upload_sessions(id,platform,bundle_name,folder_mode,total_size,file_count,manifest_hash,owner_user_id) "
+                    "VALUES(?,?,?,?,?,?,?,?)",
                     (
                         session_id,
                         platform,
@@ -242,6 +264,7 @@ class TransferService:
                         total_size,
                         len(normalized),
                         manifest_hash,
+                        owner_user_id,
                     ),
                 )
                 connection.executemany(
@@ -255,7 +278,7 @@ class TransferService:
             shutil.rmtree(session_root, ignore_errors=True)
             raise
         self.db.activity("upload", f"Started upload to {platform}/{bundle_name or normalized[0]['relative_path']}")
-        return self._payload(session_id)
+        return self._payload(session_id, owner_user_id, owner_user_id is None)
 
     async def write_chunk(
         self,
@@ -263,6 +286,8 @@ class TransferService:
         file_index: int,
         offset: int,
         stream: AsyncIterator[bytes],
+        owner_user_id: int | None = None,
+        admin: bool = True,
     ) -> dict[str, object]:
         key = (session_id, file_index)
         with self._writes_lock:
@@ -270,7 +295,7 @@ class TransferService:
                 raise TransferError("That upload file already has a chunk in progress", 409)
             self._active_writes.add(key)
         try:
-            session, files = self._load_session(session_id)
+            session, files = self._load_session(session_id, owner_user_id, admin)
             if session["status"] != "uploading":
                 raise TransferError("Upload session is no longer writable", 409)
             file = next((item for item in files if item["file_index"] == file_index), None)
@@ -317,14 +342,14 @@ class TransferService:
                     "WHERE id=?",
                     (received, session_id),
                 )
-            return self._payload(session_id)
+            return self._payload(session_id, owner_user_id, admin)
         finally:
             with self._writes_lock:
                 self._active_writes.discard(key)
 
     def finalize(self, session_id: str, *, progress_callback, cancel_check) -> dict[str, object]:
         session, files = self._load_session(session_id)
-        if session["status"] != "uploading":
+        if session["status"] not in {"uploading", "pending_review"}:
             raise TransferError("Upload session is not ready to finalize", 409)
         if any(item["received_size"] != item["size"] for item in files):
             raise TransferError("Upload is incomplete", 409)
@@ -345,6 +370,7 @@ class TransferService:
         if shutil.disk_usage(platform_root).free < required:
             raise TransferError("Not enough free space to finalize this upload", 507)
 
+        previous_status = session["status"]
         with self.db.write() as connection:
             connection.execute(
                 "UPDATE upload_sessions SET status='finalizing',updated_at=CURRENT_TIMESTAMP WHERE id=?",
@@ -388,8 +414,8 @@ class TransferService:
                     temporary.unlink(missing_ok=True)
                 with self.db.write() as connection:
                     connection.execute(
-                        "UPDATE upload_sessions SET status='uploading',updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                        (session_id,),
+                        "UPDATE upload_sessions SET status=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                        (previous_status, session_id),
                     )
             raise
 
@@ -422,8 +448,41 @@ class TransferService:
             "scan_error": scan_error,
         }
 
-    def cancel(self, session_id: str) -> dict[str, object]:
+    def submit(self, session_id: str, owner_user_id: int) -> dict[str, object]:
+        session, files = self._load_session(session_id, owner_user_id, admin=False)
+        if session["status"] != "uploading":
+            raise TransferError("Upload is not ready for review", 409)
+        if any(item["received_size"] != item["size"] for item in files):
+            raise TransferError("Upload is incomplete", 409)
+        with self.db.write() as connection:
+            connection.execute(
+                "UPDATE upload_sessions SET status='pending_review',submitted_at=CURRENT_TIMESTAMP,"
+                "updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (session_id,),
+            )
+        self.db.activity("upload", f"Submitted upload {session_id} for review")
+        return self._payload(session_id, owner_user_id, admin=False)
+
+    def reject(self, session_id: str, reviewer_id: int | None, note: str) -> dict[str, object]:
         session, _ = self._load_session(session_id)
+        if session["status"] != "pending_review":
+            raise TransferError("Upload is not awaiting review", 409)
+        shutil.rmtree(self._session_root(session_id), ignore_errors=True)
+        with self.db.write() as connection:
+            connection.execute(
+                "UPDATE upload_sessions SET status='rejected',reviewed_by=?,reviewed_at=CURRENT_TIMESTAMP,"
+                "review_note=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (reviewer_id, note.strip()[:500], session_id),
+            )
+        self.db.activity("upload", f"Rejected upload {session_id}")
+        return self._payload(session_id)
+
+    def cancel(
+        self, session_id: str, owner_user_id: int | None = None, admin: bool = True
+    ) -> dict[str, object]:
+        session, _ = self._load_session(session_id, owner_user_id, admin)
+        if session["status"] in {"finalizing", "pending_review"} and not admin:
+            raise TransferError("This upload is awaiting administrator review", 409)
         if session["status"] == "finalizing":
             raise TransferError("Upload is currently finalizing", 409)
         shutil.rmtree(self._session_root(session_id), ignore_errors=True)
@@ -453,7 +512,9 @@ class TransferService:
         with self.db.write() as connection:
             connection.execute("DELETE FROM download_tickets WHERE expires_at<?", (int(time.time()),))
 
-    def create_download_ticket(self, game_id: int) -> dict[str, object]:
+    def create_download_ticket(
+        self, game_id: int, requested_by: int | None = None
+    ) -> dict[str, object]:
         self.cleanup_expired()
         with self.db.connect() as connection:
             game = connection.execute("SELECT * FROM games WHERE id=?", (game_id,)).fetchone()
@@ -478,8 +539,8 @@ class TransferService:
         filename = _download_name(game["display_name"] + (".zip" if archive else game["extension"]))
         with self.db.write() as connection:
             connection.execute(
-                "INSERT INTO download_tickets(token_hash,game_id,expires_at) VALUES(?,?,?)",
-                (token_hash, game_id, expires_at),
+                "INSERT INTO download_tickets(token_hash,game_id,expires_at,requested_by) VALUES(?,?,?,?)",
+                (token_hash, game_id, expires_at, requested_by),
             )
         return {
             "url": f"/api/downloads/{token}",
@@ -497,7 +558,7 @@ class TransferService:
         now = int(time.time())
         with self.db.write() as connection:
             ticket = connection.execute(
-                "SELECT * FROM download_tickets WHERE token_hash=? AND expires_at>=?",
+                "SELECT * FROM download_tickets WHERE token_hash=? AND expires_at>=? AND used_at IS NULL",
                 (token_hash, now),
             ).fetchone()
             if not ticket:
@@ -575,4 +636,3 @@ class TransferService:
                 yield item
         finally:
             stop.set()
-
