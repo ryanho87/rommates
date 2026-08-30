@@ -542,6 +542,11 @@ input[type="checkbox"] { width: 15px; height: 15px; margin: 0; accent-color: var
 .save-emulator-card { display: grid; gap: 2px; min-width: 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface); }
 .save-emulator-card strong { overflow: hidden; font-size: 0.8rem; text-overflow: ellipsis; white-space: nowrap; }
 .save-emulator-card span, .save-emulator-card small { color: var(--text-muted); font-size: 0.7rem; font-variant-numeric: tabular-nums; }
+.conflict-versions { display: grid; gap: 6px; min-width: 260px; }
+.conflict-versions > div { display: grid; grid-template-columns: minmax(95px, auto) 1fr auto; gap: 8px; align-items: baseline; }
+.conflict-versions strong { font-size: 0.74rem; }
+.conflict-versions span, .conflict-versions code { color: var(--text-muted); font-size: 0.68rem; }
+.conflict-history { margin-top: 12px; }
 .save-path { color: var(--text-muted); font-size: 0.75rem; }
 .save-empty { min-height: 280px; }
 .save-match-note { margin: -2px 0 10px; color: var(--text-muted); font-size: 0.75rem; }
@@ -839,6 +844,7 @@ dialog form { padding: 18px; }
   .snapshot-now { align-items: stretch; }
   .snapshot-now .field { width: 100%; }
   .snapshot-detail .report-grid { grid-template-columns: repeat(2, minmax(100px, 1fr)); }
+  .conflict-versions > div { grid-template-columns: 1fr; gap: 2px; }
   .settings-section { grid-template-columns: 1fr; }
   .settings-section > p, .settings-section > .field, .settings-section > .device-choice, .settings-section > .retention-grid { grid-column: 1; }
   .rename-arrow { display: none; }

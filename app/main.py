@@ -28,7 +28,7 @@ from .transfers import MAX_MANIFEST_BYTES, TransferError, TransferService
 
 
 MINIMUM_TOKEN_LENGTH = 16
-CANCELLABLE_JOB_KINDS = frozenset({"scan", "device_apply", "save_snapshot", "save_restore", "save_delete", "artwork_scrape", "artwork_bulk", "rating_scrape", "ranking_refresh", "upload_finalize"})
+CANCELLABLE_JOB_KINDS = frozenset({"scan", "device_apply", "save_snapshot", "save_restore", "save_delete", "save_conflict", "artwork_scrape", "artwork_bulk", "rating_scrape", "ranking_refresh", "upload_finalize"})
 
 settings = Settings.from_env()
 
@@ -168,6 +168,12 @@ def job_result_detail(kind: str, result: object, fallback: str) -> str:
             f"Deleted {result.get('files', 0)} orphan save files for {result.get('group', 'save group')}; "
             f"safety snapshot #{result.get('safety_snapshot_id')}"
         )
+    if kind == "save_conflict":
+        return (
+            f"Resolved {result.get('canonical_relpath', 'save conflict')} using the "
+            f"{result.get('decision', 'selected')} version; safety snapshot "
+            f"#{result.get('safety_snapshot_id')}"
+        )
     if kind == "artwork_scrape":
         return (
             f"Matched {result.get('matched', 0)} games and downloaded "
@@ -272,7 +278,7 @@ def run_job(
                 )
             elif kind == "device_apply":
                 result = operation(*args, cancel_check=check_cancelled)
-            elif kind in {"save_snapshot", "save_restore", "artwork_scrape", "artwork_bulk", "rating_scrape", "ranking_refresh", "upload_finalize"}:
+            elif kind in {"save_snapshot", "save_restore", "save_conflict", "artwork_scrape", "artwork_bulk", "rating_scrape", "ranking_refresh", "upload_finalize"}:
                 result = operation(
                     *args, progress_callback=report_progress, cancel_check=check_cancelled
                 )
@@ -566,6 +572,15 @@ class SaveImpactRequest(BaseModel):
 
 class SaveOrphanDeleteRequest(BaseModel):
     group_key: str = Field(min_length=1, max_length=1000)
+
+
+class SaveConflictResolveRequest(BaseModel):
+    conflict_relpath: str = Field(min_length=1, max_length=4096)
+    decision: str = Field(pattern="^(current|conflict)$")
+    expected_canonical_sha256: str = Field(default="", max_length=64, pattern="^$|^[a-f0-9]{64}$")
+    expected_conflict_sha256: str = Field(min_length=64, max_length=64, pattern="^[a-f0-9]{64}$")
+    device_id: str = Field(default="", max_length=64)
+    device_name: str = Field(default="", max_length=255)
 
 
 class ArtworkScrapeRequest(BaseModel):
@@ -1657,12 +1672,25 @@ def download_game(token: str):
 @app.get("/api/saves")
 def save_overview():
     snapshots = saves.list_snapshots(limit=1)
+    conflicts = saves.conflicts(limit=1, device_names=_syncthing_device_names())
     return {
         "settings": saves.settings_payload(),
         "inventory": saves.source_summary(),
         "latest_snapshot": snapshots["items"][0] if snapshots["items"] else None,
         "snapshot_count": snapshots["total"],
         "matching": saves.match_summary(),
+        "conflicts": {"total": conflicts["total"], "identical": conflicts["identical"]},
+    }
+
+
+def _syncthing_device_names(refresh_if_empty: bool = False) -> dict[str, str]:
+    status = syncthing.peek()
+    if refresh_if_empty and syncthing.configured and status.get("checking"):
+        status = syncthing.status()
+    return {
+        str(device.get("device_id") or ""): str(device.get("name") or "")
+        for device in status.get("devices", [])
+        if isinstance(device, dict) and device.get("device_id")
     }
 
 
@@ -1673,6 +1701,31 @@ def current_saves(
     offset: int = Query(0, ge=0),
 ):
     return saves.current_files(search, limit, offset)
+
+
+@app.get("/api/saves/conflicts")
+def save_conflicts(
+    search: str = "",
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+):
+    return saves.conflicts(search, limit, offset, _syncthing_device_names(refresh_if_empty=True))
+
+
+@app.post("/api/saves/conflicts/resolve", status_code=202)
+def resolve_save_conflict(payload: SaveConflictResolveRequest):
+    job_id = enqueue_job(
+        "save_conflict",
+        f"Resolving save conflict for {Path(payload.conflict_relpath).name}",
+        saves.resolve_conflict,
+        payload.conflict_relpath,
+        payload.decision,
+        payload.expected_canonical_sha256,
+        payload.expected_conflict_sha256,
+        payload.device_id,
+        payload.device_name,
+    )
+    return {"job_id": job_id}
 
 
 @app.get("/api/saves/unmatched")

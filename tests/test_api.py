@@ -681,6 +681,40 @@ class ApiIntegrationTests(unittest.TestCase):
         self.assertIn("safety_snapshot_id", job["result"])
         self.assertFalse(orphan.exists())
 
+    def test_save_conflict_can_be_reviewed_and_resolved(self):
+        current = self.root / "saves/retroarch/mGBA/Conflict API Test.srm"
+        conflict = self.root / (
+            "saves/retroarch/mGBA/"
+            "Conflict API Test.sync-conflict-20260829-183000-ABC1234.srm"
+        )
+        current.parent.mkdir(parents=True, exist_ok=True)
+        current.write_bytes(b"current-progress")
+        conflict.write_bytes(b"other-progress")
+
+        report = self.client.get(
+            "/api/saves/conflicts?search=Conflict%20API%20Test", headers=self.headers
+        )
+        self.assertEqual(report.status_code, 200)
+        item = report.json()["items"][0]
+        response = self.client.post(
+            "/api/saves/conflicts/resolve",
+            headers=self.headers,
+            json={
+                "conflict_relpath": item["conflict_relpath"],
+                "decision": "current",
+                "expected_canonical_sha256": item["canonical_sha256"],
+                "expected_conflict_sha256": item["conflict_sha256"],
+                "device_id": item["device_id"],
+                "device_name": "Brother's Retroid",
+            },
+        )
+        self.assertEqual(response.status_code, 202)
+        job = self.wait_for_job(response.json()["job_id"])
+        self.assertEqual(job["status"], "complete")
+        self.assertEqual(current.read_bytes(), b"current-progress")
+        self.assertFalse(conflict.exists())
+        self.assertIn("safety_snapshot_id", job["result"])
+
     def test_scan_report_lists_every_unreadable_path(self):
         outside = self.root / "outside.gba"
         outside.write_bytes(b"outside")

@@ -291,6 +291,21 @@ CREATE TABLE IF NOT EXISTS save_snapshot_files (
 );
 CREATE INDEX IF NOT EXISTS idx_save_snapshot_files_hash ON save_snapshot_files(sha256);
 
+CREATE TABLE IF NOT EXISTS save_conflict_resolutions (
+    id INTEGER PRIMARY KEY,
+    canonical_relpath TEXT NOT NULL,
+    conflict_relpath TEXT NOT NULL,
+    device_id TEXT NOT NULL DEFAULT '',
+    device_name TEXT NOT NULL DEFAULT '',
+    decision TEXT NOT NULL CHECK(decision IN ('current','conflict')),
+    canonical_sha256 TEXT NOT NULL DEFAULT '',
+    conflict_sha256 TEXT NOT NULL,
+    safety_snapshot_id INTEGER NOT NULL REFERENCES save_snapshots(id),
+    resolved_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_save_conflict_resolutions_time
+ON save_conflict_resolutions(id DESC);
+
 CREATE TABLE IF NOT EXISTS activity (
     id INTEGER PRIMARY KEY,
     action TEXT NOT NULL,
@@ -437,6 +452,7 @@ class Database:
                     "ALTER TABLE save_snapshots ADD COLUMN source_root TEXT NOT NULL DEFAULT ''"
                 )
             connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(15)")
+            connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(16)")
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:

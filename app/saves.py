@@ -25,6 +25,11 @@ SAVE_EXTENSIONS = frozenset({
     ".gci", ".raw",
 })
 STATE_NAME = re.compile(r"^(?P<name>.+)\.state(?:\d+|\.auto)?(?:\.png)?$", re.IGNORECASE)
+SYNC_CONFLICT_NAME = re.compile(
+    r"^(?P<base>.+)\.sync-conflict-(?P<date>\d{8})-(?P<time>\d{6})-"
+    r"(?P<device>[^.]+)(?P<extension>\.[^/]*)?$",
+    re.IGNORECASE,
+)
 CORE_PLATFORMS = {
     "mgba": frozenset({"gba", "gb", "gbc"}),
     "gpsp": frozenset({"gba"}),
@@ -476,6 +481,179 @@ class SaveSnapshotService:
             "offset": offset,
             "available": self.available(),
         }
+
+    def _conflict_record(
+        self, path: Path, device_names: dict[str, str] | None = None
+    ) -> dict[str, object] | None:
+        path = path.resolve()
+        match = SYNC_CONFLICT_NAME.match(path.name)
+        if not match:
+            return None
+        root = self.settings.saves_root.resolve()
+        conflict_relpath = path.relative_to(root).as_posix()
+        canonical = path.with_name(f"{match.group('base')}{match.group('extension') or ''}")
+        try:
+            conflict_stat = path.stat()
+            conflict_hash = self._hash_path(path)
+        except OSError:
+            return None
+        canonical_exists = canonical.is_file()
+        canonical_hash = ""
+        canonical_size = 0
+        canonical_mtime_ns = 0
+        if canonical_exists:
+            try:
+                canonical_stat = canonical.stat()
+                canonical_hash = self._hash_path(canonical)
+                canonical_size = canonical_stat.st_size
+                canonical_mtime_ns = canonical_stat.st_mtime_ns
+            except OSError:
+                canonical_exists = False
+                canonical_hash = ""
+        device_id = match.group("device")
+        device_name = ""
+        for prefix, name in (device_names or {}).items():
+            if prefix.casefold().startswith(device_id.casefold()) or device_id.casefold().startswith(prefix.casefold()):
+                device_name = name
+                break
+        classification = self._classify(canonical.relative_to(root).as_posix())
+        return {
+            "conflict_relpath": conflict_relpath,
+            "canonical_relpath": canonical.relative_to(root).as_posix(),
+            "canonical_exists": canonical_exists,
+            "device_id": device_id,
+            "device_name": device_name,
+            "conflict_at": f"{match.group('date')[0:4]}-{match.group('date')[4:6]}-{match.group('date')[6:8]}T{match.group('time')[0:2]}:{match.group('time')[2:4]}:{match.group('time')[4:6]}",
+            "conflict_size": conflict_stat.st_size,
+            "conflict_mtime_ns": conflict_stat.st_mtime_ns,
+            "conflict_sha256": conflict_hash,
+            "canonical_size": canonical_size,
+            "canonical_mtime_ns": canonical_mtime_ns,
+            "canonical_sha256": canonical_hash,
+            "identical": bool(canonical_hash and canonical_hash == conflict_hash),
+            **classification,
+        }
+
+    def conflicts(
+        self,
+        search: str = "",
+        limit: int = 100,
+        offset: int = 0,
+        device_names: dict[str, str] | None = None,
+    ) -> dict[str, object]:
+        items: list[dict[str, object]] = []
+        if self.available():
+            needle = search.strip().casefold()
+            for path in self._source_paths():
+                if ".sync-conflict-" not in path.name.casefold():
+                    continue
+                item = self._conflict_record(path, device_names)
+                if not item:
+                    continue
+                if needle and not any(
+                    needle in str(item.get(field, "")).casefold()
+                    for field in ("conflict_relpath", "canonical_relpath", "device_id", "device_name", "emulator")
+                ):
+                    continue
+                items.append(item)
+        items.sort(key=lambda item: (str(item["conflict_at"]), str(item["conflict_relpath"])), reverse=True)
+        total = len(items)
+        with self.db.connect() as connection:
+            history = [dict(row) for row in connection.execute(
+                "SELECT * FROM save_conflict_resolutions ORDER BY id DESC LIMIT 50"
+            )]
+        return {
+            "items": items[offset:offset + limit],
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "available": self.available(),
+            "identical": sum(bool(item["identical"]) for item in items),
+            "history": history,
+        }
+
+    def resolve_conflict(
+        self,
+        conflict_relpath: str,
+        decision: str,
+        expected_canonical_sha256: str,
+        expected_conflict_sha256: str,
+        device_id: str = "",
+        device_name: str = "",
+        progress_callback: ProgressCallback | None = None,
+        cancel_check: CancelCheck | None = None,
+    ) -> dict[str, object]:
+        if decision not in {"current", "conflict"}:
+            raise LibraryError("Choose either the current or conflict version")
+        with self._operation_lock:
+            root = self.settings.saves_root.resolve()
+            conflict = (root / conflict_relpath).resolve()
+            if conflict == root or root not in conflict.parents:
+                raise LibraryError("Conflict path escaped the configured save vault")
+            record = self._conflict_record(conflict)
+            if not record:
+                raise LibraryError("The Syncthing conflict no longer exists; refresh conflicts")
+            if record["conflict_sha256"] != expected_conflict_sha256:
+                raise LibraryError("The conflict version changed after review; refresh conflicts")
+            if str(record["canonical_sha256"]) != expected_canonical_sha256:
+                raise LibraryError("The current version changed after review; refresh conflicts")
+            if cancel_check:
+                cancel_check()
+            if progress_callback:
+                progress_callback(2, "Creating a safety snapshot of both save versions")
+            snapshot = self.create_snapshot(
+                trigger="pre_conflict_resolution",
+                note=f"Before resolving {record['canonical_relpath']}",
+                force_record=True,
+                progress_callback=(
+                    (lambda progress, detail: progress_callback(min(90, progress), detail))
+                    if progress_callback else None
+                ),
+                cancel_check=cancel_check,
+            )
+            canonical = (root / str(record["canonical_relpath"])).resolve()
+            if cancel_check:
+                cancel_check()
+            if decision == "current":
+                if not canonical.is_file():
+                    raise LibraryError("The current version is missing; choose the conflict version")
+                conflict.unlink()
+            else:
+                canonical.parent.mkdir(parents=True, exist_ok=True)
+                staged = canonical.with_name(f".{canonical.name}.rommates-conflict-{uuid.uuid4().hex}.tmp")
+                try:
+                    shutil.copy2(conflict, staged)
+                    if self._hash_path(staged, cancel_check) != expected_conflict_sha256:
+                        raise LibraryError("The staged conflict version failed its integrity check")
+                    os.replace(staged, canonical)
+                    conflict.unlink()
+                finally:
+                    staged.unlink(missing_ok=True)
+            with self.db.write() as connection:
+                connection.execute(
+                    "INSERT INTO save_conflict_resolutions("
+                    "canonical_relpath,conflict_relpath,device_id,device_name,decision,"
+                    "canonical_sha256,conflict_sha256,safety_snapshot_id"
+                    ") VALUES(?,?,?,?,?,?,?,?)",
+                    (
+                        record["canonical_relpath"], record["conflict_relpath"],
+                        device_id[:64], device_name[:255], decision,
+                        expected_canonical_sha256, expected_conflict_sha256,
+                        snapshot["snapshot_id"],
+                    ),
+                )
+            if progress_callback:
+                progress_callback(100, "Resolved save conflict")
+            self.db.activity(
+                "save_conflict",
+                f"Resolved {record['canonical_relpath']} using the {decision} version after snapshot #{snapshot['snapshot_id']}",
+            )
+            return {
+                "canonical_relpath": record["canonical_relpath"],
+                "decision": decision,
+                "safety_snapshot_id": snapshot["snapshot_id"],
+                "device_name": device_name,
+            }
 
     def source_summary(self) -> dict[str, object]:
         """Return lightweight live-tree totals for the collection dashboard."""

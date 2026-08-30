@@ -129,6 +129,7 @@ The **Saves** screen provides:
 
 - Searchable files grouped by emulator, core, and file type
 - A Save matching review queue for filename-based RetroArch and standalone emulator saves
+- Syncthing conflict detection with device attribution, content comparison, and resolution history
 - Recoverable orphan cleanup that forces a full safety snapshot before deletion
 - Manual snapshots with optional notes
 - Scheduled snapshots and tiered recent, daily, weekly, and monthly retention
@@ -143,6 +144,13 @@ emulator on every device and allow Syncthing to finish before restoring. The
 restore job verifies that live files still match the preview, stages and hashes every
 historical file, creates a safety snapshot, and rolls the live directory back if the job
 fails or is stopped during mutation.
+
+When Syncthing preserves concurrent edits as `.sync-conflict-*` files, the **Conflicts**
+tab presents the current and alternate hashes side by side. ROMmates never chooses a
+winner automatically. Resolving a conflict creates a forced safety snapshot containing
+both branches, revalidates both reviewed hashes, applies the selected version atomically,
+and records the decision. This makes simultaneous play recoverable, but it cannot merge
+two emulator save files into one combined progression.
 
 ## Syncthing ignores
 

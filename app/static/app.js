@@ -61,6 +61,8 @@ const state = {
   saveMatchSearch: "",
   saveMatchStatus: "all",
   saveMatchOffset: 0,
+  saveConflictSearch: "",
+  saveConflictOffset: 0,
   saveSnapshotId: null,
   saveSnapshotOffset: 0,
   saveSnapshotSearch: "",
@@ -1876,9 +1878,30 @@ function saveTabs(overview) {
   return `<div class="device-scope save-tabs" role="tablist" aria-label="Save management view">
     <button class="scope-button ${state.saveTab === "current" ? "active" : ""}" data-save-tab="current" role="tab" aria-selected="${state.saveTab === "current"}">Current saves</button>
     <button class="scope-button ${state.saveTab === "matches" ? "active" : ""}" data-save-tab="matches" role="tab" aria-selected="${state.saveTab === "matches"}">Save matching <span>${reviewCount.toLocaleString()}</span></button>
+    <button class="scope-button ${state.saveTab === "conflicts" ? "active" : ""}" data-save-tab="conflicts" role="tab" aria-selected="${state.saveTab === "conflicts"}">Conflicts <span>${(overview.conflicts?.total || 0).toLocaleString()}</span></button>
     <button class="scope-button ${state.saveTab === "snapshots" ? "active" : ""}" data-save-tab="snapshots" role="tab" aria-selected="${state.saveTab === "snapshots"}">Snapshots <span>${overview.snapshot_count.toLocaleString()}</span></button>
     <button class="scope-button ${state.saveTab === "settings" ? "active" : ""}" data-save-tab="settings" role="tab" aria-selected="${state.saveTab === "settings"}">Settings</button>
   </div>`;
+}
+
+function saveConflictsHtml(data) {
+  const toolbar = `<div class="toolbar"><label class="search-field"><span class="sr-only">Search save conflicts</span><input id="save-conflict-search" type="search" value="${escapeHtml(state.saveConflictSearch)}" placeholder="Search game, emulator, or device" autocomplete="off"></label></div>`;
+  if (!data.available) return `${toolbar}<div class="empty-state save-empty"><div><h2>Save vault is not mounted</h2><p>Mount Emulation/saves to inspect Syncthing conflicts.</p></div></div>`;
+  if (!data.items.length) {
+    const history = data.history?.length
+      ? `<div class="table-wrap conflict-history"><table><thead><tr><th>Recent resolution</th><th>Decision</th><th>Safety snapshot</th><th>Resolved</th></tr></thead><tbody>${data.history.map((item) => `<tr><td class="name-cell"><code class="save-path">${escapeHtml(item.canonical_relpath)}</code><span class="path-line">${escapeHtml(item.device_name || item.device_id || "Unknown device")}</span></td><td>${item.decision === "conflict" ? "Used conflict version" : "Kept current version"}</td><td>#${item.safety_snapshot_id}</td><td class="meta">${escapeHtml(item.resolved_at)} UTC</td></tr>`).join("")}</tbody></table></div>`
+      : "";
+    return `${toolbar}<div class="empty-state save-empty compact"><div><h2>${state.saveConflictSearch ? "No conflicts match this search" : "No unresolved save conflicts"}</h2><p>${state.saveConflictSearch ? "Try a broader search." : "If two devices edit the same save concurrently, Syncthing's preserved branch will appear here."}</p></div></div>${history}`;
+  }
+  const rows = data.items.map((item, index) => {
+    const source = item.device_name || item.device_id || "Unknown device";
+    const current = item.canonical_exists
+      ? `<div><strong>Current</strong><span>${formatBytes(item.canonical_size)} · ${new Date(Number(item.canonical_mtime_ns) / 1e6).toLocaleString()}</span><code>${escapeHtml(item.canonical_sha256.slice(0, 12))}</code></div>`
+      : `<div><strong>Current missing</strong><span>The conflict is the only surviving version.</span></div>`;
+    const conflict = `<div><strong>Conflict from ${escapeHtml(source)}</strong><span>${formatBytes(item.conflict_size)} · ${new Date(Number(item.conflict_mtime_ns) / 1e6).toLocaleString()}</span><code>${escapeHtml(item.conflict_sha256.slice(0, 12))}</code></div>`;
+    return `<tr><td class="name-cell"><strong>${escapeHtml(item.content_name || item.canonical_relpath.split("/").pop())}</strong><code class="save-path">${escapeHtml(item.canonical_relpath)}</code><span class="path-line">${escapeHtml(item.emulator)}${item.core ? ` · ${escapeHtml(item.core)}` : ""} · conflict recorded ${escapeHtml(item.conflict_at)}</span></td><td><div class="conflict-versions">${current}${conflict}</div></td><td><span class="badge ${item.identical ? "unique" : "exact"}">${item.identical ? "Identical content" : "Different progress"}</span></td><td><div class="bulk-actions"><button class="button secondary small" data-resolve-conflict="${index}" data-decision="current" ${item.canonical_exists ? "" : "disabled"}>${item.identical ? "Remove duplicate" : "Keep current"}</button><button class="button small" data-resolve-conflict="${index}" data-decision="conflict">${item.canonical_exists ? "Use conflict" : "Restore conflict"}</button></div></td></tr>`;
+  }).join("");
+  return `${toolbar}<p class="save-match-note">ROMmates never resolves conflicts automatically. Both versions are captured in a safety snapshot before the selected branch replaces the live save.</p><div class="table-wrap"><table><thead><tr><th>Save</th><th>Preserved versions</th><th>Comparison</th><th>Resolution</th></tr></thead><tbody>${rows}</tbody></table></div>${infiniteFooter(data, data.total === 1 ? "save conflict" : "save conflicts")}`;
 }
 
 function saveMatchLabel(status) {
@@ -1981,6 +2004,7 @@ async function renderSaves() {
   let snapshotDetail = null;
   let comparison = null;
   let matchData = null;
+  let conflictData = null;
   if (state.saveTab === "current") {
     const params = new URLSearchParams({ search: state.saveSearch, limit: 250, offset: state.saveOffset });
     const response = await navigationApi(`/api/saves/current?${params}`);
@@ -2017,6 +2041,17 @@ async function renderSaves() {
       (item) => item.key,
     );
     content = saveMatchesHtml(matchData);
+  } else if (state.saveTab === "conflicts") {
+    const params = new URLSearchParams({ search: state.saveConflictSearch, limit: 100, offset: state.saveConflictOffset });
+    const response = await navigationApi(`/api/saves/conflicts?${params}`);
+    conflictData = mergeInfinitePage(
+      `save-conflicts\u001f${state.saveConflictSearch}`,
+      response,
+      (item) => item.conflict_relpath,
+    );
+    conflictData.history = response.history;
+    conflictData.identical = response.identical;
+    content = saveConflictsHtml(conflictData);
   } else {
     content = saveSettingsHtml(overview.settings);
   }
@@ -2026,6 +2061,7 @@ async function renderSaves() {
     state.saveTab = button.dataset.saveTab;
     state.saveOffset = 0;
     state.saveMatchOffset = 0;
+    state.saveConflictOffset = 0;
     renderSaves();
   }));
   view.querySelector("[data-snapshot-form]")?.addEventListener("submit", async (event) => {
@@ -2069,6 +2105,51 @@ async function renderSaves() {
     state.saveMatchOffset = 0;
     renderSaves();
   });
+  const conflictSearch = view.querySelector("#save-conflict-search");
+  let conflictSearchTimer;
+  conflictSearch?.addEventListener("input", (event) => {
+    clearTimeout(conflictSearchTimer);
+    conflictSearchTimer = setTimeout(() => {
+      state.saveConflictSearch = event.target.value;
+      state.saveConflictOffset = 0;
+      renderSaves();
+    }, 220);
+  });
+  view.querySelectorAll("[data-resolve-conflict]").forEach((button) => button.addEventListener("click", async () => {
+    const item = conflictData?.items[Number(button.dataset.resolveConflict)];
+    if (!item) return;
+    const decision = button.dataset.decision;
+    const chosen = decision === "conflict" ? `the conflict from ${item.device_name || item.device_id || "the other device"}` : "the current version";
+    const warning = item.identical
+      ? "The files have identical content, so this only removes Syncthing's extra conflict copy."
+      : `The unselected branch will leave the live vault, but both versions remain recoverable in the safety snapshot.`;
+    const confirmed = await confirmAction({
+      title: `${decision === "conflict" ? "Use conflict version" : "Keep current version"}?`,
+      content: `<p class="warning-copy">ROMmates will select <strong>${escapeHtml(chosen)}</strong> for <code>${escapeHtml(item.canonical_relpath)}</code>.</p><p>${escapeHtml(warning)}</p><p>Close the emulator on every device and let Syncthing finish before continuing.</p>`,
+      confirmLabel: item.identical ? "Remove duplicate" : `Use ${decision === "conflict" ? "conflict" : "current"}`,
+      cancelLabel: "Leave unresolved",
+      danger: !item.identical,
+    });
+    if (!confirmed) return;
+    button.disabled = true;
+    try {
+      const result = await requestJob("/api/saves/conflicts/resolve", {
+        method: "POST",
+        body: JSON.stringify({
+          conflict_relpath: item.conflict_relpath,
+          decision,
+          expected_canonical_sha256: item.canonical_sha256,
+          expected_conflict_sha256: item.conflict_sha256,
+          device_id: item.device_id,
+          device_name: item.device_name,
+        }),
+      }, "Creating conflict safety snapshot");
+      toast(`Conflict resolved; safety snapshot #${result.safety_snapshot_id}`);
+      state.saveConflictOffset = 0;
+      await refreshStatus();
+      await renderSaves();
+    } catch (error) { toast(error.message, "error"); button.disabled = false; }
+  }));
   view.querySelectorAll("[data-delete-save-group]").forEach((button) => button.addEventListener("click", async () => {
     const group = matchData?.items[Number(button.dataset.deleteSaveGroup)];
     if (!group || group.status !== "orphan") return;
@@ -2175,6 +2256,8 @@ async function renderSaves() {
     bindInfiniteScroll(currentData, renderSaves, (offset) => { state.saveOffset = offset; });
   } else if (state.saveTab === "matches" && matchData) {
     bindInfiniteScroll(matchData, renderSaves, (offset) => { state.saveMatchOffset = offset; });
+  } else if (state.saveTab === "conflicts" && conflictData) {
+    bindInfiniteScroll(conflictData, renderSaves, (offset) => { state.saveConflictOffset = offset; });
   } else if (state.saveTab === "snapshots" && snapshotDetail) {
     bindInfiniteScroll(
       { items: snapshotDetail.files, total: snapshotDetail.total },

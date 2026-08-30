@@ -154,6 +154,58 @@ class SaveSnapshotTests(unittest.TestCase):
         with self.assertRaisesRegex(LibraryError, "previous save source"):
             self.service.restore_snapshot(snapshot["snapshot_id"], "")
 
+    def test_syncthing_conflicts_are_detected_and_attributed(self):
+        current = self.write("retroarch/mGBA/Pokemon Pinball.srm", b"ryan-progress")
+        conflict = self.write(
+            "retroarch/mGBA/Pokemon Pinball.sync-conflict-20260829-183000-ABC1234.srm",
+            b"brother-progress",
+        )
+
+        report = self.service.conflicts(device_names={"ABC1234-LONG-ID": "Brother's Retroid"})
+        self.assertEqual(report["total"], 1)
+        item = report["items"][0]
+        self.assertEqual(item["canonical_relpath"], "retroarch/mGBA/Pokemon Pinball.srm")
+        self.assertEqual(item["device_name"], "Brother's Retroid")
+        self.assertFalse(item["identical"])
+        self.assertEqual(current.read_bytes(), b"ryan-progress")
+        self.assertEqual(conflict.read_bytes(), b"brother-progress")
+
+    def test_conflict_resolution_snapshots_both_versions_before_using_conflict(self):
+        current = self.write("retroarch/mGBA/Pokemon Pinball.srm", b"ryan-progress")
+        conflict = self.write(
+            "retroarch/mGBA/Pokemon Pinball.sync-conflict-20260829-183000-ABC1234.srm",
+            b"brother-progress",
+        )
+        item = self.service.conflicts()["items"][0]
+
+        result = self.service.resolve_conflict(
+            item["conflict_relpath"], "conflict",
+            item["canonical_sha256"], item["conflict_sha256"],
+            item["device_id"], "Brother's Retroid",
+        )
+
+        self.assertEqual(current.read_bytes(), b"brother-progress")
+        self.assertFalse(conflict.exists())
+        snapshot = self.service.snapshot_detail(result["safety_snapshot_id"])
+        self.assertEqual(snapshot["snapshot"]["trigger"], "pre_conflict_resolution")
+        self.assertEqual(snapshot["total"], 2)
+        with self.db.connect() as connection:
+            history = connection.execute("SELECT * FROM save_conflict_resolutions").fetchone()
+        self.assertEqual(history["decision"], "conflict")
+
+    def test_conflict_resolution_rejects_stale_review(self):
+        self.write("retroarch/mGBA/Game.srm", b"current")
+        conflict = self.write(
+            "retroarch/mGBA/Game.sync-conflict-20260829-183000-ABC1234.srm", b"conflict"
+        )
+        item = self.service.conflicts()["items"][0]
+        conflict.write_bytes(b"changed")
+        with self.assertRaisesRegex(LibraryError, "changed after review"):
+            self.service.resolve_conflict(
+                item["conflict_relpath"], "current",
+                item["canonical_sha256"], item["conflict_sha256"],
+            )
+
     def test_orphan_delete_creates_safety_snapshot_and_removes_only_the_group(self):
         orphan = self.write("saves/mGBA/Old Game.srm", b"old-save")
         state = self.write("states/mGBA/Old Game.state", b"old-state")
