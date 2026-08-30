@@ -101,6 +101,9 @@ class Settings:
     syncthing_api_key: str = ""
     syncthing_timeout_seconds: float = 2.0
     syncthing_cache_seconds: int = 10
+    discord_webhook_url: str = ""
+    discord_timeout_seconds: float = 5.0
+    public_url: str = ""
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -195,6 +198,11 @@ class Settings:
             syncthing_cache_seconds=_int_env(
                 "ROMMATES_SYNCTHING_CACHE_SECONDS", 10, 1, 300
             ),
+            discord_webhook_url=os.getenv("ROMMATES_DISCORD_WEBHOOK_URL", "").strip(),
+            discord_timeout_seconds=_number_env(
+                "ROMMATES_DISCORD_TIMEOUT_SECONDS", 5.0, 1.0, 20.0
+            ),
+            public_url=os.getenv("ROMMATES_PUBLIC_URL", "").strip().rstrip("/"),
             screenscraper_user=os.getenv("ROMMATES_SCREENSCRAPER_USER", "").strip(),
             screenscraper_password=os.getenv(
                 "ROMMATES_SCREENSCRAPER_PASSWORD", ""

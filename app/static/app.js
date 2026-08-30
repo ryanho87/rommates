@@ -8,6 +8,7 @@ const VIEW_ROUTES = Object.freeze({
   devices: "/devices",
   saves: "/saves",
   jobs: "/jobs",
+  notifications: "/notifications",
   trash: "/trash",
 });
 
@@ -2444,6 +2445,43 @@ async function renderJobs() {
   }
 }
 
+async function renderNotifications() {
+  const renderVersion = beginPageRender();
+  setHeading("Notifications", "Choose what ROMmates sends to Discord.");
+  const data = await api("/api/notifications");
+  if (!pageRenderIsCurrent(renderVersion, "notifications")) return;
+  const configured = data.configured;
+  const eventChoices = data.events.map((event) => `<label class="notification-event"><input type="checkbox" name="${escapeHtml(event.key)}" ${event.enabled ? "checked" : ""}><span><strong>${escapeHtml(event.label)}</strong><small>${escapeHtml(event.description)}</small></span></label>`).join("");
+  const setup = configured
+    ? `<div class="notification-connection connected"><span class="status-dot"></span><div><strong>Discord webhook connected</strong><p>${escapeHtml(data.webhook_hint)}${data.public_url ? ` · Links open ${escapeHtml(data.public_url)}` : " · Set ROMMATES_PUBLIC_URL to include links back to ROMmates."}</p></div></div>`
+    : `<div class="notification-connection"><span class="status-dot"></span><div><strong>Discord webhook not configured</strong><p>Create a channel webhook, set <code>ROMMATES_DISCORD_WEBHOOK_URL</code> in your <code>.env</code>, expose it in Compose, then recreate the container. Set <code>ROMMATES_PUBLIC_URL</code> to add links back to ROMmates.</p></div></div>`;
+  const deliveries = data.deliveries.length
+    ? `<div class="table-wrap"><table><thead><tr><th>Event</th><th>Notification</th><th>Status</th><th>Attempts</th><th>Created</th></tr></thead><tbody>${data.deliveries.map((item) => `<tr><td>${escapeHtml(item.event.replaceAll("_", " "))}</td><td class="name-cell"><strong>${escapeHtml(item.title)}</strong>${item.error ? `<small class="notification-error">${escapeHtml(item.error)}</small>` : ""}</td><td><span class="badge ${item.status === "sent" ? "unique" : item.status === "failed" ? "exact" : "possible"}">${escapeHtml(item.status)}</span></td><td>${Number(item.attempts).toLocaleString()}</td><td class="meta">${escapeHtml(item.created_at)} UTC</td></tr>`).join("")}</tbody></table></div>`
+    : `<div class="empty-state compact"><div><h2>No deliveries yet</h2><p>Send a test or wait for an enabled event.</p></div></div>`;
+  setViewHtml(`${setup}<form class="notification-settings" data-notification-settings><div class="settings-section"><h2>Delivery</h2><p>Notifications are queued in the background. Discord outages never block a ROM, save, or device operation.</p><label class="device-choice"><input type="checkbox" name="enabled" ${data.enabled ? "checked" : ""}><span>Enable Discord notifications</span></label></div><div class="settings-section notification-events-section"><h2>Events</h2><p>Failures, uploads, and save conflicts are enabled by default. High-volume completion events are opt-in.</p><div class="notification-event-list">${eventChoices}</div></div><div class="notification-actions"><button class="button" type="submit">Save preferences</button><button class="button secondary" type="button" data-test-notification ${configured ? "" : "disabled"}>Send test</button></div></form><div class="section-heading"><div><h2>Recent deliveries</h2><p>The most recent 50 attempts, including delivery failures.</p></div></div>${deliveries}`);
+  view.querySelector("[data-notification-settings]")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const events = Object.fromEntries(data.events.map((item) => [item.key, form.elements[item.key].checked]));
+    try {
+      await api("/api/notifications/settings", { method: "PUT", body: JSON.stringify({ enabled: form.elements.enabled.checked, events }) });
+      toast("Notification preferences saved");
+      await renderNotifications();
+    } catch (error) { toast(error.message, "error"); }
+  });
+  view.querySelector("[data-test-notification]")?.addEventListener("click", async (event) => {
+    event.currentTarget.disabled = true;
+    try {
+      await api("/api/notifications/test", { method: "POST" });
+      toast("Test notification queued");
+      window.setTimeout(() => { if (state.view === "notifications") renderNotifications(); }, 1200);
+    } catch (error) {
+      event.currentTarget.disabled = false;
+      toast(error.message, "error");
+    }
+  });
+}
+
 function resultLabel(key) {
   return key.replaceAll("_", " ").replace(/^./, (letter) => letter.toUpperCase());
 }
@@ -2620,7 +2658,7 @@ async function renderCurrentView() {
   const requestedView = state.view;
   let renderVersion = state.renderVersion;
   try {
-    const renderers = { overview: renderOverview, library: renderLibrary, artwork: renderArtwork, transfers: renderTransfers, duplicates: renderDuplicates, naming: renderNaming, devices: renderDevices, saves: renderSaves, jobs: renderJobs, trash: renderTrash };
+    const renderers = { overview: renderOverview, library: renderLibrary, artwork: renderArtwork, transfers: renderTransfers, duplicates: renderDuplicates, naming: renderNaming, devices: renderDevices, saves: renderSaves, jobs: renderJobs, notifications: renderNotifications, trash: renderTrash };
     const renderPromise = renderers[requestedView]();
     renderVersion = state.renderVersion;
     await renderPromise;

@@ -53,6 +53,7 @@ The MVP supports:
 - Read-only RetroArch save-to-ROM matching, orphan detection, and rename impact warnings
 - Snapshot-backed deletion of confirmed orphan save groups
 - ScreenScraper matching with ratings, within-platform ranking, and locally cached artwork
+- Best-effort Discord webhook notifications for uploads, save conflicts, failures, and optional completion events
 - Bearer-token protection for the private API
 - Browser/OS light and dark themes
 
@@ -479,6 +480,22 @@ Duplicate and ROM trash confirmations list matching save filenames that would be
 | `ROMMATES_SYNCTHING_API_KEY` | empty | Syncthing API key used only by the ROMmates backend for read-only status requests |
 | `ROMMATES_SYNCTHING_TIMEOUT_SECONDS` | `2` | Maximum wait for a Syncthing status request, from 0.25 to 10 seconds |
 | `ROMMATES_SYNCTHING_CACHE_SECONDS` | `10` | How long ROMmates reuses device presence results before querying Syncthing again |
+| `ROMMATES_DISCORD_WEBHOOK_URL` | empty | Optional Discord channel webhook used for outbound notifications; treat it as a secret |
+| `ROMMATES_DISCORD_TIMEOUT_SECONDS` | `5` | Maximum wait for one Discord delivery attempt, from 1 to 20 seconds |
+| `ROMMATES_PUBLIC_URL` | empty | Public ROMmates origin included in notification links, such as `https://rommates.example.com` |
+
+## Discord notifications
+
+Create an incoming webhook in the Discord channel that should receive ROMmates alerts,
+put its URL in `ROMMATES_DISCORD_WEBHOOK_URL`, and recreate the container. Then open
+**Notifications** to send a test and choose events. Uploads, save conflicts, and job
+failures are enabled by default; scans, device changes, save operations, and trash
+changes are opt-in.
+
+Delivery is outbound-only: ROMmates does not install a Discord bot or accept commands
+from Discord. Messages are queued on a background worker, retried up to three times,
+and recorded in the Notifications page. A Discord outage cannot fail the ROM, save, or
+device operation that produced the alert. Mentions are disabled on webhook payloads.
 
 ## Local development
 

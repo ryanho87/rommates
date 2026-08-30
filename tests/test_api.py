@@ -109,6 +109,7 @@ class ApiIntegrationTests(unittest.TestCase):
             "/devices",
             "/saves",
             "/jobs",
+            "/notifications",
             "/trash",
         ):
             with self.subTest(path=path):
@@ -117,6 +118,25 @@ class ApiIntegrationTests(unittest.TestCase):
                 self.assertIn('<nav id="navigation">', response.text)
 
         self.assertEqual(self.client.get("/not-a-rommates-page").status_code, 404)
+
+    def test_notification_preferences_are_private_and_test_requires_webhook(self):
+        self.assertEqual(self.client.get("/api/notifications").status_code, 401)
+        response = self.client.get("/api/notifications", headers=self.headers)
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertFalse(payload["configured"])
+        self.assertTrue(any(event["key"] == "save_conflict" for event in payload["events"]))
+
+        update = self.client.put(
+            "/api/notifications/settings",
+            headers=self.headers,
+            json={"enabled": False, "events": {"save_conflict": True}},
+        )
+        self.assertEqual(update.status_code, 200)
+        self.assertFalse(update.json()["enabled"])
+        test = self.client.post("/api/notifications/test", headers=self.headers)
+        self.assertEqual(test.status_code, 400)
+        self.assertIn("ROMMATES_DISCORD_WEBHOOK_URL", test.json()["detail"])
 
     def test_syncthing_status_is_private_and_explains_unconfigured_state(self):
         self.assertEqual(self.client.get("/api/syncthing/status").status_code, 401)

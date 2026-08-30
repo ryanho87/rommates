@@ -306,6 +306,31 @@ CREATE TABLE IF NOT EXISTS save_conflict_resolutions (
 CREATE INDEX IF NOT EXISTS idx_save_conflict_resolutions_time
 ON save_conflict_resolutions(id DESC);
 
+CREATE TABLE IF NOT EXISTS notification_settings (
+    id INTEGER PRIMARY KEY CHECK(id=1),
+    enabled INTEGER NOT NULL DEFAULT 1,
+    events_json TEXT NOT NULL DEFAULT '{}',
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS notification_deliveries (
+    id INTEGER PRIMARY KEY,
+    event TEXT NOT NULL,
+    title TEXT NOT NULL,
+    detail TEXT NOT NULL,
+    path TEXT NOT NULL DEFAULT '',
+    dedupe_key TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'queued' CHECK(status IN ('queued','sent','failed')),
+    attempts INTEGER NOT NULL DEFAULT 0,
+    error TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    sent_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_notification_deliveries_time
+ON notification_deliveries(id DESC);
+CREATE INDEX IF NOT EXISTS idx_notification_deliveries_dedupe
+ON notification_deliveries(event,dedupe_key);
+
 CREATE TABLE IF NOT EXISTS activity (
     id INTEGER PRIMARY KEY,
     action TEXT NOT NULL,
@@ -453,6 +478,7 @@ class Database:
                 )
             connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(15)")
             connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(16)")
+            connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(17)")
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:

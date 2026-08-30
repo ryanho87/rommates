@@ -20,6 +20,7 @@ from .db import Database
 from .library import JobCancelled, LibraryError, LibraryService
 from .mcp_server import RommatesMCPService, create_mcp_server
 from .naming import NamingService
+from .notifications import NotificationService
 from .rankings import RankingService
 from .saves import SaveSnapshotService
 from .screenscraper import ScreenScraperService
@@ -65,6 +66,7 @@ screenscraper = ScreenScraperService(settings, db)
 ranking_service = RankingService(settings, db)
 transfers = TransferService(settings, db, library)
 syncthing = SyncthingService(settings)
+notifications = NotificationService(settings, db)
 job_cancellations: dict[int, threading.Event] = {}
 job_cancellations_lock = threading.Lock()
 library_job_lock = threading.Lock()
@@ -206,6 +208,46 @@ def job_result_detail(kind: str, result: object, fallback: str) -> str:
     return fallback
 
 
+def safe_notify(
+    event: str,
+    title: str,
+    detail: str,
+    path: str = "",
+    *,
+    dedupe_key: str = "",
+) -> None:
+    """Queue a best-effort notification without affecting the originating operation."""
+    try:
+        notifications.notify(event, title, detail, path, dedupe_key=dedupe_key)
+    except Exception as exc:
+        try:
+            db.activity("notification", f"Discord notification could not be queued: {exc}")
+        except Exception:
+            pass
+
+
+def notify_job_result(kind: str, detail: str, result: object) -> None:
+    routes = {
+        "upload_finalize": ("upload", "ROM upload completed", "transfers"),
+        "save_conflict": ("save", "Save conflict resolved", "saves"),
+        "save_snapshot": ("save", "Save snapshot completed", "saves"),
+        "save_restore": ("save", "Save restore completed", "saves"),
+        "save_delete": ("save", "Save cleanup completed", "saves"),
+        "device_apply": ("device", "Device changes applied", "devices"),
+        "scan": ("scan", "Library scan completed", "library"),
+        "delete": ("trash", "ROM moved to trash", "trash"),
+        "bulk_delete": ("trash", "Duplicate cleanup completed", "trash"),
+        "restore": ("trash", "ROM restored from trash", "trash"),
+        "purge": ("trash", "Trash permanently deleted", "trash"),
+        "bulk_purge": ("trash", "Selected trash permanently deleted", "trash"),
+    }
+    route = routes.get(kind)
+    if not route:
+        return
+    event, title, path = route
+    safe_notify(event, title, job_result_detail(kind, result, detail), path)
+
+
 def run_job(
     job_id: int,
     kind: str,
@@ -295,6 +337,7 @@ def run_job(
                     "UPDATE jobs SET status='complete',progress=100,detail=?,result_json=?,completed_at=CURRENT_TIMESTAMP WHERE id=?",
                     (job_result_detail(kind, result, detail), json.dumps(result), job_id),
                 )
+            notify_job_result(kind, detail, result)
     except JobCancelled as exc:
         persist_issues()
         with db.write() as connection:
@@ -309,6 +352,13 @@ def run_job(
                 "UPDATE jobs SET status='failed',detail=?,completed_at=CURRENT_TIMESTAMP WHERE id=?",
                 (str(exc), job_id),
             )
+        safe_notify(
+            "job_failed",
+            f"{kind.replace('_', ' ').title()} failed",
+            str(exc),
+            f"jobs?job={job_id}",
+            dedupe_key=f"job:{job_id}:failed",
+        )
     finally:
         # Also covers a failure raised while constructing the terminal job result.
         persist_issues()
@@ -425,26 +475,50 @@ mcp_http_app = mcp_server.streamable_http_app(
 
 
 def save_scheduler(stop: threading.Event) -> None:
+    next_conflict_check = 0.0
     while not stop.wait(30):
         try:
-            if not saves.due_for_automatic_snapshot():
-                continue
-            with db.connect() as connection:
-                active = connection.execute(
-                    "SELECT 1 FROM jobs WHERE kind IN ('save_snapshot','save_restore') "
-                    "AND status IN ('queued','running','cancelling') LIMIT 1"
-                ).fetchone()
-            if not active:
-                enqueue_job(
-                    "save_snapshot",
-                    "Creating scheduled save snapshot",
-                    saves.create_snapshot,
-                    "automatic",
-                    "",
-                    False,
-                )
+            if saves.due_for_automatic_snapshot():
+                with db.connect() as connection:
+                    active = connection.execute(
+                        "SELECT 1 FROM jobs WHERE kind IN ('save_snapshot','save_restore') "
+                        "AND status IN ('queued','running','cancelling') LIMIT 1"
+                    ).fetchone()
+                if not active:
+                    enqueue_job(
+                        "save_snapshot",
+                        "Creating scheduled save snapshot",
+                        saves.create_snapshot,
+                        "automatic",
+                        "",
+                        False,
+                    )
         except Exception as exc:
             db.activity("save_snapshot", f"Scheduled snapshot could not start: {exc}")
+        if time.monotonic() < next_conflict_check:
+            continue
+        next_conflict_check = time.monotonic() + 60
+        if not notifications.event_enabled("save_conflict"):
+            continue
+        try:
+            conflict_report = saves.conflicts(
+                limit=500,
+                device_names=_syncthing_device_names(),
+            )
+            for conflict in conflict_report["items"]:
+                source = conflict.get("device_name") or conflict.get("device_id") or "another device"
+                safe_notify(
+                    "save_conflict",
+                    "Save conflict needs review",
+                    f"{conflict['canonical_relpath']} has a competing version from {source}.",
+                    "saves",
+                    dedupe_key=(
+                        f"save-conflict:{conflict['conflict_relpath']}:"
+                        f"{conflict['conflict_sha256']}"
+                    ),
+                )
+        except Exception as exc:
+            db.activity("notification", f"Save conflicts could not be checked: {exc}")
 
 
 @asynccontextmanager
@@ -466,6 +540,7 @@ async def lifespan(_: FastAPI):
     library.prepare_roots()
     saves.initialize()
     transfers.initialize()
+    notifications.initialize()
     scheduler_stop = threading.Event()
     scheduler_thread = threading.Thread(target=save_scheduler, args=(scheduler_stop,), daemon=True)
     scheduler_thread.start()
@@ -486,6 +561,7 @@ async def lifespan(_: FastAPI):
     finally:
         scheduler_stop.set()
         scheduler_thread.join(timeout=2)
+        notifications.close()
 
 
 app = FastAPI(
@@ -615,6 +691,11 @@ class BulkPurgeRequest(BaseModel):
     trash_ids: list[int] = Field(min_length=1, max_length=1000)
 
 
+class NotificationSettingsRequest(BaseModel):
+    enabled: bool
+    events: dict[str, bool]
+
+
 @app.middleware("http")
 async def protect_private_api(request: Request, call_next):
     public_download = (
@@ -671,6 +752,7 @@ async def transfer_error_handler(_: Request, exc: TransferError):
 @app.get("/saves", include_in_schema=False)
 @app.get("/jobs", include_in_schema=False)
 @app.get("/trash", include_in_schema=False)
+@app.get("/notifications", include_in_schema=False)
 def index():
     return FileResponse(STATIC_DIR / "index.html")
 
@@ -678,6 +760,21 @@ def index():
 @app.get("/api/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/api/notifications")
+def notification_settings():
+    return notifications.settings_payload()
+
+
+@app.put("/api/notifications/settings")
+def update_notification_settings(payload: NotificationSettingsRequest):
+    return notifications.update_settings(payload.enabled, payload.events)
+
+
+@app.post("/api/notifications/test", status_code=202)
+def test_notification():
+    return notifications.test()
 
 
 @app.get("/api/status")

@@ -574,6 +574,17 @@ input[type="checkbox"] { width: 15px; height: 15px; margin: 0; accent-color: var
 .settings-section h2 { margin: 0; font-size: 0.9rem; }
 .settings-section > p { grid-column: 1; max-width: 58ch; margin: -4px 0 0; color: var(--text-muted); font-size: 0.76rem; }
 .settings-section > .field, .settings-section > .device-choice, .settings-section > .retention-grid { grid-column: 2; }
+.notification-connection { display: flex; gap: 12px; align-items: flex-start; padding: 14px 16px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-raised); }
+.notification-connection .status-dot { flex: 0 0 auto; width: 9px; height: 9px; margin-top: 5px; border-radius: 999px; background: var(--text-muted); }
+.notification-connection.connected .status-dot { background: var(--success); box-shadow: 0 0 0 4px color-mix(in srgb, var(--success) 14%, transparent); }
+.notification-connection p { margin: 3px 0 0; color: var(--text-muted); font-size: 0.76rem; }
+.notification-event-list { grid-column: 2; display: grid; gap: 8px; }
+.notification-event { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-raised); cursor: pointer; }
+.notification-event input { margin-top: 2px; }
+.notification-event span { display: grid; gap: 2px; }
+.notification-event small, .notification-error { display: block; color: var(--text-muted); font-size: 0.7rem; }
+.notification-error { margin-top: 3px; color: var(--danger); }
+.notification-actions { display: flex; gap: 8px; padding-top: 16px; }
 .retention-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .settings-paths { display: grid; gap: 5px; margin: 14px 0; color: var(--text-muted); font-size: 0.75rem; }
 .settings-paths code { color: var(--text); }
@@ -846,7 +857,7 @@ dialog form { padding: 18px; }
   .snapshot-detail .report-grid { grid-template-columns: repeat(2, minmax(100px, 1fr)); }
   .conflict-versions > div { grid-template-columns: 1fr; gap: 2px; }
   .settings-section { grid-template-columns: 1fr; }
-  .settings-section > p, .settings-section > .field, .settings-section > .device-choice, .settings-section > .retention-grid { grid-column: 1; }
+  .settings-section > p, .settings-section > .field, .settings-section > .device-choice, .settings-section > .retention-grid, .notification-event-list { grid-column: 1; }
   .rename-arrow { display: none; }
   .duplicate-group-head { align-items: stretch; flex-direction: column; }
   .duplicate-group-head .button { align-self: flex-start; }
