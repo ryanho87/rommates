@@ -1046,17 +1046,19 @@ dialog form { padding: 18px; }
   .library-table { overflow: visible; border: 0; background: transparent; }
   .library-table > table { display: block; min-width: 0; }
   .library-table thead { display: none; }
-  .library-table tbody { display: grid; gap: 5px; }
+  .library-table tbody { display: grid; gap: 8px; }
   .library-table .game-row {
     display: grid;
     grid-template-columns: 38px minmax(0, 1fr);
     align-items: center;
     padding: 7px 8px;
     overflow: visible;
-    border: 1px solid var(--border);
+    border: 1px solid color-mix(in oklch, var(--border-strong) 68%, var(--border));
     border-radius: var(--radius-md);
-    background: var(--surface);
+    background: color-mix(in oklch, var(--surface-raised) 55%, var(--surface));
+    box-shadow: 0 1px 0 oklch(8% 0.01 285 / 18%);
   }
+  .library-table .game-row:nth-child(even) { background: color-mix(in oklch, var(--accent-soft) 20%, var(--surface)); }
   .library-table .game-row > td { display: block; width: auto; max-width: none; height: auto; padding: 0 5px; border: 0; white-space: normal; }
   .library-table .game-row > .checkbox-cell { display: grid; grid-column: 1; grid-row: 1 / span 2; align-self: stretch; place-content: center; padding: 0; }
   .library-table .game-row > .artwork-cell,
@@ -1077,17 +1079,30 @@ dialog form { padding: 18px; }
   .library-table .game-row > .actions-cell { display: flex; grid-column: 2; grid-row: 2; align-items: center; gap: 5px; min-width: 0; padding-top: 2px; }
   .library-table .game-row > .actions-cell > .button { flex: 1 1 0; min-width: 0; padding-inline: 7px; }
   .library-table .game-row > .actions-cell .button { min-height: 44px; }
+  .library-table .game-row > .actions-cell > .download-action {
+    border-color: var(--border-strong);
+    background: var(--surface-raised);
+  }
+  .library-table .game-row > .actions-cell > .download-action:active { background: var(--surface); }
   .library-table .game-row > .optional-column { display: none; }
   .library-table .game-row > .name-cell .path-line { display: none; }
   .mobile-game-meta { display: flex; flex-wrap: wrap; gap: 2px 9px; margin-top: 3px; color: var(--text-faint); font-size: 0.68rem; line-height: 1.25; }
   .mobile-game-meta > span { position: relative; min-width: 0; overflow-wrap: anywhere; }
   .mobile-game-meta > span + span::before { position: absolute; left: -6px; content: "·"; }
-  .mobile-device-button { display: inline-flex; }
-  .mobile-device-button.pending { border-color: var(--warning); color: var(--warning); }
-  .mobile-device-count { display: inline-grid; min-width: 18px; height: 18px; margin-left: 4px; padding-inline: 4px; place-items: center; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-size: 0.68rem; }
+  .button.secondary.mobile-device-button {
+    display: inline-flex;
+    border-color: color-mix(in oklch, var(--accent) 62%, var(--border));
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
+  .button.secondary.mobile-device-button:hover { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+  .button.secondary.mobile-device-button:active { background: color-mix(in oklch, var(--accent-soft) 78%, var(--accent)); }
+  .button.secondary.mobile-device-button.selected { border-color: var(--accent); }
+  .button.secondary.mobile-device-button.pending { border-color: var(--warning); background: var(--warning-soft); color: var(--warning); }
+  .mobile-device-count { display: inline-grid; min-width: 18px; height: 18px; margin-left: 4px; padding-inline: 4px; place-items: center; border-radius: 999px; background: color-mix(in oklch, var(--accent) 18%, var(--surface)); color: var(--accent); font-size: 0.68rem; font-weight: 700; }
   .desktop-row-actions { display: none; }
   .mobile-row-more { position: relative; display: block; flex: 0 0 auto; }
-  .mobile-row-more summary { display: grid; min-width: 58px; min-height: 44px; padding-inline: 9px; place-items: center; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); color: var(--text); cursor: pointer; font-weight: 590; list-style: none; }
+  .mobile-row-more summary { display: grid; min-width: 58px; min-height: 44px; padding-inline: 9px; place-items: center; border: 1px solid var(--border); border-radius: var(--radius-sm); background: transparent; color: var(--text-muted); cursor: pointer; font-weight: 590; list-style: none; }
   .mobile-row-more summary::-webkit-details-marker { display: none; }
   .mobile-row-more[open] summary { border-color: var(--border-strong); background: var(--surface-raised); }
   .mobile-row-more > div { position: absolute; z-index: 30; top: calc(100% + 5px); right: 0; display: grid; width: 132px; gap: 5px; padding: 6px; border: 1px solid var(--border-strong); border-radius: var(--radius-md); background: var(--surface-raised); box-shadow: var(--shadow); }

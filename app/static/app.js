@@ -883,7 +883,7 @@ function mobileDeviceAction(game) {
   const devices = game.devices || [];
   const pending = devices.some((device) => device.state === "pending_add" || device.state === "pending_remove");
   const label = devices.length ? `${devices.length} selected` : "None selected";
-  return `<button class="button secondary small mobile-device-button ${pending ? "pending" : ""}" data-assign-devices="${game.id}" aria-label="Choose devices for ${escapeHtml(game.display_name)}"><span>Devices</span><span class="mobile-device-count">${devices.length}</span><span class="sr-only">, ${label}</span></button>`;
+  return `<button class="button secondary small mobile-device-button ${devices.length ? "selected" : ""} ${pending ? "pending" : ""}" data-assign-devices="${game.id}" aria-label="Choose devices for ${escapeHtml(game.display_name)}"><span>Devices</span><span class="mobile-device-count">${devices.length}</span><span class="sr-only">, ${label}</span></button>`;
 }
 
 function gameRows(items, deviceMode = false) {
