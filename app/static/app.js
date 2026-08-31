@@ -867,7 +867,6 @@ function gameRating(game) {
 
 function mobileGameMeta(game) {
   const parts = [
-    escapeHtml(game.platform),
     formatBytes(game.size),
     game.rating === null || game.rating === undefined
       ? "Not rated"
@@ -876,7 +875,7 @@ function mobileGameMeta(game) {
   if (Number(game.file_count) > 1) parts.push(`${Number(game.file_count).toLocaleString()} files`);
   if (game.duplicate_status === "exact") parts.push("Exact duplicate");
   else if (game.duplicate_status === "possible") parts.push("Possible duplicate");
-  return `<span class="mobile-game-meta">${parts.map((part) => `<span>${part}</span>`).join("")}</span>`;
+  return `<span class="mobile-game-meta"><span class="mobile-platform">${escapeHtml(game.platform)}</span>${parts.map((part) => `<span>${part}</span>`).join("")}</span>`;
 }
 
 function mobileDeviceAction(game) {

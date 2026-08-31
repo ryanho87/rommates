@@ -1083,6 +1083,20 @@ dialog form { padding: 18px; }
   .mobile-game-meta { display: flex; flex-wrap: wrap; gap: 2px 9px; margin-top: 3px; color: var(--text-faint); font-size: 0.68rem; line-height: 1.25; }
   .mobile-game-meta > span { position: relative; min-width: 0; overflow-wrap: anywhere; }
   .mobile-game-meta > span + span::before { position: absolute; left: -6px; content: "·"; }
+  .mobile-game-meta > .mobile-platform {
+    margin-right: 2px;
+    padding: 1px 5px;
+    border: 1px solid color-mix(in oklch, var(--accent) 42%, var(--border));
+    border-radius: 999px;
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-size: 0.6rem;
+    font-weight: 750;
+    letter-spacing: 0.055em;
+    line-height: 1.35;
+    text-transform: uppercase;
+  }
+  .mobile-game-meta > .mobile-platform + span::before { content: none; }
   .button.secondary.mobile-device-button {
     display: inline-flex;
     border-color: color-mix(in oklch, var(--accent) 62%, var(--border));
