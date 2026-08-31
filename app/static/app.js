@@ -587,8 +587,11 @@ function libraryToolbar(includeDuplicate = true, platformItems = state.platforms
   const rankingAction = state.view === "library"
     ? `<button class="button secondary ${state.rankingOpen ? "active" : ""}" type="button" data-toggle-ranking ${selectedPlatform ? "" : "disabled"}>Top 100 coverage</button>`
     : "";
+  const auxiliaryTools = ratingAction || rankingAction
+    ? `<details class="library-aux-tools"><summary>Ratings and rankings</summary><div>${ratingAction}${rankingAction}</div></details>`
+    : "";
   return `
-    <div class="toolbar">
+    <div class="toolbar library-toolbar">
       <label class="search-field">
         <span class="sr-only">Search ROMs</span>
         <input id="search-input" type="search" value="${escapeHtml(state.search)}" placeholder="Search ROMs" autocomplete="off">
@@ -606,8 +609,7 @@ function libraryToolbar(includeDuplicate = true, platformItems = state.platforms
         <option value="size_desc" ${state.sort === "size_desc" ? "selected" : ""}>Largest size</option>
         <option value="size_asc" ${state.sort === "size_asc" ? "selected" : ""}>Smallest size</option>
       </select></label>` : ""}
-      ${ratingAction}
-      ${rankingAction}
+      ${auxiliaryTools}
     </div>`;
 }
 
@@ -863,6 +865,27 @@ function gameRating(game) {
   return `<span class="rating-summary" title="ScreenScraper community rating"><strong>${score.toLocaleString(undefined, { maximumFractionDigits: 1 })}<small>/20</small></strong>${rank ? `<span>${rank}</span>` : ""}${game.top_staff ? '<span class="staff-pick">Staff pick</span>' : ""}</span>`;
 }
 
+function mobileGameMeta(game) {
+  const parts = [
+    escapeHtml(game.platform),
+    formatBytes(game.size),
+    game.rating === null || game.rating === undefined
+      ? "Not rated"
+      : `${Number(game.rating).toLocaleString(undefined, { maximumFractionDigits: 1 })}/20`,
+  ];
+  if (Number(game.file_count) > 1) parts.push(`${Number(game.file_count).toLocaleString()} files`);
+  if (game.duplicate_status === "exact") parts.push("Exact duplicate");
+  else if (game.duplicate_status === "possible") parts.push("Possible duplicate");
+  return `<span class="mobile-game-meta">${parts.map((part) => `<span>${part}</span>`).join("")}</span>`;
+}
+
+function mobileDeviceAction(game) {
+  const devices = game.devices || [];
+  const pending = devices.some((device) => device.state === "pending_add" || device.state === "pending_remove");
+  const label = devices.length ? `${devices.length} selected` : "None selected";
+  return `<button class="button secondary small mobile-device-button ${pending ? "pending" : ""}" data-assign-devices="${game.id}" aria-label="Choose devices for ${escapeHtml(game.display_name)}"><span>Devices</span><span class="mobile-device-count">${devices.length}</span><span class="sr-only">, ${label}</span></button>`;
+}
+
 function gameRows(items, deviceMode = false) {
   return items.map((game) => {
     const checked = isAdmin() && (deviceMode ? game.selected : state.selectedRows.has(game.id));
@@ -894,7 +917,7 @@ function gameRows(items, deviceMode = false) {
       <tr class="game-row ${isAdmin() ? "" : "read-only-row"}">
         <td class="checkbox-cell">${isAdmin() ? `<input type="checkbox" aria-label="Select ${escapeHtml(game.display_name)}" data-${deviceMode ? "device" : "row"}-select="${game.id}" ${checked ? "checked" : ""}>` : ""}</td>
         <td class="artwork-cell">${artworkThumb(game, !deviceMode && (isAdmin() || Number(game.artwork_count) > 0))}</td>
-        <td class="name-cell" title="${escapeHtml(game.primary_relpath)}"><strong>${escapeHtml(game.display_name)}</strong><span class="path-line">${escapeHtml(game.primary_relpath)}</span></td>
+        <td class="name-cell" title="${escapeHtml(game.primary_relpath)}"><strong>${escapeHtml(game.display_name)}</strong><span class="path-line">${escapeHtml(game.primary_relpath)}</span>${mobileGameMeta(game)}</td>
         <td class="platform-cell">${escapeHtml(game.platform)}</td>
         <td class="rating-cell">${gameRating(game)}</td>
         ${deviceMode ? "" : `<td class="duplicate-cell">${duplicateLabel(game.duplicate_status)}</td>`}
@@ -902,8 +925,9 @@ function gameRows(items, deviceMode = false) {
         <td class="meta optional-column">${game.file_count} ${game.file_count === 1 ? "file" : "files"}</td>
         <td class="meta optional-column">${deviceMode ? deviceTargetState(game) : deviceSummary(game, isAdmin())}</td>
         ${deviceMode ? "" : `<td class="nowrap actions-cell">
-          <button class="button secondary small" data-download="${game.id}" data-name="${escapeHtml(game.display_name)}">Download</button>
-          ${isAdmin() ? `<button class="button secondary small" data-rename="${game.id}">Rename</button><button class="button danger-subtle small" data-delete="${game.id}" data-name="${escapeHtml(game.display_name)}">Trash</button>` : ""}
+          ${isAdmin() ? mobileDeviceAction(game) : ""}
+          <button class="button secondary small download-action" data-download="${game.id}" data-name="${escapeHtml(game.display_name)}">Download</button>
+          ${isAdmin() ? `<span class="desktop-row-actions"><button class="button secondary small" data-rename="${game.id}">Rename</button><button class="button danger-subtle small" data-delete="${game.id}" data-name="${escapeHtml(game.display_name)}">Trash</button></span><details class="mobile-row-more"><summary>More</summary><div><button class="button secondary small" data-rename="${game.id}">Rename</button><button class="button danger-subtle small" data-delete="${game.id}" data-name="${escapeHtml(game.display_name)}">Trash</button></div></details>` : ""}
         </td>`}
       </tr>${editor}${assignment}${artwork}`;
   }).join("");

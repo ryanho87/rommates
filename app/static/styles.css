@@ -326,6 +326,10 @@ input[type="checkbox"] { width: 15px; height: 15px; margin: 0; accent-color: var
 }
 .device-choice:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
 .device-choice:hover { border-color: var(--border-strong); }
+.mobile-game-meta, .mobile-device-button, .mobile-row-more { display: none; }
+.desktop-row-actions { display: inline-flex; gap: 6px; }
+.library-aux-tools, .library-aux-tools > div { display: contents; }
+.library-aux-tools > summary { display: none; }
 
 .overview-strip {
   display: grid;
@@ -1016,7 +1020,16 @@ dialog form { padding: 18px; }
   .button.small { min-height: 40px; padding-inline: 11px; }
   .toolbar { align-items: stretch; flex-wrap: wrap; gap: 7px; }
   .search-field { flex: 1 0 100%; max-width: none; }
-  .toolbar > select { flex: 1 1 calc(50% - 4px); min-width: 0; }
+  .toolbar > label:not(.search-field) { flex: 1 1 calc(50% - 4px); min-width: 0; }
+  .toolbar > label:not(.search-field) select { width: 100%; min-width: 0; }
+  .toolbar > .button { flex: 1 0 100%; padding-block: 7px; white-space: normal; }
+  .library-toolbar > label:not(.search-field) { flex: 1 1 0; }
+  .library-aux-tools { display: block; flex: 1 0 100%; min-width: 0; }
+  .library-aux-tools > summary { display: grid; min-height: 44px; padding-inline: 12px; place-items: center; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); cursor: pointer; font-weight: 590; list-style: none; }
+  .library-aux-tools > summary::-webkit-details-marker { display: none; }
+  .library-aux-tools[open] > summary { border-color: var(--border-strong); background: var(--surface-raised); }
+  .library-aux-tools > div { display: grid; gap: 6px; padding-top: 6px; }
+  .library-aux-tools > div .button { width: 100%; padding-block: 7px; white-space: normal; }
   .section-heading { align-items: flex-start; flex-direction: column; gap: 5px; margin-top: 18px; }
   .section-heading > .button, .section-heading > .bulk-actions { align-self: stretch; }
   .section-heading > .button { width: 100%; }
@@ -1033,34 +1046,68 @@ dialog form { padding: 18px; }
   .library-table { overflow: visible; border: 0; background: transparent; }
   .library-table > table { display: block; min-width: 0; }
   .library-table thead { display: none; }
-  .library-table tbody { display: grid; gap: 8px; }
+  .library-table tbody { display: grid; gap: 5px; }
   .library-table .game-row {
     display: grid;
-    grid-template-columns: 42px 48px minmax(0, 1fr) auto;
+    grid-template-columns: 38px minmax(0, 1fr);
     align-items: center;
-    padding: 9px 7px;
-    overflow: hidden;
+    padding: 7px 8px;
+    overflow: visible;
     border: 1px solid var(--border);
     border-radius: var(--radius-md);
     background: var(--surface);
   }
-  .library-table .game-row > td { display: block; width: auto; max-width: none; height: auto; padding: 2px 6px; border: 0; white-space: normal; }
-  .library-table .game-row > .checkbox-cell { grid-column: 1; grid-row: 1 / span 3; align-self: stretch; place-content: center; }
-  .library-table .game-row > .artwork-cell { grid-column: 2; grid-row: 1 / span 3; padding-inline: 3px; }
-  .library-table .game-row > .name-cell { grid-column: 3 / 5; grid-row: 1; min-width: 0; }
-  .library-table .game-row > .platform-cell { grid-column: 3; grid-row: 2; color: var(--text-muted); font-size: 0.75rem; }
-  .library-table .game-row > .rating-cell { grid-column: 4; grid-row: 2; justify-self: end; }
-  .library-table .game-row > .duplicate-cell { grid-column: 3; grid-row: 3; }
-  .library-table .game-row > .size-cell { grid-column: 4; grid-row: 3; justify-self: end; font-size: 0.72rem; }
-  .library-table .game-row > .actions-cell { display: flex; grid-column: 1 / 5; grid-row: 4; gap: 6px; padding-top: 8px; }
-  .library-table .game-row > .actions-cell .button { flex: 1; }
+  .library-table .game-row > td { display: block; width: auto; max-width: none; height: auto; padding: 0 5px; border: 0; white-space: normal; }
+  .library-table .game-row > .checkbox-cell { display: grid; grid-column: 1; grid-row: 1 / span 2; align-self: stretch; place-content: center; padding: 0; }
+  .library-table .game-row > .artwork-cell,
+  .library-table .game-row > .platform-cell,
+  .library-table .game-row > .rating-cell,
+  .library-table .game-row > .duplicate-cell,
+  .library-table .game-row > .size-cell { display: none; }
+  .library-table .game-row > .name-cell { grid-column: 2; grid-row: 1; min-width: 0; padding-bottom: 5px; }
+  .library-table .game-row > .name-cell > strong {
+    display: -webkit-box;
+    overflow: hidden;
+    overflow-wrap: anywhere;
+    font-size: 0.9rem;
+    line-height: 1.25;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+  .library-table .game-row > .actions-cell { display: flex; grid-column: 2; grid-row: 2; align-items: center; gap: 5px; min-width: 0; padding-top: 2px; }
+  .library-table .game-row > .actions-cell > .button { flex: 1 1 0; min-width: 0; padding-inline: 7px; }
+  .library-table .game-row > .actions-cell .button { min-height: 44px; }
   .library-table .game-row > .optional-column { display: none; }
-  .library-table .game-row > .name-cell .path-line { max-width: 100%; }
+  .library-table .game-row > .name-cell .path-line { display: none; }
+  .mobile-game-meta { display: flex; flex-wrap: wrap; gap: 2px 9px; margin-top: 3px; color: var(--text-faint); font-size: 0.68rem; line-height: 1.25; }
+  .mobile-game-meta > span { position: relative; min-width: 0; overflow-wrap: anywhere; }
+  .mobile-game-meta > span + span::before { position: absolute; left: -6px; content: "·"; }
+  .mobile-device-button { display: inline-flex; }
+  .mobile-device-button.pending { border-color: var(--warning); color: var(--warning); }
+  .mobile-device-count { display: inline-grid; min-width: 18px; height: 18px; margin-left: 4px; padding-inline: 4px; place-items: center; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-size: 0.68rem; }
+  .desktop-row-actions { display: none; }
+  .mobile-row-more { position: relative; display: block; flex: 0 0 auto; }
+  .mobile-row-more summary { display: grid; min-width: 58px; min-height: 44px; padding-inline: 9px; place-items: center; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); color: var(--text); cursor: pointer; font-weight: 590; list-style: none; }
+  .mobile-row-more summary::-webkit-details-marker { display: none; }
+  .mobile-row-more[open] summary { border-color: var(--border-strong); background: var(--surface-raised); }
+  .mobile-row-more > div { position: absolute; z-index: 30; top: calc(100% + 5px); right: 0; display: grid; width: 132px; gap: 5px; padding: 6px; border: 1px solid var(--border-strong); border-radius: var(--radius-md); background: var(--surface-raised); box-shadow: var(--shadow); }
+  .mobile-row-more > div .button { width: 100%; }
   .library-table .inline-editor { display: block; overflow: hidden; border: 1px solid var(--border); border-radius: var(--radius-md); }
   .library-table .inline-editor > td { display: block; width: 100%; }
   .library-table .read-only-row > .checkbox-cell { display: none; }
-  .library-table .read-only-row > .artwork-cell { grid-column: 1; }
-  .library-table .read-only-row > .name-cell { grid-column: 2 / 5; }
+  .library-table .read-only-row { grid-template-columns: 1fr; }
+  .library-table .read-only-row > .name-cell,
+  .library-table .read-only-row > .actions-cell { grid-column: 1; }
+  .assignment-panel, .assignment-head, .assignment-head > div { min-width: 0; }
+  .assignment-head { align-items: stretch; flex-direction: column; gap: 9px; }
+  .assignment-head h3, .assignment-head p { overflow-wrap: anywhere; }
+  .assignment-head .button { width: 100%; }
+  .device-choices { display: grid; grid-template-columns: 1fr; gap: 6px; }
+  .device-choice { width: 100%; min-width: 0; }
+  .device-choice span { min-width: 0; overflow-wrap: anywhere; }
+  .ranking-head { align-items: stretch; flex-direction: column; gap: 9px; }
+  .ranking-head .button { width: 100%; }
+  .ranking-attribution, .ranking-head p { overflow-wrap: anywhere; }
   .artwork-panel { max-width: calc(100vw - 36px); }
   .asset-grid { flex-wrap: nowrap; overflow-x: auto; }
   .asset-card { flex: 0 0 132px; }
