@@ -886,6 +886,23 @@ function mobileDeviceAction(game) {
   return `<button class="button secondary small mobile-device-button ${devices.length ? "selected" : ""} ${pending ? "pending" : ""}" data-assign-devices="${game.id}" aria-label="Choose devices for ${escapeHtml(game.display_name)}"><span>Devices</span><span class="mobile-device-count">${devices.length}</span><span class="sr-only">, ${label}</span></button>`;
 }
 
+function mobileActionsMenu(game) {
+  const devices = game.devices || [];
+  const pending = devices.some((device) => device.state === "pending_add" || device.state === "pending_remove");
+  const deviceAction = isAdmin() ? mobileDeviceAction(game) : "";
+  const cleanupActions = isAdmin() ? `
+    <button class="button secondary small" data-rename="${game.id}">Rename</button>
+    <button class="button danger-subtle small" data-delete="${game.id}" data-name="${escapeHtml(game.display_name)}">Trash</button>` : "";
+  return `<details class="mobile-actions-menu ${devices.length ? "has-devices" : ""} ${pending ? "pending" : ""}">
+    <summary aria-label="Actions for ${escapeHtml(game.display_name)}"><span aria-hidden="true">•••</span>${isAdmin() && devices.length ? `<span class="mobile-menu-count">${devices.length}</span>` : ""}</summary>
+    <div>
+      ${deviceAction}
+      <button class="button secondary small" data-download="${game.id}" data-name="${escapeHtml(game.display_name)}">Download</button>
+      ${cleanupActions}
+    </div>
+  </details>`;
+}
+
 function gameRows(items, deviceMode = false) {
   return items.map((game) => {
     const checked = isAdmin() && (deviceMode ? game.selected : state.selectedRows.has(game.id));
@@ -925,9 +942,8 @@ function gameRows(items, deviceMode = false) {
         <td class="meta optional-column">${game.file_count} ${game.file_count === 1 ? "file" : "files"}</td>
         <td class="meta optional-column">${deviceMode ? deviceTargetState(game) : deviceSummary(game, isAdmin())}</td>
         ${deviceMode ? "" : `<td class="nowrap actions-cell">
-          ${isAdmin() ? mobileDeviceAction(game) : ""}
-          <button class="button secondary small download-action" data-download="${game.id}" data-name="${escapeHtml(game.display_name)}">Download</button>
-          ${isAdmin() ? `<span class="desktop-row-actions"><button class="button secondary small" data-rename="${game.id}">Rename</button><button class="button danger-subtle small" data-delete="${game.id}" data-name="${escapeHtml(game.display_name)}">Trash</button></span><details class="mobile-row-more"><summary>More</summary><div><button class="button secondary small" data-rename="${game.id}">Rename</button><button class="button danger-subtle small" data-delete="${game.id}" data-name="${escapeHtml(game.display_name)}">Trash</button></div></details>` : ""}
+          <span class="desktop-row-actions"><button class="button secondary small download-action" data-download="${game.id}" data-name="${escapeHtml(game.display_name)}">Download</button>${isAdmin() ? `<button class="button secondary small" data-rename="${game.id}">Rename</button><button class="button danger-subtle small" data-delete="${game.id}" data-name="${escapeHtml(game.display_name)}">Trash</button>` : ""}</span>
+          ${mobileActionsMenu(game)}
         </td>`}
       </tr>${editor}${assignment}${artwork}`;
   }).join("");
@@ -1503,6 +1519,11 @@ async function cleanDuplicateBatch() {
 
 function bindGameEvents(data, deviceMode) {
   const byId = new Map(data.items.map((game) => [game.id, game]));
+  const mobileMenus = [...view.querySelectorAll(".mobile-actions-menu")];
+  mobileMenus.forEach((menu) => menu.addEventListener("toggle", () => {
+    if (!menu.open) return;
+    mobileMenus.forEach((other) => { if (other !== menu) other.open = false; });
+  }));
   view.querySelectorAll("[data-row-select]").forEach((checkbox) => checkbox.addEventListener("change", () => {
     const id = Number(checkbox.dataset.rowSelect);
     const game = byId.get(id);
