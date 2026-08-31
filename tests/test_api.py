@@ -119,8 +119,14 @@ class ApiIntegrationTests(unittest.TestCase):
                 self.assertIn('<nav id="navigation">', response.text)
                 self.assertIn('id="mobile-menu-button"', response.text)
                 self.assertIn('<div class="nav-backdrop" id="nav-backdrop"', response.text)
+                self.assertIn('/static/styles.css?v=', response.text)
+                self.assertIn('/static/app.js?v=', response.text)
+                self.assertEqual(response.headers["cache-control"], "no-store")
 
         self.assertEqual(self.client.get("/not-a-rommates-page").status_code, 404)
+        static = self.client.get("/static/app.js")
+        self.assertEqual(static.status_code, 200)
+        self.assertEqual(static.headers["cache-control"], "no-cache")
 
     def test_notification_preferences_are_private_and_test_requires_webhook(self):
         self.assertEqual(self.client.get("/api/notifications").status_code, 401)

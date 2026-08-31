@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import secrets
 import threading
@@ -10,7 +11,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import BaseModel, Field, ValidationError
@@ -575,6 +576,16 @@ app = FastAPI(
     openapi_url=None,
 )
 STATIC_DIR = Path(__file__).parent / "static"
+_asset_digest = hashlib.sha256()
+for _asset_name in ("styles.css", "app.js"):
+    _asset_digest.update((STATIC_DIR / _asset_name).read_bytes())
+ASSET_VERSION = _asset_digest.hexdigest()[:12]
+INDEX_HTML = (
+    (STATIC_DIR / "index.html")
+    .read_text(encoding="utf-8")
+    .replace("/static/styles.css", f"/static/styles.css?v={ASSET_VERSION}")
+    .replace("/static/app.js", f"/static/app.js?v={ASSET_VERSION}")
+)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 app.mount("/mcp", mcp_http_app, name="mcp")
 
@@ -814,6 +825,8 @@ async def add_security_headers(request: Request, call_next):
     response.headers["X-Content-Type-Options"] = "nosniff"
     if request.url.path.startswith(("/api/", "/mcp")):
         response.headers["Cache-Control"] = "no-store"
+    elif request.url.path.startswith("/static/"):
+        response.headers["Cache-Control"] = "no-cache"
     return response
 
 
@@ -840,7 +853,7 @@ async def transfer_error_handler(_: Request, exc: TransferError):
 @app.get("/notifications", include_in_schema=False)
 @app.get("/users", include_in_schema=False)
 def index():
-    return FileResponse(STATIC_DIR / "index.html")
+    return HTMLResponse(INDEX_HTML, headers={"Cache-Control": "no-store"})
 
 
 @app.get("/api/health")
