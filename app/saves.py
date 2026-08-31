@@ -338,7 +338,6 @@ class SaveSnapshotService:
         self,
         trigger: str = "manual",
         note: str = "",
-        force_record: bool = False,
         progress_callback: ProgressCallback | None = None,
         cancel_check: CancelCheck | None = None,
     ) -> dict[str, object]:
@@ -385,7 +384,11 @@ class SaveSnapshotService:
                         (latest["id"],),
                     )
                 } if latest else {}
-            if latest and latest["tree_hash"] == tree_hash and not force_record:
+            # Snapshot manifests are immutable, so an identical latest tree is
+            # already a complete safety point. Reuse it for manual, scheduled,
+            # and pre-operation snapshots instead of publishing duplicate
+            # manifests when no save content changed.
+            if latest and latest["tree_hash"] == tree_hash:
                 return {
                     "snapshot_id": latest["id"],
                     "unchanged": True,
@@ -604,7 +607,6 @@ class SaveSnapshotService:
             snapshot = self.create_snapshot(
                 trigger="pre_conflict_resolution",
                 note=f"Before resolving {record['canonical_relpath']}",
-                force_record=True,
                 progress_callback=(
                     (lambda progress, detail: progress_callback(min(90, progress), detail))
                     if progress_callback else None
@@ -882,7 +884,6 @@ class SaveSnapshotService:
             snapshot = self.create_snapshot(
                 trigger="pre_save_delete",
                 note=f"Before deleting orphan saves for {group['content_name']}",
-                force_record=True,
                 progress_callback=(
                     (lambda progress, detail: progress_callback(min(90, progress), detail))
                     if progress_callback else None
@@ -1064,7 +1065,6 @@ class SaveSnapshotService:
                 safety = self.create_snapshot(
                     trigger="pre_restore",
                     note=f"Before restoring snapshot #{snapshot_id}",
-                    force_record=True,
                     progress_callback=lambda progress, detail: progress_callback(
                         min(35, 8 + progress // 4), detail
                     ) if progress_callback else None,

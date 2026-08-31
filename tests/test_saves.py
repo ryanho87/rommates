@@ -193,6 +193,28 @@ class SaveSnapshotTests(unittest.TestCase):
             history = connection.execute("SELECT * FROM save_conflict_resolutions").fetchone()
         self.assertEqual(history["decision"], "conflict")
 
+    def test_conflict_resolution_reuses_identical_latest_safety_snapshot(self):
+        self.write("retroarch/mGBA/Pokemon Pinball.srm", b"ryan-progress")
+        self.write(
+            "retroarch/mGBA/Pokemon Pinball.sync-conflict-20260829-183000-ABC1234.srm",
+            b"brother-progress",
+        )
+        baseline = self.service.create_snapshot(trigger="automatic")
+        item = self.service.conflicts()["items"][0]
+
+        result = self.service.resolve_conflict(
+            item["conflict_relpath"], "current",
+            item["canonical_sha256"], item["conflict_sha256"],
+        )
+
+        self.assertEqual(result["safety_snapshot_id"], baseline["snapshot_id"])
+        self.assertEqual(self.service.list_snapshots()["total"], 1)
+        with self.db.connect() as connection:
+            history = connection.execute(
+                "SELECT safety_snapshot_id FROM save_conflict_resolutions"
+            ).fetchone()
+        self.assertEqual(history["safety_snapshot_id"], baseline["snapshot_id"])
+
     def test_conflict_resolution_rejects_stale_review(self):
         self.write("retroarch/mGBA/Game.srm", b"current")
         conflict = self.write(
@@ -297,7 +319,7 @@ class SaveSnapshotTests(unittest.TestCase):
         self.write("manifest.server", b"manifest-two")
         self.write("saves/Game.srm", b"save-two")
         self.write("states/Game.state", b"new-state")
-        self.service.create_snapshot()
+        current = self.service.create_snapshot()
 
         comparison = self.service.compare(original["snapshot_id"])
         restored = self.service.restore_snapshot(
@@ -307,8 +329,8 @@ class SaveSnapshotTests(unittest.TestCase):
         self.assertEqual((self.saves / "saves/Game.srm").read_bytes(), b"save-one")
         self.assertFalse((self.saves / "states/Game.state").exists())
         self.assertNotEqual(restored["safety_snapshot_id"], original["snapshot_id"])
-        safety = self.service.snapshot_detail(restored["safety_snapshot_id"])["snapshot"]
-        self.assertEqual(safety["trigger"], "pre_restore")
+        self.assertEqual(restored["safety_snapshot_id"], current["snapshot_id"])
+        self.assertEqual(self.service.list_snapshots()["total"], 2)
 
     def test_restore_aborts_when_preview_is_stale(self):
         self.write("saves/Game.srm", b"one")

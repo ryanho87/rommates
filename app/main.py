@@ -493,7 +493,6 @@ def save_scheduler(stop: threading.Event) -> None:
                         saves.create_snapshot,
                         "automatic",
                         "",
-                        False,
                     )
         except Exception as exc:
             db.activity("save_snapshot", f"Scheduled snapshot could not start: {exc}")
@@ -2116,7 +2115,6 @@ def create_save_snapshot(payload: SaveSnapshotRequest):
         saves.create_snapshot,
         "manual",
         payload.note,
-        False,
     )
     return {"job_id": job_id, "already_running": False}
 
