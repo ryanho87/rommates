@@ -186,11 +186,30 @@ function restoreFocus(snapshot) {
   }
 }
 
+function prepareResponsiveTables(root) {
+  root.querySelectorAll(".table-wrap, .dashboard-table").forEach((wrapper) => {
+    if (wrapper.matches(".library-table, .duplicate-table-wrap, .issue-table")) return;
+    const table = wrapper.querySelector(":scope > table");
+    if (!table) return;
+    const headings = [...table.querySelectorAll(":scope > thead > tr > th")]
+      .map((heading) => heading.textContent.trim());
+    if (!headings.length) return;
+    wrapper.classList.add("responsive-records");
+    table.querySelectorAll(":scope > tbody > tr").forEach((row) => {
+      [...row.children].forEach((cell, index) => {
+        if (cell.tagName !== "TD" || cell.hasAttribute("colspan")) return;
+        cell.dataset.label = headings[index] || (cell.querySelector("input[type='checkbox']") ? "Select" : "Detail");
+      });
+    });
+  });
+}
+
 function setViewHtml(html) {
   clearTimeout(state.navigationLoadingTimer);
   state.infiniteObserver?.disconnect();
   const snapshot = captureFocus();
   view.innerHTML = html;
+  prepareResponsiveTables(view);
   restoreFocus(snapshot);
 }
 
