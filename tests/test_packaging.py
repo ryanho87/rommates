@@ -29,6 +29,17 @@ class PackagingTests(unittest.TestCase):
         for requirement in _requirements():
             self.assertIn("==", requirement, f"{requirement} is not pinned to an exact version")
 
+    def test_mobile_library_cards_are_excluded_from_wide_table_minimum(self):
+        styles = (REPO_ROOT / "app/static/styles.css").read_text(encoding="utf-8")
+        self.assertIn(
+            ".table-wrap:not(.responsive-records):not(.library-table) > table",
+            styles,
+        )
+        self.assertNotIn(
+            "  .table-wrap:not(.responsive-records) > table,",
+            styles,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

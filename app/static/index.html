@@ -44,6 +44,7 @@
           <div class="account-state hidden" id="account-state">
             <div class="account-identity"><strong id="account-name"></strong><span id="account-role"></span></div>
             <div class="account-actions">
+              <button class="button secondary small" id="guided-tour-button">Tour</button>
               <button class="button secondary small" id="change-password-button">Password</button>
               <button class="button secondary small" id="logout-button">Sign out</button>
             </div>
@@ -69,6 +70,13 @@
           <div class="topbar-actions">
             <span class="job-pill hidden" id="job-pill" role="status"></span>
             <button class="button danger-subtle small hidden" id="stop-job-button">Stop job</button>
+            <div class="inbox-shell hidden" id="inbox-shell">
+              <button class="inbox-button" id="inbox-button" type="button" aria-label="Notifications" aria-expanded="false" aria-controls="inbox-popover"><span aria-hidden="true">●</span><b class="hidden" id="inbox-count">0</b></button>
+              <section class="inbox-popover hidden" id="inbox-popover" aria-label="Your notifications">
+                <div class="inbox-head"><strong>Notifications</strong><button class="button secondary small" id="inbox-read-all" type="button">Mark all read</button></div>
+                <div class="inbox-list" id="inbox-list"></div>
+              </section>
+            </div>
             <button class="button secondary" id="refresh-button">Refresh</button>
           </div>
         </header>
@@ -90,6 +98,21 @@
         </div>
       </form>
     </dialog>
+
+    <div class="tour-layer hidden" id="tour-layer" aria-hidden="true">
+      <button class="tour-backdrop" id="tour-backdrop" type="button" aria-label="Close guided tour"></button>
+      <aside class="tour-card" id="tour-card" role="dialog" aria-labelledby="tour-title" aria-describedby="tour-description">
+        <div class="tour-progress"><span id="tour-step-label"></span><button class="icon-button" id="tour-close-button" type="button" aria-label="Close guided tour">×</button></div>
+        <h2 id="tour-title"></h2>
+        <p id="tour-description"></p>
+        <div class="tour-actions">
+          <button class="button secondary small" id="tour-back-button" type="button">Back</button>
+          <button class="button secondary small" id="tour-skip-button" type="button">Skip tour</button>
+          <button class="button small" id="tour-next-button" type="button">Next</button>
+        </div>
+      </aside>
+    </div>
+    <button class="tour-launcher hidden" id="tour-launcher" type="button"><span aria-hidden="true">✦</span> Getting started</button>
 
     <div class="toast-region" id="toasts" aria-live="polite" aria-atomic="true"></div>
     <script src="/static/app.js" defer></script>

@@ -61,7 +61,7 @@ class DatabaseMigrationTests(unittest.TestCase):
                 versions = {row["version"] for row in upgraded.execute("SELECT version FROM schema_migrations")}
             self.assertIn("result_json", columns)
             self.assertIn("progress_json", columns)
-            self.assertEqual(versions, set(range(1, 22)))
+            self.assertEqual(versions, set(range(1, 24)))
             with db.connect() as upgraded:
                 tables = {
                     row["name"]
@@ -76,6 +76,8 @@ class DatabaseMigrationTests(unittest.TestCase):
                     )
                 }
             self.assertIn("device_inventory_files", tables)
+            self.assertIn("user_onboarding", tables)
+            self.assertIn("user_notifications", tables)
             self.assertIn("idx_device_selections_game", indexes)
             self.assertIn("idx_deployments_game", indexes)
 

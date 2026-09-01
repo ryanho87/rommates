@@ -11,7 +11,7 @@ from unittest.mock import patch
 from app.config import Settings
 from app.db import Database
 from app.library import LibraryError
-from app.notifications import NotificationService
+from app.notifications import EVENTS, NotificationService
 
 
 class FakeResponse(io.BytesIO):
@@ -23,6 +23,9 @@ class FakeResponse(io.BytesIO):
 
 
 class NotificationServiceTests(unittest.TestCase):
+    def test_device_setup_notifications_are_enabled_by_default(self):
+        self.assertTrue(EVENTS["device_setup_required"]["default"])
+
     def make_service(self, directory: str, webhook: str = "https://discord.com/api/webhooks/1/secret"):
         database = Database(Path(directory) / "rommates.db")
         database.initialize()

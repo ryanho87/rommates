@@ -170,6 +170,8 @@ CREATE TABLE IF NOT EXISTS devices (
     path TEXT NOT NULL UNIQUE,
     deployment_mode TEXT NOT NULL DEFAULT 'copy' CHECK(deployment_mode IN ('copy','hardlink')),
     owner_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    syncthing_ready_at TEXT,
+    syncthing_ready_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -334,6 +336,21 @@ ON notification_deliveries(id DESC);
 CREATE INDEX IF NOT EXISTS idx_notification_deliveries_dedupe
 ON notification_deliveries(event,dedupe_key);
 
+CREATE TABLE IF NOT EXISTS user_notifications (
+    id INTEGER PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    title TEXT NOT NULL,
+    detail TEXT NOT NULL DEFAULT '',
+    path TEXT NOT NULL DEFAULT '',
+    dedupe_key TEXT NOT NULL DEFAULT '',
+    read_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(user_id,dedupe_key)
+);
+CREATE INDEX IF NOT EXISTS idx_user_notifications_inbox
+ON user_notifications(user_id,read_at,id DESC);
+
 CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY,
     username TEXT NOT NULL,
@@ -353,6 +370,17 @@ CREATE TABLE IF NOT EXISTS user_roles (
     PRIMARY KEY(user_id,role)
 );
 CREATE INDEX IF NOT EXISTS idx_user_roles_role ON user_roles(role,user_id);
+
+CREATE TABLE IF NOT EXISTS user_onboarding (
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    tour_key TEXT NOT NULL,
+    tour_version INTEGER NOT NULL DEFAULT 1,
+    current_step INTEGER NOT NULL DEFAULT 0,
+    dismissed INTEGER NOT NULL DEFAULT 0,
+    completed INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY(user_id,tour_key)
+);
 
 CREATE TABLE IF NOT EXISTS auth_sessions (
     token_hash TEXT PRIMARY KEY,
@@ -610,6 +638,36 @@ class Database:
                 "INSERT OR IGNORE INTO user_roles(user_id,role) SELECT id,role FROM users"
             )
             connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(21)")
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS user_onboarding ("
+                "user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,"
+                "tour_key TEXT NOT NULL,tour_version INTEGER NOT NULL DEFAULT 1,"
+                "current_step INTEGER NOT NULL DEFAULT 0,dismissed INTEGER NOT NULL DEFAULT 0,"
+                "completed INTEGER NOT NULL DEFAULT 0,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+                "PRIMARY KEY(user_id,tour_key))"
+            )
+            connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(22)")
+            device_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(devices)")
+            }
+            if "syncthing_ready_at" not in device_columns:
+                connection.execute("ALTER TABLE devices ADD COLUMN syncthing_ready_at TEXT")
+            if "syncthing_ready_by" not in device_columns:
+                connection.execute(
+                    "ALTER TABLE devices ADD COLUMN syncthing_ready_by INTEGER REFERENCES users(id) ON DELETE SET NULL"
+                )
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS user_notifications ("
+                "id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,"
+                "kind TEXT NOT NULL,title TEXT NOT NULL,detail TEXT NOT NULL DEFAULT '',"
+                "path TEXT NOT NULL DEFAULT '',dedupe_key TEXT NOT NULL DEFAULT '',read_at TEXT,"
+                "created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(user_id,dedupe_key))"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_user_notifications_inbox "
+                "ON user_notifications(user_id,read_at,id DESC)"
+            )
+            connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(23)")
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:

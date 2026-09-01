@@ -98,6 +98,57 @@ class ApiIntegrationTests(unittest.TestCase):
         self.assertEqual(mcp_authorized.status_code, 200, mcp_authorized.text)
         self.assertEqual(mcp_authorized.json()["result"]["serverInfo"]["name"], "ROMmates")
 
+    def test_onboarding_progress_is_persisted_per_account(self):
+        created = self.client.post(
+            "/api/users",
+            headers=self.headers,
+            json={
+                "username": "tour-test",
+                "display_name": "Tour Test",
+                "password": "tour-test-password",
+                "role": "viewer",
+            },
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        login = self.client.post(
+            "/api/auth/login",
+            json={"username": "tour-test", "password": "tour-test-password"},
+        )
+        self.assertEqual(login.status_code, 200, login.text)
+        changed = self.client.post(
+            "/api/auth/password",
+            json={
+                "current_password": "tour-test-password",
+                "new_password": "tour-test-password-changed",
+            },
+        )
+        self.assertEqual(changed.status_code, 200, changed.text)
+
+        initial = self.client.get(
+            "/api/onboarding", params={"tour_key": "getting-started-viewer"}
+        )
+        self.assertEqual(initial.status_code, 200, initial.text)
+        self.assertTrue(initial.json()["persistent"])
+        self.assertFalse(initial.json()["completed"])
+
+        updated = self.client.patch(
+            "/api/onboarding",
+            json={
+                "tour_key": "getting-started-viewer",
+                "tour_version": 1,
+                "current_step": 1,
+                "dismissed": False,
+                "completed": True,
+            },
+        )
+        self.assertEqual(updated.status_code, 200, updated.text)
+        stored = self.client.get(
+            "/api/onboarding", params={"tour_key": "getting-started-viewer"}
+        ).json()
+        self.assertEqual(stored["current_step"], 1)
+        self.assertTrue(stored["completed"])
+        self.client.post("/api/auth/logout")
+
     def test_ui_pages_support_direct_navigation(self):
         for path in (
             "/",
@@ -300,6 +351,13 @@ class ApiIntegrationTests(unittest.TestCase):
         self.assertEqual(created_device.status_code, 201, created_device.text)
         owned = created_device.json()
         self.assertEqual(owned["owner_user_id"], member_id)
+        self.assertIsNone(owned["syncthing_ready_at"])
+        self.assertEqual(
+            self.client.put(
+                f"/api/devices/{owned['id']}/syncthing-ready", json={"ready": True}
+            ).status_code,
+            403,
+        )
         listed = self.client.get("/api/devices").json()
         self.assertEqual([item["name"] for item in listed], ["member-handheld"])
         self.assertEqual(
@@ -353,7 +411,35 @@ class ApiIntegrationTests(unittest.TestCase):
             "admin-only-device",
             [item["name"] for item in self.client.get("/api/devices").json()],
         )
+        ready = self.client.put(
+            f"/api/devices/{owned['id']}/syncthing-ready",
+            headers=self.headers,
+            json={"ready": True},
+        )
+        self.assertEqual(ready.status_code, 200, ready.text)
+        inbox = self.client.get("/api/inbox").json()
+        self.assertEqual(inbox["unread"], 1)
+        self.assertEqual(inbox["items"][0]["kind"], "device_ready")
+        self.assertIn("member-handheld", inbox["items"][0]["title"])
+        marked = self.client.post(f"/api/inbox/{inbox['items'][0]['id']}/read")
+        self.assertEqual(marked.status_code, 200, marked.text)
+        self.assertEqual(self.client.get("/api/inbox").json()["unread"], 0)
         self.client.post("/api/auth/logout")
+
+    def test_device_creation_requests_discord_setup_notification(self):
+        with patch("app.main.notifications.notify") as notify:
+            response = self.client.post(
+                "/api/devices",
+                headers=self.headers,
+                json={"name": "zz-discord-setup-device", "deployment_mode": "hardlink"},
+            )
+        self.assertEqual(response.status_code, 201, response.text)
+        notify.assert_called_once()
+        args, kwargs = notify.call_args
+        self.assertEqual(args[0], "device_setup_required")
+        self.assertIn("zz-discord-setup-device", args[1])
+        self.assertEqual(args[3], "devices")
+        self.assertEqual(kwargs["dedupe_key"], f"device:{response.json()['id']}:setup-required")
 
     def test_syncthing_status_is_private_and_explains_unconfigured_state(self):
         self.assertEqual(self.client.get("/api/syncthing/status").status_code, 401)

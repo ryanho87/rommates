@@ -664,6 +664,10 @@ class DeviceOwnerRequest(BaseModel):
     owner_user_id: int | None = Field(default=None, ge=1)
 
 
+class DeviceSyncthingReadyRequest(BaseModel):
+    ready: bool = True
+
+
 class DatImportRequest(BaseModel):
     source_name: str = Field(min_length=1, max_length=255)
     platform: str = Field(min_length=1, max_length=100)
@@ -775,6 +779,14 @@ class PasswordChangeRequest(BaseModel):
     new_password: str = Field(min_length=PASSWORD_MIN_LENGTH, max_length=1024)
 
 
+class OnboardingUpdateRequest(BaseModel):
+    tour_key: str = Field(min_length=1, max_length=64, pattern="^[a-z0-9_-]+$")
+    tour_version: int = Field(default=1, ge=1, le=1000)
+    current_step: int = Field(default=0, ge=0, le=100)
+    dismissed: bool = False
+    completed: bool = False
+
+
 class UserCreateRequest(BaseModel):
     username: str = Field(min_length=1, max_length=64)
     display_name: str = Field(default="", max_length=100)
@@ -830,8 +842,10 @@ def require_job_access(job_id: int, principal: Principal):
 def role_allows(principal: Principal, method: str, path: str) -> bool:
     if principal.has_role("admin"):
         return True
-    if path in {"/api/auth/me", "/api/auth/logout", "/api/auth/password"}:
+    if path in {"/api/auth/me", "/api/auth/logout", "/api/auth/password", "/api/onboarding"}:
         return True
+    if path.startswith("/api/inbox"):
+        return method in {"GET", "POST"}
     if method == "GET" and (
         path in {"/api/status", "/api/platforms"}
         or path.startswith("/api/games")
@@ -856,7 +870,7 @@ def role_allows(principal: Principal, method: str, path: str) -> bool:
         if (
             method == "PUT"
             and path.startswith("/api/devices/")
-            and not path.endswith("/owner")
+            and not path.endswith(("/owner", "/syncthing-ready"))
         ):
             return True
     if method == "POST" and path.startswith("/api/games/") and path.endswith("/download-ticket"):
@@ -1032,6 +1046,43 @@ def current_user(request: Request):
     }
 
 
+@app.get("/api/onboarding")
+def onboarding_progress(request: Request, tour_key: str = Query(default="getting-started", min_length=1, max_length=64, pattern="^[a-z0-9_-]+$")):
+    principal = request_principal(request)
+    if principal.id is None:
+        return {"tour_key": tour_key, "tour_version": 1, "current_step": 0, "dismissed": False, "completed": False, "persistent": False}
+    with db.connect() as connection:
+        row = connection.execute(
+            "SELECT tour_key,tour_version,current_step,dismissed,completed,updated_at "
+            "FROM user_onboarding WHERE user_id=? AND tour_key=?",
+            (principal.id, tour_key),
+        ).fetchone()
+    if not row:
+        return {"tour_key": tour_key, "tour_version": 1, "current_step": 0, "dismissed": False, "completed": False, "persistent": True}
+    payload = dict(row)
+    payload["dismissed"] = bool(payload["dismissed"])
+    payload["completed"] = bool(payload["completed"])
+    payload["persistent"] = True
+    return payload
+
+
+@app.patch("/api/onboarding")
+def update_onboarding_progress(payload: OnboardingUpdateRequest, request: Request):
+    principal = request_principal(request)
+    result = {**payload.model_dump(), "persistent": principal.id is not None}
+    if principal.id is None:
+        return result
+    with db.write() as connection:
+        connection.execute(
+            "INSERT INTO user_onboarding(user_id,tour_key,tour_version,current_step,dismissed,completed,updated_at) "
+            "VALUES(?,?,?,?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(user_id,tour_key) DO UPDATE SET "
+            "tour_version=excluded.tour_version,current_step=excluded.current_step,dismissed=excluded.dismissed,"
+            "completed=excluded.completed,updated_at=CURRENT_TIMESTAMP",
+            (principal.id, payload.tour_key, payload.tour_version, payload.current_step, int(payload.dismissed), int(payload.completed)),
+        )
+    return result
+
+
 @app.get("/api/users")
 def users():
     return {"items": auth.list_users(), "roles": list(ROLES)}
@@ -1075,6 +1126,55 @@ def update_notification_settings(payload: NotificationSettingsRequest):
 @app.post("/api/notifications/test", status_code=202)
 def test_notification():
     return notifications.test()
+
+
+@app.get("/api/inbox")
+def user_inbox(request: Request, limit: int = Query(30, ge=1, le=100)):
+    principal = request_principal(request)
+    if principal.id is None:
+        return {"items": [], "unread": 0}
+    with db.connect() as connection:
+        items = [dict(row) for row in connection.execute(
+            "SELECT id,kind,title,detail,path,read_at,created_at FROM user_notifications "
+            "WHERE user_id=? ORDER BY id DESC LIMIT ?", (principal.id, limit)
+        )]
+        unread = connection.execute(
+            "SELECT COUNT(*) AS count FROM user_notifications WHERE user_id=? AND read_at IS NULL",
+            (principal.id,),
+        ).fetchone()["count"]
+    return {"items": items, "unread": unread}
+
+
+@app.post("/api/inbox/{notification_id}/read")
+def read_user_notification(notification_id: int, request: Request):
+    principal = request_principal(request)
+    if principal.id is None:
+        raise HTTPException(status_code=404, detail="Notification was not found")
+    with db.write() as connection:
+        row = connection.execute(
+            "SELECT id FROM user_notifications WHERE id=? AND user_id=?",
+            (notification_id, principal.id),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Notification was not found")
+        connection.execute(
+            "UPDATE user_notifications SET read_at=COALESCE(read_at,CURRENT_TIMESTAMP) WHERE id=?",
+            (notification_id,),
+        )
+    return {"read": notification_id}
+
+
+@app.post("/api/inbox/read-all")
+def read_all_user_notifications(request: Request):
+    principal = request_principal(request)
+    if principal.id is None:
+        return {"updated": 0}
+    with db.write() as connection:
+        cursor = connection.execute(
+            "UPDATE user_notifications SET read_at=CURRENT_TIMESTAMP "
+            "WHERE user_id=? AND read_at IS NULL", (principal.id,)
+        )
+    return {"updated": cursor.rowcount}
 
 
 @app.get("/api/status")
@@ -1950,7 +2050,52 @@ def create_device(payload: DeviceCreateRequest, request: Request):
         if principal.has_role("member") and not principal.has_role("admin")
         else None
     )
-    return library.create_device(payload.name, payload.deployment_mode, owner_user_id)
+    device = library.create_device(payload.name, payload.deployment_mode, owner_user_id)
+    owner_label = principal.display_name or principal.username or "An administrator"
+    notifications.notify(
+        "device_setup_required",
+        f"Syncthing setup needed for {device['name']}",
+        f"{owner_label} created this device. Add {device['roms_path']} to Syncthing, then mark the device ready in ROMmates.",
+        "devices",
+        dedupe_key=f"device:{device['id']}:setup-required",
+    )
+    return device
+
+
+@app.put("/api/devices/{device_id}/syncthing-ready")
+def update_device_syncthing_ready(
+    device_id: int, payload: DeviceSyncthingReadyRequest, request: Request
+):
+    principal = request_principal(request)
+    require_device_access(device_id, principal)
+    with db.write() as connection:
+        device = connection.execute("SELECT * FROM devices WHERE id=?", (device_id,)).fetchone()
+        if not device:
+            raise HTTPException(status_code=404, detail="Device was not found")
+        if payload.ready and not device["owner_user_id"]:
+            raise HTTPException(status_code=400, detail="Assign an owner before marking Syncthing ready")
+        connection.execute(
+            "UPDATE devices SET syncthing_ready_at=CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE NULL END,"
+            "syncthing_ready_by=CASE WHEN ? THEN ? ELSE NULL END WHERE id=?",
+            (int(payload.ready), int(payload.ready), principal.id, device_id),
+        )
+        if payload.ready:
+            connection.execute(
+                "INSERT INTO user_notifications(user_id,kind,title,detail,path,dedupe_key) "
+                "VALUES(?,?,?,?,?,?) ON CONFLICT(user_id,dedupe_key) DO UPDATE SET "
+                "title=excluded.title,detail=excluded.detail,path=excluded.path,read_at=NULL,created_at=CURRENT_TIMESTAMP",
+                (
+                    device["owner_user_id"], "device_ready",
+                    f"{device['name']} is ready to sync",
+                    "An administrator finished the Syncthing setup. You can now select games and apply changes from Devices.",
+                    "devices", f"device:{device_id}:ready",
+                ),
+            )
+    db.activity(
+        "device",
+        f"Marked {device['name']} Syncthing {'ready' if payload.ready else 'pending'}",
+    )
+    return {"device_id": device_id, "ready": payload.ready}
 
 
 @app.put("/api/devices/{device_id}/owner")

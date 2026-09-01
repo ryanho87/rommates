@@ -15,6 +15,7 @@ from .library import LibraryError
 
 
 EVENTS: dict[str, dict[str, object]] = {
+    "device_setup_required": {"label": "Device setup requests", "description": "A member creates a device that needs administrator Syncthing setup.", "default": True},
     "upload": {"label": "Uploads", "description": "An upload needs review or is added to the library.", "default": True},
     "save_conflict": {"label": "Save conflicts", "description": "Syncthing preserves a competing save version.", "default": True},
     "job_failed": {"label": "Job failures", "description": "A scan or filesystem operation fails.", "default": True},

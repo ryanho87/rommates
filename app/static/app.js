@@ -98,6 +98,10 @@ const state = {
   trashSelected: new Map(),
   principal: null,
   permissions: { admin: false, manageDevices: false, upload: false, download: false },
+  onboarding: null,
+  tourActive: false,
+  tourTarget: null,
+  inbox: { items: [], unread: 0 },
 };
 
 const view = document.querySelector("#view");
@@ -115,7 +119,160 @@ const logoutButton = document.querySelector("#logout-button");
 const changePasswordButton = document.querySelector("#change-password-button");
 const mobileMenuButton = document.querySelector("#mobile-menu-button");
 const navBackdrop = document.querySelector("#nav-backdrop");
+const inboxShell = document.querySelector("#inbox-shell");
+const inboxButton = document.querySelector("#inbox-button");
+const inboxPopover = document.querySelector("#inbox-popover");
+const inboxCount = document.querySelector("#inbox-count");
+const inboxList = document.querySelector("#inbox-list");
 const sidebarCloseButton = document.querySelector("#sidebar-close-button");
+const guidedTourButton = document.querySelector("#guided-tour-button");
+const tourLayer = document.querySelector("#tour-layer");
+const tourCard = document.querySelector("#tour-card");
+const tourLauncher = document.querySelector("#tour-launcher");
+const tourBackButton = document.querySelector("#tour-back-button");
+const tourSkipButton = document.querySelector("#tour-skip-button");
+const tourNextButton = document.querySelector("#tour-next-button");
+
+const TOUR_VERSION = 1;
+const TOUR_STEPS = {
+  admin: [
+    { view: "overview", selector: ".overview-strip", title: "Your collection at a glance", description: "Start here to spot scan health, missing artwork, device changes, and save conflicts." },
+    { view: "library", selector: "#search-input", title: "Find and manage games", description: "Filter a large library by platform, rating, or name. Use each game's actions to download, rename, or assign devices." },
+    { view: "devices", selector: "#page-title", title: "Manage device libraries", description: "Claim existing devices, onboard new ones, choose hardlinks or copies, and apply the desired game set." },
+    { view: "overview", selector: ".syncthing-panel", title: "Check device connectivity", description: "ROMmates reads Syncthing status so you can see whether managed devices are online before expecting transfers." },
+    { view: "users", selector: "#page-title", title: "Invite people safely", description: "Combine roles to grant only the abilities each person needs, then assign ownership of their devices." },
+  ],
+  member: [
+    { view: "library", selector: "#search-input", title: "Choose games", description: "Search and filter the catalog, then use the game menu or multi-select to include titles on your devices." },
+    { view: "devices", selector: "#page-title", title: "Onboard your device", description: "Create a device folder, review its desired games, and apply changes without server access." },
+    { view: "devices", selector: "[data-device-apply], #page-title", title: "Apply and sync", description: "Applying creates the ES-DE platform folders and triggers a Syncthing rescan when integration is configured." },
+  ],
+  contributor: [
+    { view: "library", selector: "#search-input", title: "Browse the collection", description: "Search by title and narrow the catalog to one platform before downloading." },
+    { view: "transfers", selector: "#page-title", title: "Submit a ROM", description: "Uploads land in a controlled review queue. An administrator approves them before they enter the library." },
+  ],
+  viewer: [
+    { view: "library", selector: "#search-input", title: "Explore the library", description: "Search by title or use platform and status filters to reduce a large catalog quickly." },
+    { view: "library", selector: ".mobile-actions-menu, .library-table, #view", title: "Download a game", description: "Open a game's action menu to download it. Your account cannot rename, trash, or change device libraries." },
+  ],
+};
+
+function onboardingAudience() {
+  if (hasRole("admin")) return "admin";
+  if (hasRole("member")) return "member";
+  if (hasRole("contributor")) return "contributor";
+  return "viewer";
+}
+
+function onboardingKey() { return `getting-started-${onboardingAudience()}`; }
+
+function localOnboardingKey() {
+  return `rommates-onboarding:${state.principal?.username || "bootstrap"}:${onboardingKey()}`;
+}
+
+async function loadOnboarding() {
+  const key = onboardingKey();
+  let progress = await api(`/api/onboarding?tour_key=${encodeURIComponent(key)}`);
+  if (!progress.persistent) {
+    try { progress = { ...progress, ...JSON.parse(localStorage.getItem(localOnboardingKey()) || "{}") }; } catch { /* use defaults */ }
+  }
+  if (progress.tour_version !== TOUR_VERSION) progress = { ...progress, current_step: 0, dismissed: false, completed: false, tour_version: TOUR_VERSION };
+  state.onboarding = progress;
+  updateTourLauncher();
+}
+
+async function saveOnboarding(changes = {}) {
+  state.onboarding = { ...(state.onboarding || {}), tour_key: onboardingKey(), tour_version: TOUR_VERSION, current_step: 0, dismissed: false, completed: false, ...changes };
+  if (!state.onboarding.persistent) localStorage.setItem(localOnboardingKey(), JSON.stringify(state.onboarding));
+  try {
+    const saved = await api("/api/onboarding", { method: "PATCH", body: JSON.stringify(state.onboarding) });
+    state.onboarding = { ...state.onboarding, ...saved };
+  } catch (error) {
+    if (state.onboarding.persistent) toast(`Tour progress could not be saved: ${error.message}`, "error");
+  }
+  updateTourLauncher();
+}
+
+function updateTourLauncher() {
+  const visible = state.principal && !state.principal.must_change_password && state.onboarding && !state.onboarding.completed && !state.onboarding.dismissed && !state.tourActive;
+  tourLauncher.classList.toggle("hidden", !visible);
+}
+
+function clearTourTarget() {
+  state.tourTarget?.classList.remove("tour-target");
+  state.tourTarget = null;
+}
+
+function positionTourCard(target) {
+  if (window.matchMedia("(max-width: 720px)").matches || !target) {
+    tourCard.style.removeProperty("left");
+    tourCard.style.removeProperty("top");
+    return;
+  }
+  const rect = target.getBoundingClientRect();
+  const width = Math.min(390, window.innerWidth - 32);
+  const height = tourCard.offsetHeight;
+  if (rect.right + 16 + width <= window.innerWidth) {
+    tourCard.style.left = `${rect.right + 16}px`;
+    tourCard.style.top = `${Math.min(window.innerHeight - height - 16, Math.max(16, rect.top))}px`;
+    return;
+  }
+  tourCard.style.left = `${Math.min(window.innerWidth - width - 16, Math.max(16, rect.left))}px`;
+  const below = rect.bottom + 14;
+  const above = rect.top - height - 14;
+  tourCard.style.top = `${below + height <= window.innerHeight ? below : Math.max(16, above)}px`;
+}
+
+function findTourTarget(selector) {
+  for (const candidate of selector.split(",")) {
+    const target = document.querySelector(candidate.trim());
+    if (target && target.getClientRects().length) return target;
+  }
+  return document.querySelector("#page-title");
+}
+
+async function showTourStep(index) {
+  const steps = TOUR_STEPS[onboardingAudience()];
+  index = Math.max(0, Math.min(index, steps.length - 1));
+  const step = steps[index];
+  if (state.view !== step.view) {
+    navigateTo(step.view);
+    for (let attempt = 0; attempt < 40 && state.view === step.view && !findTourTarget(step.selector); attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
+  clearTourTarget();
+  const target = findTourTarget(step.selector);
+  target?.scrollIntoView({ behavior: "smooth", block: "center" });
+  target?.classList.add("tour-target");
+  state.tourTarget = target;
+  state.onboarding.current_step = index;
+  document.querySelector("#tour-step-label").textContent = `Step ${index + 1} of ${steps.length}`;
+  document.querySelector("#tour-title").textContent = step.title;
+  document.querySelector("#tour-description").textContent = step.description;
+  tourBackButton.disabled = index === 0;
+  tourNextButton.textContent = index === steps.length - 1 ? "Finish" : "Next";
+  tourLayer.classList.remove("hidden");
+  tourLayer.setAttribute("aria-hidden", "false");
+  state.tourActive = true;
+  updateTourLauncher();
+  requestAnimationFrame(() => positionTourCard(target));
+}
+
+async function startTour() {
+  setMobileNavigation(false);
+  await saveOnboarding({ current_step: 0, dismissed: false, completed: false });
+  await showTourStep(0);
+}
+
+async function closeTour(dismissed = true) {
+  clearTourTarget();
+  state.tourActive = false;
+  tourLayer.classList.add("hidden");
+  tourLayer.setAttribute("aria-hidden", "true");
+  await saveOnboarding({ dismissed });
+  guidedTourButton.focus({ preventScroll: true });
+}
 
 function hasRole(role) { return (state.principal?.roles || [state.principal?.role]).includes(role); }
 function isAdmin() { return state.permissions.admin; }
@@ -1261,7 +1418,11 @@ async function renderOverview() {
     ? `<div class="dashboard-table recent-jobs"><table><thead><tr><th>Job</th><th>Status</th><th>Detail</th><th>Started</th></tr></thead><tbody>${data.recent_jobs.map((job) => `<tr><td><button class="text-button" data-dashboard-view="jobs" data-dashboard-job="${job.id}">${escapeHtml(job.kind)}</button></td><td>${dashboardJobBadge(job)}</td><td class="name-cell">${escapeHtml(job.detail)}</td><td class="meta">${dashboardDate(job.created_at)}</td></tr>`).join("")}</tbody></table></div>`
     : '<div class="dashboard-empty compact"><strong>No jobs yet</strong><span>Run a library scan to start collection history.</span></div>';
 
-  setViewHtml(`<div class="overview-strip" aria-label="Collection summary">
+  const tourSteps = TOUR_STEPS[onboardingAudience()];
+  const onboardingChecklist = state.onboarding && !state.onboarding.completed
+    ? `<section class="onboarding-checklist"><div><span class="eyebrow">Getting started</span><h2>Learn ROMmates in ${tourSteps.length} quick steps</h2><p>A role-aware walkthrough of the controls available to this account.</p></div><div class="onboarding-checklist-progress"><span>${state.onboarding.dismissed ? "Tour paused" : `${Math.min(state.onboarding.current_step + 1, tourSteps.length)} of ${tourSteps.length}`}</span><button class="button small" data-start-tour>${state.onboarding.dismissed ? "Restart tour" : "Continue tour"}</button></div></section>`
+    : "";
+  setViewHtml(`${onboardingChecklist}<div class="overview-strip" aria-label="Collection summary">
     <div><span>Games</span><strong>${collection.games.toLocaleString()}</strong></div>
     <div><span>Platforms</span><strong>${collection.platforms.toLocaleString()}</strong></div>
     <div><span>Library size</span><strong>${formatBytes(collection.bytes)}</strong></div>
@@ -1287,6 +1448,7 @@ async function renderOverview() {
       saveTab: button.dataset.dashboardSaveTab || null,
     });
   }));
+  view.querySelector("[data-start-tour]")?.addEventListener("click", startTour);
   view.querySelector("[data-refresh-syncthing]")?.addEventListener("click", async (event) => {
     event.currentTarget.disabled = true;
     try {
@@ -2007,6 +2169,12 @@ function deviceOnboardingPanel() {
 function createdDevicePanel() {
   const device = state.createdDevice;
   if (!device) return "";
+  if (!isAdmin()) {
+    return `<section class="device-created pending" aria-labelledby="device-created-title">
+      <div><span class="badge possible">Administrator setup pending</span><h2 id="device-created-title">${escapeHtml(device.name)} was created</h2><p>An administrator has been notified and will connect this device through Syncthing. You will get a notification here when it is ready.</p></div>
+      <button class="icon-button" type="button" data-dismiss-created-device aria-label="Dismiss device status">×</button>
+    </section>`;
+  }
   return `<section class="device-created" aria-labelledby="device-created-title">
     <div><span class="badge unique">Folder ready</span><h2 id="device-created-title">${escapeHtml(device.name)} is ready in ROMmates</h2><p>Next, add this folder in Syncthing and share it with the new handheld. On the handheld, accept the share and point it at that device's top-level <code>Emulation/roms</code> directory.</p></div>
     <div class="device-created-path"><span>Syncthing folder path on the ROMmates host</span><code>${escapeHtml(device.roms_path)}</code><button class="button secondary small" type="button" data-copy-device-path="${escapeHtml(device.roms_path)}">Copy path</button></div>
@@ -2046,7 +2214,7 @@ function bindDeviceOnboarding() {
       await loadReferenceData();
       state.deviceId = created.id;
       state.deviceScope = "all";
-      toast(`${created.name} is ready. Add its ROM path to Syncthing next.`);
+      toast(isAdmin() ? `${created.name} was created. Add its ROM path to Syncthing next.` : `${created.name} was created. An administrator has been notified.`);
       await renderDevices();
     } catch (error) {
       submit.disabled = false;
@@ -2102,6 +2270,15 @@ function deviceOwnershipOverview(currentDevice) {
   return `<div class="device-ownership-overview"><span class="ownership-badge ${current.tone}">${escapeHtml(current.label)}</span><span>${counts.mine.toLocaleString()} mine</span><span>${counts.other.toLocaleString()} owned by other people</span><span>${counts.unassigned.toLocaleString()} unassigned</span></div>`;
 }
 
+function deviceSyncthingStatus(device) {
+  const ready = Boolean(device.syncthing_ready_at);
+  const badge = `<span class="syncthing-state ${ready ? "ready" : "pending"}">${ready ? "Syncthing ready" : "Waiting for Syncthing setup"}</span>`;
+  if (!isAdmin()) return `<div class="device-sync-status">${badge}</div>`;
+  const disabled = !device.owner_user_id ? "disabled" : "";
+  const help = !device.owner_user_id ? "Assign an owner before marking this device ready." : ready ? "The owner has been notified." : "Mark ready after adding and sharing the folder in Syncthing.";
+  return `<div class="device-sync-status">${badge}<span>${escapeHtml(help)}</span><button class="button secondary small" type="button" data-device-sync-ready ${disabled}>${ready ? "Mark setup pending" : "Mark Syncthing ready"}</button></div>`;
+}
+
 async function renderDevices() {
   const renderVersion = beginPageRender();
   setHeading("Devices", "See what is present now, then choose what changes next.");
@@ -2145,6 +2322,7 @@ async function renderDevices() {
     ${deviceOnboardingPanel()}
     ${createdDevicePanel()}
     ${deviceOwnershipOverview(device)}
+    ${deviceSyncthingStatus(device)}
     <div class="device-strip">
       <label class="field"><span>Target device</span><select id="device-select">${devicePickerOptions(device.id)}</select></label>
       ${isAdmin() ? `<label class="field"><span>Owner</span><select id="device-owner"><option value="">Unassigned · administrators can manage</option>${state.users.filter((user) => user.active && (user.roles || [user.role]).some((role) => ["member", "admin"].includes(role))).map((user) => `<option value="${user.id}" ${Number(device.owner_user_id) === Number(user.id) ? "selected" : ""}>${escapeHtml(user.display_name)} (${escapeHtml(user.username)})${Number(user.id) === Number(state.principal?.id) ? " · You" : ""}</option>`).join("")}</select>${!device.owner_user_id ? "<small>Select your account to mark this device as yours.</small>" : ""}</label>` : `<div class="field device-owner-summary"><span>Owner</span><strong>${escapeHtml(device.owner_display_name || "You")}</strong></div>`}
@@ -2204,6 +2382,23 @@ async function renderDevices() {
     } catch (error) {
       toast(error.message, "error");
       await renderDevices();
+    }
+  });
+  view.querySelector("[data-device-sync-ready]")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    try {
+      const ready = !device.syncthing_ready_at;
+      await api(`/api/devices/${device.id}/syncthing-ready`, {
+        method: "PUT",
+        body: JSON.stringify({ ready }),
+      });
+      toast(ready ? "Device owner notified that Syncthing is ready" : "Device returned to setup pending");
+      await loadReferenceData();
+      await renderDevices();
+    } catch (error) {
+      button.disabled = false;
+      toast(error.message, "error");
     }
   });
   view.querySelectorAll("[data-device-scope]").forEach((button) => button.addEventListener("click", () => {
@@ -3117,6 +3312,58 @@ function confirmAction({ title, content, confirmLabel, cancelLabel = "Cancel", d
   });
 }
 
+function renderInbox() {
+  if (!state.principal || state.principal.bootstrap) {
+    inboxShell.classList.add("hidden");
+    return;
+  }
+  inboxShell.classList.remove("hidden");
+  const unread = Number(state.inbox.unread || 0);
+  inboxButton.setAttribute("aria-label", unread ? `Notifications, ${unread} unread` : "Notifications");
+  inboxCount.textContent = unread > 99 ? "99+" : String(unread);
+  inboxCount.classList.toggle("hidden", unread === 0);
+  const items = state.inbox.items || [];
+  inboxList.innerHTML = items.length ? items.map((item) => `
+    <button class="inbox-item ${item.read_at ? "" : "unread"}" type="button" data-inbox-id="${item.id}" data-inbox-path="${escapeHtml(item.path || "")}">
+      <span class="inbox-item-title">${escapeHtml(item.title)}</span>
+      <span>${escapeHtml(item.detail)}</span>
+      <time>${escapeHtml(item.created_at)} UTC</time>
+    </button>`).join("") : '<div class="inbox-empty">You are all caught up.</div>';
+  document.querySelector("#inbox-read-all").disabled = unread === 0;
+  inboxList.querySelectorAll("[data-inbox-id]").forEach((item) => item.addEventListener("click", async () => {
+    try {
+      await api(`/api/inbox/${item.dataset.inboxId}/read`, { method: "POST" });
+      await loadInbox();
+      setInboxOpen(false);
+      const route = normalizedRoute(`/${item.dataset.inboxPath || ""}`);
+      navigateTo(ROUTE_VIEWS.get(route) || "devices");
+    } catch (error) { toast(error.message, "error"); }
+  }));
+}
+
+async function loadInbox() {
+  if (!state.principal || state.principal.bootstrap) {
+    state.inbox = { items: [], unread: 0 };
+    renderInbox();
+    return;
+  }
+  state.inbox = await api("/api/inbox");
+  renderInbox();
+}
+
+function setInboxOpen(open) {
+  inboxPopover.classList.toggle("hidden", !open);
+  inboxButton.setAttribute("aria-expanded", String(open));
+}
+
+inboxButton.addEventListener("click", () => setInboxOpen(inboxPopover.classList.contains("hidden")));
+document.querySelector("#inbox-read-all").addEventListener("click", async () => {
+  try {
+    await api("/api/inbox/read-all", { method: "POST" });
+    await loadInbox();
+  } catch (error) { toast(error.message, "error"); }
+});
+
 async function startScan(confirmPrune = false) {
   let response;
   try {
@@ -3228,6 +3475,8 @@ function renderAuthentication() {
         return;
       }
       await loadReferenceData();
+      await loadInbox();
+      await loadOnboarding();
       navigateTo(isAdmin() ? "overview" : "library", {}, "replace");
     } catch (error) { toast(error.message, "error"); }
   });
@@ -3238,6 +3487,8 @@ function renderAuthentication() {
     try {
       await refreshStatus();
       await loadReferenceData();
+      await loadInbox();
+      await loadOnboarding();
       await renderCurrentView();
     } catch (error) {
       if (error.status === 401) {
@@ -3274,6 +3525,8 @@ function renderPasswordChange(required = false) {
       state.principal = result.user;
       await refreshStatus();
       await loadReferenceData();
+      await loadInbox();
+      await loadOnboarding();
       toast("Password changed");
       navigateTo(isAdmin() ? "overview" : "library", {}, "replace");
     } catch (error) {
@@ -3361,6 +3614,7 @@ window.matchMedia("(min-width: 721px)").addEventListener("change", (event) => {
 });
 
 document.addEventListener("click", (event) => {
+  if (!inboxShell.contains(event.target)) setInboxOpen(false);
   document.querySelectorAll(".mobile-actions-menu[open]").forEach((menu) => {
     if (!menu.contains(event.target)) menu.open = false;
   });
@@ -3375,6 +3629,10 @@ refreshButton.addEventListener("click", async () => {
 
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
+    if (state.tourActive) {
+      closeTour(true);
+      return;
+    }
     const openMenu = document.querySelector(".mobile-actions-menu[open]");
     if (openMenu) {
       openMenu.open = false;
@@ -3415,6 +3673,8 @@ async function initialize() {
       return;
     }
     await loadReferenceData();
+    await loadInbox();
+    await loadOnboarding();
     if (!allowedViews().has(state.view)) {
       updateBrowserRoute("library", "replace");
       state.view = "library";
@@ -3432,15 +3692,43 @@ async function initialize() {
 }
 
 logoutButton.addEventListener("click", async () => {
+  if (state.tourActive) await closeTour(false);
   try { await api("/api/auth/logout", { method: "POST" }); } catch { /* clear locally regardless */ }
   localStorage.removeItem("rommates-token");
   localStorage.removeItem("rom-manager-token");
   state.principal = null;
   state.permissions = { admin: false, manageDevices: false, upload: false, download: false };
+  state.onboarding = null;
+  state.inbox = { items: [], unread: 0 };
+  renderInbox();
   document.querySelector("#account-state")?.classList.add("hidden");
   renderAuthentication();
 });
 
 changePasswordButton.addEventListener("click", () => renderPasswordChange(false));
+guidedTourButton.addEventListener("click", startTour);
+tourLauncher.addEventListener("click", startTour);
+document.querySelector("#tour-close-button").addEventListener("click", () => closeTour(true));
+document.querySelector("#tour-backdrop").addEventListener("click", () => closeTour(true));
+tourSkipButton.addEventListener("click", () => closeTour(true));
+tourBackButton.addEventListener("click", () => showTourStep(state.onboarding.current_step - 1));
+tourNextButton.addEventListener("click", async () => {
+  const steps = TOUR_STEPS[onboardingAudience()];
+  const next = state.onboarding.current_step + 1;
+  if (next >= steps.length) {
+    clearTourTarget();
+    state.tourActive = false;
+    tourLayer.classList.add("hidden");
+    tourLayer.setAttribute("aria-hidden", "true");
+    await saveOnboarding({ current_step: steps.length - 1, completed: true, dismissed: false });
+    toast("Tour complete — you can restart it from the account menu anytime");
+    return;
+  }
+  await saveOnboarding({ current_step: next });
+  await showTourStep(next);
+});
+window.addEventListener("resize", () => { if (state.tourActive) positionTourCard(state.tourTarget); });
+window.addEventListener("scroll", () => { if (state.tourActive) positionTourCard(state.tourTarget); }, true);
 
 initialize();
+window.setInterval(() => { if (state.principal && !state.principal.bootstrap) loadInbox().catch(() => {}); }, 30000);
