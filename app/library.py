@@ -905,6 +905,7 @@ class LibraryService:
         name: str,
         deployment_mode: str = "hardlink",
         owner_user_id: int | None = None,
+        delivery_mode: str = "syncthing",
     ) -> dict[str, object]:
         """Create and register a device directory without requiring a library scan."""
         device_name = name.strip()
@@ -916,6 +917,8 @@ class LibraryService:
             raise LibraryError("Choose a different device name")
         if deployment_mode not in {"copy", "hardlink"}:
             raise LibraryError("Deployment mode must be copy or hardlink")
+        if delivery_mode not in {"syncthing", "download"}:
+            raise LibraryError("Delivery mode must be syncthing or download")
 
         root = self.settings.devices_root.resolve()
         root.mkdir(parents=True, exist_ok=True)
@@ -942,8 +945,8 @@ class LibraryService:
 
         with self.db.write() as connection:
             connection.execute(
-                "INSERT INTO devices(name,path,deployment_mode,owner_user_id) VALUES(?,?,?,?)",
-                (device_name, device_name, deployment_mode, owner_user_id),
+                "INSERT INTO devices(name,path,deployment_mode,owner_user_id,delivery_mode) VALUES(?,?,?,?,?)",
+                (device_name, device_name, deployment_mode, owner_user_id, delivery_mode),
             )
             row = connection.execute(
                 "SELECT * FROM devices WHERE id=last_insert_rowid()"
@@ -1693,20 +1696,39 @@ class LibraryService:
             )
             return {"purged": len(unique_ids), "files": removed_files}
 
-    def set_selection(self, device_id: int, game_id: int, selected: bool) -> None:
+    @staticmethod
+    def _roster_device_ids(connection, device_id: int) -> list[int]:
+        device = connection.execute(
+            "SELECT id,roster_group_id FROM devices WHERE id=?", (device_id,)
+        ).fetchone()
+        if not device:
+            raise LibraryError("Device was not found")
+        if not device["roster_group_id"]:
+            return [device_id]
+        return [
+            row["id"]
+            for row in connection.execute(
+                "SELECT id FROM devices WHERE roster_group_id=? ORDER BY id",
+                (device["roster_group_id"],),
+            )
+        ]
+
+    def set_selection(self, device_id: int, game_id: int, selected: bool) -> list[int]:
         with self.db.write() as connection:
-            if not connection.execute("SELECT 1 FROM devices WHERE id=?", (device_id,)).fetchone():
-                raise LibraryError("Device was not found")
+            device_ids = self._roster_device_ids(connection, device_id)
             if not connection.execute("SELECT 1 FROM games WHERE id=?", (game_id,)).fetchone():
                 raise LibraryError("Game was not found")
             if selected:
-                connection.execute(
-                    "INSERT OR IGNORE INTO device_selections(device_id,game_id) VALUES(?,?)", (device_id, game_id)
+                connection.executemany(
+                    "INSERT OR IGNORE INTO device_selections(device_id,game_id) VALUES(?,?)",
+                    ((member_id, game_id) for member_id in device_ids),
                 )
             else:
-                connection.execute(
-                    "DELETE FROM device_selections WHERE device_id=? AND game_id=?", (device_id, game_id)
+                connection.executemany(
+                    "DELETE FROM device_selections WHERE device_id=? AND game_id=?",
+                    ((member_id, game_id) for member_id in device_ids),
                 )
+        return device_ids
 
     def device_inventory(self, device_id: int, *, refresh: bool = False) -> set[str]:
         """Return actual device ROM paths without treating them as managed copies."""
@@ -1771,8 +1793,7 @@ class LibraryService:
         if not ids:
             return 0
         with self.db.write() as connection:
-            if not connection.execute("SELECT 1 FROM devices WHERE id=?", (device_id,)).fetchone():
-                raise LibraryError("Device was not found")
+            device_ids = self._roster_device_ids(connection, device_id)
             placeholders = ",".join("?" for _ in ids)
             valid_ids = [
                 row["id"] for row in connection.execute(
@@ -1782,15 +1803,137 @@ class LibraryService:
             if selected:
                 connection.executemany(
                     "INSERT OR IGNORE INTO device_selections(device_id,game_id) VALUES(?,?)",
-                    ((device_id, game_id) for game_id in valid_ids),
+                    ((member_id, game_id) for member_id in device_ids for game_id in valid_ids),
                 )
             elif valid_ids:
                 valid_placeholders = ",".join("?" for _ in valid_ids)
-                connection.execute(
+                connection.executemany(
                     f"DELETE FROM device_selections WHERE device_id=? AND game_id IN ({valid_placeholders})",
-                    [device_id, *valid_ids],
+                    ([member_id, *valid_ids] for member_id in device_ids),
                 )
         return len(valid_ids)
+
+    def clone_device_roster(
+        self, source_device_id: int, target_device_id: int, keep_in_sync: bool = False
+    ) -> dict[str, object]:
+        with self.db.write() as connection:
+            source = connection.execute(
+                "SELECT id,name,roster_group_id,owner_user_id FROM devices WHERE id=?", (source_device_id,)
+            ).fetchone()
+            target = connection.execute(
+                "SELECT id,name,roster_group_id,owner_user_id FROM devices WHERE id=?", (target_device_id,)
+            ).fetchone()
+            if not source or not target:
+                raise LibraryError("Device was not found")
+            if keep_in_sync and source["owner_user_id"] != target["owner_user_id"]:
+                raise LibraryError("Linked rosters must have the same owner")
+            connection.execute("DELETE FROM device_selections WHERE device_id=?", (target_device_id,))
+            connection.execute(
+                "INSERT INTO device_selections(device_id,game_id) "
+                "SELECT ?,game_id FROM device_selections WHERE device_id=?",
+                (target_device_id, source_device_id),
+            )
+            if keep_in_sync:
+                group_id = source["roster_group_id"]
+                if not group_id:
+                    connection.execute("INSERT INTO device_roster_groups DEFAULT VALUES")
+                    group_id = connection.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
+                    connection.execute(
+                        "UPDATE devices SET roster_group_id=? WHERE id=?", (group_id, source_device_id)
+                    )
+                connection.execute(
+                    "UPDATE devices SET roster_group_id=? WHERE id=?", (group_id, target_device_id)
+                )
+            count = connection.execute(
+                "SELECT COUNT(*) AS count FROM device_selections WHERE device_id=?", (target_device_id,)
+            ).fetchone()["count"]
+        self.db.activity(
+            "device",
+            f"Cloned {count} selections from {source['name']} to {target['name']}"
+            + (" and linked their rosters" if keep_in_sync else ""),
+        )
+        return {"games": count, "linked": keep_in_sync}
+
+    def link_device_rosters(
+        self, source_device_id: int, target_device_ids: Iterable[int]
+    ) -> dict[str, object]:
+        target_ids = sorted({int(value) for value in target_device_ids if int(value) != source_device_id})
+        if not target_ids:
+            raise LibraryError("Choose at least one other device")
+        with self.db.write() as connection:
+            source = connection.execute(
+                "SELECT id,name,roster_group_id,owner_user_id FROM devices WHERE id=?", (source_device_id,)
+            ).fetchone()
+            placeholders = ",".join("?" for _ in target_ids)
+            targets = connection.execute(
+                f"SELECT id,name,roster_group_id,owner_user_id FROM devices WHERE id IN ({placeholders})",
+                target_ids,
+            ).fetchall()
+            if not source or len(targets) != len(target_ids):
+                raise LibraryError("One or more devices were not found")
+            different_owner = [
+                row["name"] for row in targets if row["owner_user_id"] != source["owner_user_id"]
+            ]
+            if different_owner:
+                raise LibraryError(
+                    "Linked rosters must have the same owner: " + ", ".join(different_owner)
+                )
+            conflicting = [row["name"] for row in targets if row["roster_group_id"] and row["roster_group_id"] != source["roster_group_id"]]
+            if conflicting:
+                raise LibraryError(
+                    "Unlink these devices from their current roster first: " + ", ".join(conflicting)
+                )
+            group_id = source["roster_group_id"]
+            if not group_id:
+                connection.execute("INSERT INTO device_roster_groups DEFAULT VALUES")
+                group_id = connection.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
+                connection.execute(
+                    "UPDATE devices SET roster_group_id=? WHERE id=?", (group_id, source_device_id)
+                )
+            for target_id in target_ids:
+                connection.execute("DELETE FROM device_selections WHERE device_id=?", (target_id,))
+                connection.execute(
+                    "INSERT INTO device_selections(device_id,game_id) "
+                    "SELECT ?,game_id FROM device_selections WHERE device_id=?",
+                    (target_id, source_device_id),
+                )
+                connection.execute(
+                    "UPDATE devices SET roster_group_id=? WHERE id=?", (group_id, target_id)
+                )
+            games = connection.execute(
+                "SELECT COUNT(*) AS count FROM device_selections WHERE device_id=?", (source_device_id,)
+            ).fetchone()["count"]
+            member_count = connection.execute(
+                "SELECT COUNT(*) AS count FROM devices WHERE roster_group_id=?", (group_id,)
+            ).fetchone()["count"]
+        self.db.activity(
+            "device", f"Linked {source['name']} with {len(target_ids)} device rosters"
+        )
+        return {"group_id": group_id, "devices": member_count, "games": games}
+
+    def unlink_device_roster(self, device_id: int) -> dict[str, object]:
+        with self.db.write() as connection:
+            device = connection.execute(
+                "SELECT id,name,roster_group_id FROM devices WHERE id=?", (device_id,)
+            ).fetchone()
+            if not device:
+                raise LibraryError("Device was not found")
+            group_id = device["roster_group_id"]
+            if not group_id:
+                return {"unlinked": False}
+            connection.execute("UPDATE devices SET roster_group_id=NULL WHERE id=?", (device_id,))
+            remaining = [
+                row["id"] for row in connection.execute(
+                    "SELECT id FROM devices WHERE roster_group_id=?", (group_id,)
+                )
+            ]
+            if len(remaining) < 2:
+                connection.execute(
+                    "UPDATE devices SET roster_group_id=NULL WHERE roster_group_id=?", (group_id,)
+                )
+                connection.execute("DELETE FROM device_roster_groups WHERE id=?", (group_id,))
+        self.db.activity("device", f"Unlinked {device['name']} from its shared roster")
+        return {"unlinked": True}
 
     def set_device_deployment_mode(self, device_id: int, mode: str) -> None:
         if mode not in {"copy", "hardlink"}:

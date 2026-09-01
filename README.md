@@ -39,8 +39,10 @@ The MVP supports:
 - Bulk permanent deletion from Trash with one review and confirmation
 - Resumable, chunked browser uploads on a dedicated Transfers screen
 - Authenticated per-game downloads, with streamed ZIP output for multi-file bundles
+- Owner-scoped device packages that stream every selected ROM as one ES-DE-ready ZIP
 - Cross-page duplicate keeper review with one confirmed batch move to recoverable Trash
 - Per-device desired game selections and previewed reconciliation
+- Device cloning and optional linked rosters that keep game selections matched across handhelds
 - Per-user device ownership with member-scoped onboarding, library assignments, and apply jobs
 - Actual device-directory inventory shown in device views and on each Library game row
 - Per-game device assignment directly from the Library screen
@@ -373,14 +375,22 @@ You can build the desired set in either direction:
 - **Devices:** Choose one device and select or unselect many games, then review and apply its pending changes.
 
 For a new handheld, **Devices > Add device** creates
-`/emulation/devices/{device}/roms`. Add that host path as a Syncthing folder, share it with the
-handheld, then accept the share on the handheld using its top-level `Emulation/roms` directory.
-This Syncthing pairing/acceptance step is still required because ROMmates deliberately does not
-edit Syncthing's cluster configuration.
+`/emulation/devices/{device}/roms`. Choose automatic Syncthing delivery or manual ZIP downloads
+during onboarding. Syncthing devices require an administrator to add and share the host folder;
+ROMmates deliberately does not edit Syncthing's cluster configuration. Download-only devices
+can select games immediately and use **Download ROM package** to stream one ZIP containing the
+complete selected bundles under their ES-DE platform paths. The archive is generated without
+creating another persistent copy on the server.
 
 Devices created by a Member are owned by that account automatically. Existing device folders
 remain administrator-only after upgrade until an administrator chooses an owner on the Devices
 page. Ownership is enforced by the API, not just hidden in the browser.
+
+New devices can clone the desired roster from an existing accessible device. Enable roster sync
+during cloning, or link existing devices from the Devices page, to propagate future game selection
+changes across the group. Linking replaces each target's desired roster with the chosen source
+roster. It never changes ROM files automatically: review and apply each device separately. Unlinking
+a device preserves its current desired games and makes future changes independent.
 
 Library assignments update the desired selections only. Open Devices and apply a target when you want ROMmates to change its filesystem.
 

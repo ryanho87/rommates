@@ -364,6 +364,17 @@ class ApiIntegrationTests(unittest.TestCase):
             self.client.get(f"/api/devices/{admin_device['id']}/preview").status_code,
             404,
         )
+        self.assertEqual(
+            self.client.post(f"/api/devices/{admin_device['id']}/export-ticket").status_code,
+            404,
+        )
+        self.assertEqual(
+            self.client.post(
+                f"/api/devices/{owned['id']}/roster-link",
+                json={"target_device_ids": [admin_device["id"]]},
+            ).status_code,
+            404,
+        )
 
         games = self.client.get("/api/games").json()["items"]
         game_id = games[0]["id"]
@@ -469,6 +480,99 @@ class ApiIntegrationTests(unittest.TestCase):
 
         listed = self.client.get("/api/devices", headers=self.headers).json()
         self.assertIn("zz-new-device", [device["name"] for device in listed])
+
+    def test_device_owner_can_stream_selected_roms_as_one_package(self):
+        with patch("app.main.notifications.notify") as notify:
+            device = self.client.post(
+                "/api/devices",
+                headers=self.headers,
+                json={
+                    "name": "zz-export-device",
+                    "deployment_mode": "hardlink",
+                    "delivery_mode": "download",
+                },
+            ).json()
+        notify.assert_not_called()
+        self.assertEqual(device["delivery_mode"], "download")
+        game = self.client.get("/api/games", headers=self.headers).json()["items"][0]
+        selected = self.client.put(
+            f"/api/devices/{device['id']}/selection",
+            headers=self.headers,
+            json={"game_id": game["id"], "selected": True},
+        )
+        self.assertEqual(selected.status_code, 200, selected.text)
+
+        queued = self.client.post(
+            f"/api/devices/{device['id']}/export-ticket", headers=self.headers
+        )
+        self.assertEqual(queued.status_code, 202, queued.text)
+        job = self.wait_for_job(queued.json()["job_id"])
+        self.assertEqual(job["status"], "complete", job)
+        ticket = job["result"]
+        self.assertEqual(ticket["games"], 1)
+        self.assertEqual(ticket["files"], 1)
+        self.assertEqual(ticket["filename"], "zz-export-device-roms.zip")
+
+        response = self.client.get(ticket["url"])
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.headers["content-type"], "application/zip")
+        with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+            self.assertEqual(archive.namelist(), ["gba/Test Game.gba"])
+            self.assertEqual(archive.read("gba/Test Game.gba"), b"test-rom")
+        self.assertEqual(self.client.get(ticket["url"]).status_code, 404)
+        with self.main.db.write() as connection:
+            connection.execute("DELETE FROM devices WHERE id=?", (device["id"],))
+        (self.root / "devices/zz-export-device/roms").rmdir()
+        (self.root / "devices/zz-export-device").rmdir()
+
+    def test_device_creation_can_clone_and_link_an_existing_roster(self):
+        source = self.client.post(
+            "/api/devices",
+            headers=self.headers,
+            json={"name": "zz-roster-source", "deployment_mode": "hardlink"},
+        ).json()
+        game = self.client.get("/api/games", headers=self.headers).json()["items"][0]
+        self.client.put(
+            f"/api/devices/{source['id']}/selection",
+            headers=self.headers,
+            json={"game_id": game["id"], "selected": True},
+        )
+        clone = self.client.post(
+            "/api/devices",
+            headers=self.headers,
+            json={
+                "name": "zz-roster-clone",
+                "deployment_mode": "hardlink",
+                "clone_device_id": source["id"],
+                "keep_in_sync": True,
+            },
+        )
+        self.assertEqual(clone.status_code, 201, clone.text)
+        clone_payload = clone.json()
+        self.assertEqual(clone_payload["cloned_games"], 1)
+        devices = self.client.get("/api/devices", headers=self.headers).json()
+        source_row = next(item for item in devices if item["id"] == source["id"])
+        clone_row = next(item for item in devices if item["id"] == clone_payload["id"])
+        self.assertEqual(source_row["roster_group_id"], clone_row["roster_group_id"])
+        self.assertIsNotNone(source_row["roster_group_id"])
+
+        self.client.put(
+            f"/api/devices/{clone_payload['id']}/selection",
+            headers=self.headers,
+            json={"game_id": game["id"], "selected": False},
+        )
+        detail = self.client.get(f"/api/games/{game['id']}", headers=self.headers).json()
+        selection = {item["id"]: bool(item["selected"]) for item in detail["devices"]}
+        self.assertFalse(selection[source["id"]])
+        self.assertFalse(selection[clone_payload["id"]])
+
+        with self.main.db.write() as connection:
+            connection.execute(
+                "DELETE FROM devices WHERE id IN (?,?)", (source["id"], clone_payload["id"])
+            )
+        for name in ("zz-roster-source", "zz-roster-clone"):
+            (self.root / "devices" / name / "roms").rmdir()
+            (self.root / "devices" / name).rmdir()
 
     def test_upload_resumes_finalizes_and_downloads_without_bearer_token(self):
         manifest = {

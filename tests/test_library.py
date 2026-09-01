@@ -82,6 +82,64 @@ class LibraryServiceTests(unittest.TestCase):
         with self.assertRaises(LibraryError):
             self.service.create_device("odin2")
 
+    def test_linked_device_rosters_propagate_selections_and_unlink_safely(self):
+        self.write("gba/Alpha.gba", b"alpha")
+        self.write("gba/Beta.gba", b"beta")
+        self.service.scan()
+        alpha = self.game_id("Alpha")
+        beta = self.game_id("Beta")
+        source = self.service.create_device("rg-rotate")
+        target = self.service.create_device("rg-sp")
+        clone = self.service.create_device("travel-sp")
+        self.service.set_selection(source["id"], alpha, True)
+        self.service.set_selection(target["id"], beta, True)
+
+        linked = self.service.link_device_rosters(source["id"], [target["id"]])
+        self.assertEqual(linked["devices"], 2)
+        with self.db.connect() as connection:
+            target_games = {
+                row["game_id"] for row in connection.execute(
+                    "SELECT game_id FROM device_selections WHERE device_id=?", (target["id"],)
+                )
+            }
+        self.assertEqual(target_games, {alpha})
+
+        self.service.set_selection(target["id"], beta, True)
+        self.service.set_selection(source["id"], alpha, False)
+        for device_id in (source["id"], target["id"]):
+            with self.db.connect() as connection:
+                games = {
+                    row["game_id"] for row in connection.execute(
+                        "SELECT game_id FROM device_selections WHERE device_id=?", (device_id,)
+                    )
+                }
+            self.assertEqual(games, {beta})
+
+        cloned = self.service.clone_device_roster(source["id"], clone["id"], True)
+        self.assertEqual(cloned, {"games": 1, "linked": True})
+        self.service.set_selection(clone["id"], alpha, True)
+        self.service.unlink_device_roster(target["id"])
+        self.service.set_selection(source["id"], beta, False)
+        with self.db.connect() as connection:
+            source_games = {
+                row["game_id"] for row in connection.execute(
+                    "SELECT game_id FROM device_selections WHERE device_id=?", (source["id"],)
+                )
+            }
+            clone_games = {
+                row["game_id"] for row in connection.execute(
+                    "SELECT game_id FROM device_selections WHERE device_id=?", (clone["id"],)
+                )
+            }
+            target_games = {
+                row["game_id"] for row in connection.execute(
+                    "SELECT game_id FROM device_selections WHERE device_id=?", (target["id"],)
+                )
+            }
+        self.assertEqual(source_games, {alpha})
+        self.assertEqual(clone_games, {alpha})
+        self.assertEqual(target_games, {alpha, beta})
+
     def test_name_normalization_removes_release_tags(self):
         self.assertEqual(normalize_name("Final.Fantasy_VII (USA) [Rev 1].chd"), "final fantasy vii")
 

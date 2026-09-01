@@ -611,6 +611,7 @@ const JOB_LABELS = {
   bulk_delete: "Moving duplicate bundles to trash…",
   delete: "Moving to trash…",
   device_apply: "Applying device changes…",
+  device_export: "Preparing ROM package…",
   restore: "Restoring from trash…",
   purge: "Deleting permanently…",
   bulk_purge: "Deleting selected trash…",
@@ -2159,7 +2160,12 @@ function deviceOnboardingPanel() {
     </div>
     <form class="device-onboarding-form" data-device-onboarding-form>
       <label class="field"><span>Device folder name</span><input class="input" name="name" placeholder="retroid-pocket-6" autocomplete="off" autocapitalize="none" maxlength="64" required><small>Letters, numbers, dots, dashes, and underscores.</small></label>
+      <label class="field"><span>Get ROMs onto the device</span><select name="delivery_mode"><option value="syncthing">Sync automatically with Syncthing</option><option value="download">Download a ZIP manually</option></select></label>
       <label class="field"><span>Deployment storage</span><select name="deployment_mode"><option value="hardlink">Prefer hardlinks</option><option value="copy">Independent copies</option></select></label>
+      <div class="device-clone-options">
+        <label class="field"><span>Start with games from</span><select name="clone_device_id"><option value="">Start with an empty roster</option>${state.devices.map((device) => `<option value="${device.id}">${escapeHtml(device.name)} (${Number(device.selected_games || 0).toLocaleString()} selected)</option>`).join("")}</select></label>
+        <label class="device-choice compact hidden" data-clone-sync-row><input type="checkbox" name="keep_in_sync"><span><strong>Keep these device rosters in sync</strong><small>Future game selections on either device will update both desired rosters.</small></span></label>
+      </div>
       <div class="device-path-preview"><span>ROM folder</span><code data-device-path-preview>devices/new-device/roms</code></div>
       <div class="device-onboarding-actions"><button class="button secondary" type="button" data-cancel-device-onboarding>Cancel</button><button class="button" type="submit">Create device</button></div>
     </form>
@@ -2169,6 +2175,12 @@ function deviceOnboardingPanel() {
 function createdDevicePanel() {
   const device = state.createdDevice;
   if (!device) return "";
+  if (device.delivery_mode === "download") {
+    return `<section class="device-created" aria-labelledby="device-created-title">
+      <div><span class="badge unique">Ready for selections</span><h2 id="device-created-title">${escapeHtml(device.name)} was created</h2><p>${device.cloned_games !== undefined ? `Cloned ${Number(device.cloned_games).toLocaleString()} game selections. ` : ""}Select games for this device, then use Download ROM package. No Syncthing setup is required.</p></div>
+      <button class="icon-button" type="button" data-dismiss-created-device aria-label="Dismiss device status">×</button>
+    </section>`;
+  }
   if (!isAdmin()) {
     return `<section class="device-created pending" aria-labelledby="device-created-title">
       <div><span class="badge possible">Administrator setup pending</span><h2 id="device-created-title">${escapeHtml(device.name)} was created</h2><p>An administrator has been notified and will connect this device through Syncthing. You will get a notification here when it is ready.</p></div>
@@ -2193,10 +2205,16 @@ function bindDeviceOnboarding() {
   });
   const form = view.querySelector("[data-device-onboarding-form]");
   const input = form?.elements.name;
+  const cloneSelect = form?.elements.clone_device_id;
+  const cloneSyncRow = form?.querySelector("[data-clone-sync-row]");
   const preview = view.querySelector("[data-device-path-preview]");
   input?.addEventListener("input", () => {
     const slug = input.value.trim().toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9._-]/g, "").replace(/-+/g, "-");
     if (preview) preview.textContent = `devices/${slug || "new-device"}/roms`;
+  });
+  cloneSelect?.addEventListener("change", () => {
+    cloneSyncRow?.classList.toggle("hidden", !cloneSelect.value);
+    if (!cloneSelect.value) form.elements.keep_in_sync.checked = false;
   });
   form?.addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -2207,14 +2225,20 @@ function bindDeviceOnboarding() {
     try {
       const created = await api("/api/devices", {
         method: "POST",
-        body: JSON.stringify({ name: slug, deployment_mode: form.elements.deployment_mode.value }),
+        body: JSON.stringify({
+          name: slug,
+          deployment_mode: form.elements.deployment_mode.value,
+          delivery_mode: form.elements.delivery_mode.value,
+          clone_device_id: form.elements.clone_device_id.value ? Number(form.elements.clone_device_id.value) : null,
+          keep_in_sync: form.elements.keep_in_sync.checked,
+        }),
       });
       state.deviceOnboarding = false;
       state.createdDevice = created;
       await loadReferenceData();
       state.deviceId = created.id;
       state.deviceScope = "all";
-      toast(isAdmin() ? `${created.name} was created. Add its ROM path to Syncthing next.` : `${created.name} was created. An administrator has been notified.`);
+      toast(created.delivery_mode === "download" ? `${created.name} is ready for manual ROM packages.` : isAdmin() ? `${created.name} was created. Add its ROM path to Syncthing next.` : `${created.name} was created. An administrator has been notified.`);
       await renderDevices();
     } catch (error) {
       submit.disabled = false;
@@ -2272,11 +2296,39 @@ function deviceOwnershipOverview(currentDevice) {
 
 function deviceSyncthingStatus(device) {
   const ready = Boolean(device.syncthing_ready_at);
+  const gameCount = Number(device.selected_games || 0);
+  const exportButton = `<button class="button secondary small" type="button" data-device-export ${gameCount ? "" : "disabled"}>Download ROM package</button>`;
+  if (device.delivery_mode === "download") {
+    return `<div class="device-sync-status"><span class="syncthing-state ready">Manual download</span><span>Download the ${gameCount.toLocaleString()} selected ${gameCount === 1 ? "game" : "games"} as one ZIP with ES-DE folders.</span>${exportButton}</div>`;
+  }
   const badge = `<span class="syncthing-state ${ready ? "ready" : "pending"}">${ready ? "Syncthing ready" : "Waiting for Syncthing setup"}</span>`;
-  if (!isAdmin()) return `<div class="device-sync-status">${badge}</div>`;
+  if (!isAdmin()) return `<div class="device-sync-status">${badge}<span>Prefer a manual transfer? Download the ${gameCount.toLocaleString()} selected ${gameCount === 1 ? "game" : "games"} as one ZIP.</span>${exportButton}</div>`;
   const disabled = !device.owner_user_id ? "disabled" : "";
   const help = !device.owner_user_id ? "Assign an owner before marking this device ready." : ready ? "The owner has been notified." : "Mark ready after adding and sharing the folder in Syncthing.";
-  return `<div class="device-sync-status">${badge}<span>${escapeHtml(help)}</span><button class="button secondary small" type="button" data-device-sync-ready ${disabled}>${ready ? "Mark setup pending" : "Mark Syncthing ready"}</button></div>`;
+  return `<div class="device-sync-status">${badge}<span>${escapeHtml(help)}</span><div class="device-sync-actions">${exportButton}<button class="button secondary small" type="button" data-device-sync-ready ${disabled}>${ready ? "Mark setup pending" : "Mark Syncthing ready"}</button></div></div>`;
+}
+
+function deviceRosterPanel(device) {
+  const groupId = Number(device.roster_group_id || 0);
+  const peers = groupId
+    ? state.devices.filter((item) => Number(item.roster_group_id || 0) === groupId && item.id !== device.id)
+    : [];
+  const candidates = state.devices.filter(
+    (item) => item.id !== device.id && !peers.some((peer) => peer.id === item.id),
+  );
+  const peerCopy = peers.length
+    ? `<span class="roster-link-state"><strong>Shared roster</strong> with ${peers.map((peer) => escapeHtml(peer.name)).join(", ")}</span>`
+    : `<span class="roster-link-state"><strong>Independent roster</strong> Game selections affect only this device.</span>`;
+  const choices = candidates.map((item) => `<label class="device-choice compact"><input type="checkbox" data-roster-target="${item.id}" ${item.roster_group_id ? "disabled" : ""}><span><strong>${escapeHtml(item.name)}</strong><small>${Number(item.selected_games || 0).toLocaleString()} selected games${item.roster_group_id ? " · unlink this device first" : ""}</small></span></label>`).join("");
+  return `<section class="device-roster-panel">
+    <div>${peerCopy}<p>Linked devices share desired game selections. Each device still reviews and applies its own filesystem changes.</p></div>
+    <details data-roster-manager><summary>${peers.length ? "Manage linked roster" : "Keep devices in sync"}</summary>
+      <div class="device-roster-controls">
+        ${choices ? `<div class="device-roster-choices">${choices}</div><button class="button secondary small" type="button" data-link-rosters disabled>${peers.length ? "Add selected devices" : "Link selected devices"}</button>` : "<p>No other accessible devices are available.</p>"}
+        ${peers.length ? '<button class="text-button danger-text" type="button" data-unlink-roster>Stop syncing this device</button>' : ""}
+      </div>
+    </details>
+  </section>`;
 }
 
 async function renderDevices() {
@@ -2322,6 +2374,7 @@ async function renderDevices() {
     ${deviceOnboardingPanel()}
     ${createdDevicePanel()}
     ${deviceOwnershipOverview(device)}
+    ${deviceRosterPanel(device)}
     ${deviceSyncthingStatus(device)}
     <div class="device-strip">
       <label class="field"><span>Target device</span><select id="device-select">${devicePickerOptions(device.id)}</select></label>
@@ -2399,6 +2452,83 @@ async function renderDevices() {
     } catch (error) {
       button.disabled = false;
       toast(error.message, "error");
+    }
+  });
+  const rosterTargets = [...view.querySelectorAll("[data-roster-target]")];
+  const rosterLinkButton = view.querySelector("[data-link-rosters]");
+  rosterTargets.forEach((checkbox) => checkbox.addEventListener("change", () => {
+    if (rosterLinkButton) rosterLinkButton.disabled = !rosterTargets.some((item) => item.checked);
+  }));
+  rosterLinkButton?.addEventListener("click", async () => {
+    const targetIds = rosterTargets.filter((item) => item.checked).map((item) => Number(item.dataset.rosterTarget));
+    const targets = state.devices.filter((item) => targetIds.includes(item.id));
+    const confirmed = await confirmAction({
+      title: `Use ${device.name}'s roster on ${targets.length} ${targets.length === 1 ? "device" : "devices"}?`,
+      content: `<p class="warning-copy">The desired selections on ${targets.map((item) => `<strong>${escapeHtml(item.name)}</strong>`).join(", ")} will be replaced with ${escapeHtml(device.name)}'s ${Number(device.selected_games || 0).toLocaleString()} selected games. Future selection changes on any linked device will update the full group. No ROM files change until each device is applied.</p>`,
+      confirmLabel: "Link device rosters",
+      cancelLabel: "Keep separate",
+      danger: false,
+    });
+    if (!confirmed) return;
+    rosterLinkButton.disabled = true;
+    try {
+      const result = await api(`/api/devices/${device.id}/roster-link`, {
+        method: "POST",
+        body: JSON.stringify({ target_device_ids: targetIds }),
+      });
+      toast(`Linked ${result.devices.toLocaleString()} devices with ${result.games.toLocaleString()} selected games`);
+      await loadReferenceData();
+      await renderDevices();
+    } catch (error) {
+      toast(error.message, "error");
+      rosterLinkButton.disabled = false;
+    }
+  });
+  view.querySelector("[data-unlink-roster]")?.addEventListener("click", async () => {
+    const confirmed = await confirmAction({
+      title: `Stop syncing ${device.name}'s roster?`,
+      content: `<p class="warning-copy">${escapeHtml(device.name)} will keep its current desired games, but future selection changes will no longer propagate to the linked devices. No ROM files will be removed.</p>`,
+      confirmLabel: "Stop roster sync",
+      cancelLabel: "Keep linked",
+      danger: false,
+    });
+    if (!confirmed) return;
+    try {
+      await api(`/api/devices/${device.id}/roster-link`, { method: "DELETE" });
+      toast(`${device.name} now has an independent roster`);
+      await loadReferenceData();
+      await renderDevices();
+    } catch (error) { toast(error.message, "error"); }
+  });
+  view.querySelector("[data-device-export]")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    const games = Number(device.selected_games || 0);
+    const confirmed = await confirmAction({
+      title: `Download ${device.name}'s selected ROMs?`,
+      content: `<p class="warning-copy">ROMmates will validate ${games.toLocaleString()} selected ${games === 1 ? "game" : "games"}, then stream one ZIP with ES-DE platform folders. Large packages can take a long time, so keep this browser open until the download completes.</p>`,
+      confirmLabel: "Prepare download",
+      cancelLabel: "Not now",
+      danger: false,
+    });
+    if (!confirmed) return;
+    button.disabled = true;
+    try {
+      const ticket = await requestJob(
+        `/api/devices/${device.id}/export-ticket`,
+        { method: "POST" },
+        `Preparing ${device.name}'s ROM package`,
+      );
+      const anchor = document.createElement("a");
+      anchor.href = ticket.url;
+      anchor.download = ticket.filename;
+      document.body.append(anchor);
+      anchor.click();
+      anchor.remove();
+      toast(`Downloading ${ticket.games.toLocaleString()} games (${formatBytes(ticket.bytes)}) as ${ticket.filename}`);
+    } catch (error) {
+      toast(error.message, "error");
+    } finally {
+      button.disabled = false;
     }
   });
   view.querySelectorAll("[data-device-scope]").forEach((button) => button.addEventListener("click", () => {
@@ -3615,6 +3745,9 @@ window.matchMedia("(min-width: 721px)").addEventListener("change", (event) => {
 
 document.addEventListener("click", (event) => {
   if (!inboxShell.contains(event.target)) setInboxOpen(false);
+  document.querySelectorAll("[data-roster-manager][open]").forEach((manager) => {
+    if (!manager.contains(event.target)) manager.open = false;
+  });
   document.querySelectorAll(".mobile-actions-menu[open]").forEach((menu) => {
     if (!menu.contains(event.target)) menu.open = false;
   });

@@ -582,8 +582,10 @@ input[type="checkbox"] { width: 15px; height: 15px; margin: 0; accent-color: var
 .device-onboarding-copy .eyebrow { color: var(--accent); font-size: 0.68rem; font-weight: 750; letter-spacing: 0.08em; text-transform: uppercase; }
 .device-onboarding-copy h2, .device-created h2 { margin: 5px 0 6px; font-size: 1rem; }
 .device-onboarding-copy p, .device-created p { max-width: 60ch; margin: 0; color: var(--text-muted); font-size: 0.78rem; line-height: 1.5; }
-.device-onboarding-form { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(170px, 0.6fr); gap: 12px; }
+.device-onboarding-form { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(210px, 1fr) minmax(170px, 0.7fr); gap: 12px; }
 .device-onboarding-form .field small { margin-top: 3px; color: var(--text-faint); font-size: 0.65rem; }
+.device-clone-options { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(240px, 1fr) minmax(300px, 1.4fr); gap: 12px; align-items: end; padding-top: 4px; }
+.device-clone-options .device-choice { min-height: 54px; }
 .device-path-preview { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; min-width: 0; color: var(--text-muted); font-size: 0.7rem; }
 .device-path-preview code { overflow: hidden; color: var(--text); text-overflow: ellipsis; white-space: nowrap; }
 .device-onboarding-actions { grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: 8px; }
@@ -608,6 +610,16 @@ input[type="checkbox"] { width: 15px; height: 15px; margin: 0; accent-color: var
 .device-summary strong { color: var(--text); }
 .device-sync-status { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-raised); color: var(--text-muted); font-size: 0.72rem; }
 .device-sync-status > span:nth-child(2) { flex: 1; }
+.device-sync-actions { display: flex; flex: 0 0 auto; gap: 8px; }
+.device-roster-panel { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 16px; align-items: center; margin-bottom: 12px; padding: 11px 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-raised); }
+.device-roster-panel p { margin: 3px 0 0; color: var(--text-muted); font-size: 0.7rem; line-height: 1.45; }
+.roster-link-state { display: block; color: var(--text-muted); font-size: 0.74rem; }
+.roster-link-state strong { color: var(--text); }
+.device-roster-panel details { position: relative; }
+.device-roster-panel summary { color: var(--accent); font-size: 0.74rem; font-weight: 700; cursor: pointer; }
+.device-roster-controls { position: absolute; z-index: 40; top: calc(100% + 10px); right: 0; display: grid; gap: 10px; width: min(390px, calc(100vw - 36px)); padding: 12px; border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow); }
+.device-roster-choices { display: grid; gap: 7px; max-height: 270px; overflow: auto; }
+.device-roster-controls .danger-text { justify-self: start; color: var(--danger); }
 .syncthing-state { flex: 0 0 auto; padding: 4px 8px; border: 1px solid var(--border-strong); border-radius: 999px; font-weight: 700; }
 .syncthing-state.ready { border-color: color-mix(in oklch, var(--success) 50%, var(--border)); color: var(--success); }
 .syncthing-state.pending { border-color: color-mix(in oklch, var(--warning) 50%, var(--border)); color: var(--warning); }
@@ -1091,6 +1103,9 @@ dialog form { padding: 18px; }
   .device-sync-status { align-items: flex-start; flex-wrap: wrap; }
   .device-sync-status > span:nth-child(2) { flex-basis: calc(100% - 130px); }
   .device-sync-status .button { width: 100%; }
+  .device-sync-actions { width: 100%; flex-direction: column; }
+  .device-roster-panel { grid-template-columns: 1fr; align-items: stretch; }
+  .device-roster-controls { position: static; width: auto; margin-top: 10px; box-shadow: none; }
   :root { --radius-sm: 10px; --radius-md: 15px; }
   html { overflow-x: hidden; }
   body { min-width: 320px; }
@@ -1423,6 +1438,7 @@ dialog form { padding: 18px; }
   .device-onboarding { grid-template-columns: 1fr; gap: 16px; padding: 16px 14px; }
   .device-onboarding-form { grid-template-columns: 1fr; }
   .device-onboarding-form > * { grid-column: 1; }
+  .device-clone-options { grid-template-columns: 1fr; }
   .device-onboarding-actions .button { flex: 1; }
   .device-created { grid-template-columns: 1fr; gap: 14px; padding: 15px 46px 15px 14px; }
   .device-created-path code { white-space: normal; overflow-wrap: anywhere; }

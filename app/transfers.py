@@ -511,6 +511,180 @@ class TransferService:
                 )
         with self.db.write() as connection:
             connection.execute("DELETE FROM download_tickets WHERE expires_at<?", (int(time.time()),))
+            connection.execute("DELETE FROM device_export_tickets WHERE expires_at<?", (int(time.time()),))
+
+    def create_device_export_ticket(
+        self,
+        device_id: int,
+        requested_by: int | None = None,
+        progress_callback=None,
+        cancel_check=None,
+    ) -> dict[str, object]:
+        """Prepare a one-use streaming ZIP ticket for a device's desired ROM set."""
+        self.cleanup_expired()
+        with self.db.connect() as connection:
+            device = connection.execute("SELECT * FROM devices WHERE id=?", (device_id,)).fetchone()
+            if not device:
+                raise TransferError("Device was not found", 404)
+            rows = connection.execute(
+                "SELECT g.display_name,g.platform,gf.relpath,gf.device_relpath,gf.size "
+                "FROM device_selections ds JOIN games g ON g.id=ds.game_id "
+                "JOIN game_files gf ON gf.game_id=g.id WHERE ds.device_id=? "
+                "ORDER BY g.platform COLLATE NOCASE,g.display_name COLLATE NOCASE,gf.device_relpath",
+                (device_id,),
+            ).fetchall()
+            game_count = connection.execute(
+                "SELECT COUNT(*) AS count FROM device_selections WHERE device_id=?", (device_id,)
+            ).fetchone()["count"]
+        if not rows:
+            raise TransferError(
+                "Select at least one game for this device before downloading its ROM set", 409
+            )
+
+        manifest: list[dict[str, object]] = []
+        archive_paths: set[str] = set()
+        total_size = 0
+        for index, item in enumerate(rows):
+            if cancel_check:
+                cancel_check()
+            source = _inside(self.settings.library_root, self.settings.library_root / item["relpath"])
+            try:
+                stat = source.stat()
+            except OSError as exc:
+                raise TransferError(f"Library file is unavailable: {item['relpath']}", 409) from exc
+            if not source.is_file() or stat.st_size != item["size"]:
+                raise TransferError(f"Library file failed its storage check: {item['relpath']}", 409)
+            archive_relpath = _safe_relative(item["device_relpath"] or item["relpath"])
+            if archive_relpath in archive_paths:
+                raise TransferError(
+                    f"Two selected files would use the same package path: {archive_relpath}", 409
+                )
+            archive_paths.add(archive_relpath)
+            manifest.append(
+                {
+                    "relpath": item["relpath"],
+                    "archive_relpath": archive_relpath,
+                    "size": item["size"],
+                }
+            )
+            total_size += item["size"]
+            if progress_callback:
+                progress_callback(
+                    min(99, int((index + 1) * 100 / len(rows))),
+                    f"Checking {index + 1:,} of {len(rows):,} files for {device['name']}",
+                )
+
+        token = secrets.token_urlsafe(32)
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        expires_at = int(time.time()) + self.settings.download_ticket_seconds
+        with self.db.write() as connection:
+            connection.execute(
+                "INSERT INTO device_export_tickets(token_hash,device_id,manifest_json,file_count,total_size,expires_at,requested_by) "
+                "VALUES(?,?,?,?,?,?,?)",
+                (
+                    token_hash,
+                    device_id,
+                    json.dumps(manifest, separators=(",", ":")),
+                    len(manifest),
+                    total_size,
+                    expires_at,
+                    requested_by,
+                ),
+            )
+        self.db.activity(
+            "download", f"Prepared {device['name']} ROM package with {game_count} games"
+        )
+        return {
+            "url": f"/api/device-downloads/{token}",
+            "filename": _download_name(f"{device['name']}-roms.zip"),
+            "files": len(manifest),
+            "games": game_count,
+            "bytes": total_size,
+            "expires_at": expires_at,
+        }
+
+    def resolve_device_export(self, token: str) -> dict[str, object]:
+        if not SESSION_ID_RE.fullmatch(token):
+            raise TransferError("Device download ticket was not found", 404)
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        now = int(time.time())
+        with self.db.write() as connection:
+            ticket = connection.execute(
+                "SELECT t.*,d.name AS device_name FROM device_export_tickets t "
+                "JOIN devices d ON d.id=t.device_id "
+                "WHERE t.token_hash=? AND t.expires_at>=? AND t.used_at IS NULL",
+                (token_hash, now),
+            ).fetchone()
+            if not ticket:
+                raise TransferError("Device download ticket expired or was not found", 404)
+            connection.execute(
+                "UPDATE device_export_tickets SET used_at=? WHERE token_hash=?", (now, token_hash)
+            )
+        try:
+            manifest = json.loads(ticket["manifest_json"])
+        except (TypeError, json.JSONDecodeError):
+            raise TransferError("Device download manifest is invalid", 409) from None
+        paths = []
+        for item in manifest:
+            source = _inside(self.settings.library_root, self.settings.library_root / item["relpath"])
+            try:
+                valid = source.is_file() and source.stat().st_size == item["size"]
+            except OSError:
+                valid = False
+            if not valid:
+                raise TransferError(
+                    f"Package file is no longer available: {item['archive_relpath']}", 409
+                )
+            paths.append((source, item["archive_relpath"], item["size"]))
+        return {
+            "paths": paths,
+            "filename": _download_name(f"{ticket['device_name']}-roms.zip"),
+        }
+
+    def stream_device_zip(self, download: dict[str, object]) -> Iterator[bytes]:
+        output: queue.Queue = queue.Queue(maxsize=8)
+        stop = threading.Event()
+        sentinel = object()
+
+        def worker() -> None:
+            writer = _QueueWriter(output, stop)
+            try:
+                with zipfile.ZipFile(
+                    writer, mode="w", compression=zipfile.ZIP_STORED, allowZip64=True
+                ) as archive:
+                    for path, archive_relpath, size in download["paths"]:
+                        if stop.is_set():
+                            break
+                        with path.open("rb") as source, archive.open(
+                            archive_relpath, "w", force_zip64=size >= 2 * 1024**3
+                        ) as target:
+                            while not stop.is_set():
+                                chunk = source.read(1024 * 1024)
+                                if not chunk:
+                                    break
+                                target.write(chunk)
+            except BrokenPipeError:
+                pass
+            except Exception as exc:
+                if not stop.is_set():
+                    output.put(exc)
+            finally:
+                if not stop.is_set():
+                    output.put(sentinel)
+
+        threading.Thread(
+            target=worker, name="rommates-device-download", daemon=True
+        ).start()
+        try:
+            while True:
+                item = output.get()
+                if item is sentinel:
+                    break
+                if isinstance(item, Exception):
+                    raise item
+                yield item
+        finally:
+            stop.set()
 
     def create_download_ticket(
         self, game_id: int, requested_by: int | None = None

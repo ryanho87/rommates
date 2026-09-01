@@ -143,6 +143,20 @@ CREATE TABLE IF NOT EXISTS download_tickets (
 );
 CREATE INDEX IF NOT EXISTS idx_download_tickets_expiry ON download_tickets(expires_at);
 
+CREATE TABLE IF NOT EXISTS device_export_tickets (
+    token_hash TEXT PRIMARY KEY,
+    device_id INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    manifest_json TEXT NOT NULL,
+    file_count INTEGER NOT NULL,
+    total_size INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    used_at INTEGER,
+    requested_by INTEGER REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_device_export_tickets_expiry
+ON device_export_tickets(expires_at);
+
 CREATE TABLE IF NOT EXISTS naming_catalogs (
     id INTEGER PRIMARY KEY,
     name TEXT NOT NULL,
@@ -164,11 +178,18 @@ CREATE INDEX IF NOT EXISTS idx_naming_entries_catalog ON naming_entries(catalog_
 CREATE INDEX IF NOT EXISTS idx_naming_entries_hash ON naming_entries(sha256);
 CREATE INDEX IF NOT EXISTS idx_naming_entries_name ON naming_entries(normalized_name);
 
+CREATE TABLE IF NOT EXISTS device_roster_groups (
+    id INTEGER PRIMARY KEY,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS devices (
     id INTEGER PRIMARY KEY,
     name TEXT NOT NULL UNIQUE,
     path TEXT NOT NULL UNIQUE,
     deployment_mode TEXT NOT NULL DEFAULT 'copy' CHECK(deployment_mode IN ('copy','hardlink')),
+    delivery_mode TEXT NOT NULL DEFAULT 'syncthing' CHECK(delivery_mode IN ('syncthing','download')),
+    roster_group_id INTEGER REFERENCES device_roster_groups(id) ON DELETE SET NULL,
     owner_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
     syncthing_ready_at TEXT,
     syncthing_ready_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
@@ -668,6 +689,43 @@ class Database:
                 "ON user_notifications(user_id,read_at,id DESC)"
             )
             connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(23)")
+            device_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(devices)")
+            }
+            if "delivery_mode" not in device_columns:
+                connection.execute(
+                    "ALTER TABLE devices ADD COLUMN delivery_mode TEXT NOT NULL DEFAULT 'syncthing' "
+                    "CHECK(delivery_mode IN ('syncthing','download'))"
+                )
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS device_export_tickets ("
+                "token_hash TEXT PRIMARY KEY,device_id INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,"
+                "manifest_json TEXT NOT NULL,file_count INTEGER NOT NULL,total_size INTEGER NOT NULL,"
+                "expires_at INTEGER NOT NULL,used_at INTEGER,requested_by INTEGER REFERENCES users(id),"
+                "created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_device_export_tickets_expiry "
+                "ON device_export_tickets(expires_at)"
+            )
+            connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(24)")
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS device_roster_groups ("
+                "id INTEGER PRIMARY KEY,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"
+            )
+            device_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(devices)")
+            }
+            if "roster_group_id" not in device_columns:
+                connection.execute(
+                    "ALTER TABLE devices ADD COLUMN roster_group_id INTEGER "
+                    "REFERENCES device_roster_groups(id) ON DELETE SET NULL"
+                )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_devices_roster_group "
+                "ON devices(roster_group_id,name)"
+            )
+            connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(25)")
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:

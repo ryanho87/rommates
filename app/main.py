@@ -31,7 +31,7 @@ from .transfers import MAX_MANIFEST_BYTES, TransferError, TransferService
 
 
 MINIMUM_TOKEN_LENGTH = 16
-CANCELLABLE_JOB_KINDS = frozenset({"scan", "device_apply", "save_snapshot", "save_restore", "save_delete", "save_conflict", "artwork_scrape", "artwork_bulk", "rating_scrape", "ranking_refresh", "upload_finalize"})
+CANCELLABLE_JOB_KINDS = frozenset({"scan", "device_apply", "device_export", "save_snapshot", "save_restore", "save_delete", "save_conflict", "artwork_scrape", "artwork_bulk", "rating_scrape", "ranking_refresh", "upload_finalize"})
 
 settings = Settings.from_env()
 
@@ -330,7 +330,7 @@ def run_job(
                 )
             elif kind == "device_apply":
                 result = operation(*args, cancel_check=check_cancelled)
-            elif kind in {"save_snapshot", "save_restore", "save_conflict", "artwork_scrape", "artwork_bulk", "rating_scrape", "ranking_refresh", "upload_finalize"}:
+            elif kind in {"device_export", "save_snapshot", "save_restore", "save_conflict", "artwork_scrape", "artwork_bulk", "rating_scrape", "ranking_refresh", "upload_finalize"}:
                 result = operation(
                     *args, progress_callback=report_progress, cancel_check=check_cancelled
                 )
@@ -658,6 +658,9 @@ class DeviceDeploymentModeRequest(BaseModel):
 class DeviceCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=64)
     deployment_mode: str = Field(default="hardlink", pattern="^(copy|hardlink)$")
+    delivery_mode: str = Field(default="syncthing", pattern="^(syncthing|download)$")
+    clone_device_id: int | None = Field(default=None, ge=1)
+    keep_in_sync: bool = False
 
 
 class DeviceOwnerRequest(BaseModel):
@@ -666,6 +669,10 @@ class DeviceOwnerRequest(BaseModel):
 
 class DeviceSyncthingReadyRequest(BaseModel):
     ready: bool = True
+
+
+class DeviceRosterLinkRequest(BaseModel):
+    target_device_ids: list[int] = Field(min_length=1, max_length=20)
 
 
 class DatImportRequest(BaseModel):
@@ -864,8 +871,12 @@ def role_allows(principal: Principal, method: str, path: str) -> bool:
         if method == "POST" and (
             path == "/api/devices"
             or (path.startswith("/api/devices/") and path.endswith("/apply"))
+            or (path.startswith("/api/devices/") and path.endswith("/export-ticket"))
+            or (path.startswith("/api/devices/") and path.endswith("/roster-link"))
             or (path.startswith("/api/jobs/") and path.endswith("/cancel"))
         ):
+            return True
+        if method == "DELETE" and path.startswith("/api/devices/") and path.endswith("/roster-link"):
             return True
         if (
             method == "PUT"
@@ -887,7 +898,7 @@ def role_allows(principal: Principal, method: str, path: str) -> bool:
 @app.middleware("http")
 async def protect_private_api(request: Request, call_next):
     public_download = (
-        request.url.path.startswith("/api/downloads/")
+        request.url.path.startswith(("/api/downloads/", "/api/device-downloads/"))
         and request.method in {"GET", "HEAD"}
     )
     path = request.url.path
@@ -2045,21 +2056,56 @@ def devices(request: Request):
 @app.post("/api/devices", status_code=201)
 def create_device(payload: DeviceCreateRequest, request: Request):
     principal = request_principal(request)
+    if payload.keep_in_sync and payload.clone_device_id is None:
+        raise HTTPException(status_code=400, detail="Choose a device to clone before linking rosters")
+    source_device = None
+    if payload.clone_device_id is not None:
+        source_device = require_device_access(payload.clone_device_id, principal)
     owner_user_id = (
         principal.id
         if principal.has_role("member") and not principal.has_role("admin")
-        else None
+        else source_device["owner_user_id"] if source_device is not None else None
     )
-    device = library.create_device(payload.name, payload.deployment_mode, owner_user_id)
+    device = library.create_device(
+        payload.name, payload.deployment_mode, owner_user_id, payload.delivery_mode
+    )
     owner_label = principal.display_name or principal.username or "An administrator"
-    notifications.notify(
-        "device_setup_required",
-        f"Syncthing setup needed for {device['name']}",
-        f"{owner_label} created this device. Add {device['roms_path']} to Syncthing, then mark the device ready in ROMmates.",
-        "devices",
-        dedupe_key=f"device:{device['id']}:setup-required",
-    )
+    if payload.delivery_mode == "syncthing":
+        notifications.notify(
+            "device_setup_required",
+            f"Syncthing setup needed for {device['name']}",
+            f"{owner_label} created this device. Add {device['roms_path']} to Syncthing, then mark the device ready in ROMmates.",
+            "devices",
+            dedupe_key=f"device:{device['id']}:setup-required",
+        )
+    if payload.clone_device_id is not None:
+        clone = library.clone_device_roster(
+            payload.clone_device_id, int(device["id"]), payload.keep_in_sync
+        )
+        with db.connect() as connection:
+            refreshed = connection.execute(
+                "SELECT * FROM devices WHERE id=?", (device["id"],)
+            ).fetchone()
+        device = {**device, **dict(refreshed), "cloned_games": clone["games"]}
     return device
+
+
+@app.post("/api/devices/{device_id}/roster-link")
+def link_device_rosters(
+    device_id: int, payload: DeviceRosterLinkRequest, request: Request
+):
+    principal = request_principal(request)
+    require_device_access(device_id, principal)
+    target_ids = sorted(set(payload.target_device_ids))
+    for target_id in target_ids:
+        require_device_access(target_id, principal)
+    return library.link_device_rosters(device_id, target_ids)
+
+
+@app.delete("/api/devices/{device_id}/roster-link")
+def unlink_device_roster(device_id: int, request: Request):
+    require_device_access(device_id, request_principal(request))
+    return library.unlink_device_roster(device_id)
 
 
 @app.put("/api/devices/{device_id}/syncthing-ready")
@@ -2072,6 +2118,8 @@ def update_device_syncthing_ready(
         device = connection.execute("SELECT * FROM devices WHERE id=?", (device_id,)).fetchone()
         if not device:
             raise HTTPException(status_code=404, detail="Device was not found")
+        if device["delivery_mode"] != "syncthing":
+            raise HTTPException(status_code=400, detail="This device uses manual downloads")
         if payload.ready and not device["owner_user_id"]:
             raise HTTPException(status_code=400, detail="Assign an owner before marking Syncthing ready")
         connection.execute(
@@ -2103,6 +2151,18 @@ def update_device_owner(device_id: int, payload: DeviceOwnerRequest, request: Re
     principal = request_principal(request)
     require_device_access(device_id, principal)
     with db.write() as connection:
+        current_device = connection.execute(
+            "SELECT roster_group_id,owner_user_id FROM devices WHERE id=?", (device_id,)
+        ).fetchone()
+        if (
+            current_device
+            and current_device["roster_group_id"]
+            and payload.owner_user_id != current_device["owner_user_id"]
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="Unlink this device's shared roster before changing its owner",
+            )
         owner = None
         if payload.owner_user_id is not None:
             owner = connection.execute(
@@ -2350,6 +2410,21 @@ def game_download_ticket(game_id: int, request: Request):
     return ticket
 
 
+@app.post("/api/devices/{device_id}/export-ticket", status_code=202)
+def device_export_ticket(device_id: int, request: Request):
+    principal = request_principal(request)
+    device = require_device_access(device_id, principal)
+    job_id = enqueue_job(
+        "device_export",
+        f"Preparing {device['name']} ROM package",
+        transfers.create_device_export_ticket,
+        device_id,
+        principal.id,
+        requested_by=principal.id,
+    )
+    return {"job_id": job_id}
+
+
 @app.get("/api/downloads/{token}")
 def download_game(token: str):
     download = transfers.resolve_download(token)
@@ -2364,6 +2439,21 @@ def download_game(token: str):
     disposition = f"attachment; filename*=UTF-8''{quote(download['filename'])}"
     return StreamingResponse(
         transfers.stream_zip(download),
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": disposition,
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@app.get("/api/device-downloads/{token}")
+def download_device_export(token: str):
+    download = transfers.resolve_device_export(token)
+    disposition = f"attachment; filename*=UTF-8''{quote(download['filename'])}"
+    return StreamingResponse(
+        transfers.stream_device_zip(download),
         media_type="application/zip",
         headers={
             "Content-Disposition": disposition,
