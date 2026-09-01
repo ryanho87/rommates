@@ -31,6 +31,7 @@ const state = {
   devices: [],
   search: "",
   platform: "",
+  libraryPlatformInitialized: false,
   duplicate: "all",
   sort: "name_asc",
   rankingOpen: false,
@@ -925,18 +926,6 @@ function gameRows(items, deviceMode = false) {
           </form>
         </td>
       </tr>` : "";
-    const assignment = !deviceMode && state.assigningId === game.id ? `
-      <tr class="inline-editor">
-        <td colspan="${deviceMode ? 8 : 10}">
-          <div class="assignment-panel">
-            <div class="assignment-head">
-              <div><h3>Include “${escapeHtml(game.display_name)}” on devices</h3><p>Selections update immediately. Apply each device when you are ready to copy or remove files.</p></div>
-              <button class="button secondary small" data-close-assignment>Close</button>
-            </div>
-            ${state.assignmentDevices.length ? `<div class="device-choices">${state.assignmentDevices.map((device) => `<label class="device-choice"><input type="checkbox" data-assignment-checkbox data-device-id="${device.id}" data-game-id="${game.id}" ${device.selected ? "checked" : ""}><span>${escapeHtml(device.name)}</span></label>`).join("")}</div>` : `<p class="meta">No device folders have been discovered. Create a device/roms directory and scan again.</p>`}
-          </div>
-        </td>
-      </tr>` : "";
     const artwork = !deviceMode && state.artworkId === game.id ? artworkPanel(game) : "";
     return `
       <tr class="game-row ${isAdmin() ? "" : "read-only-row"}">
@@ -953,8 +942,28 @@ function gameRows(items, deviceMode = false) {
           <span class="desktop-row-actions"><button class="button secondary small download-action" data-download="${game.id}" data-name="${escapeHtml(game.display_name)}">Download</button>${isAdmin() ? `<button class="button secondary small" data-rename="${game.id}">Rename</button><button class="button danger-subtle small" data-delete="${game.id}" data-name="${escapeHtml(game.display_name)}">Trash</button>` : ""}</span>
           ${mobileActionsMenu(game)}
         </td>`}
-      </tr>${editor}${assignment}${artwork}`;
+      </tr>${editor}${artwork}`;
   }).join("");
+}
+
+function deviceAssignmentPopover(items) {
+  if (!state.assigningId) return "";
+  const game = items.find((item) => item.id === state.assigningId);
+  if (!game) return "";
+  const choices = state.assignmentDevices.length
+    ? `<div class="device-choices">${state.assignmentDevices.map((device) => `<label class="device-choice"><input type="checkbox" data-assignment-checkbox data-device-id="${device.id}" data-game-id="${game.id}" ${device.selected ? "checked" : ""}><span>${escapeHtml(device.name)}</span></label>`).join("")}</div>`
+    : `<p class="meta">No device folders have been discovered. Create a device/roms directory and scan again.</p>`;
+  return `<div class="device-assignment-layer">
+    <button class="device-assignment-backdrop" type="button" data-close-assignment aria-label="Close device picker"></button>
+    <section class="device-assignment-popover" role="dialog" aria-modal="true" aria-labelledby="device-assignment-title" tabindex="-1">
+      <div class="assignment-head">
+        <div><h3 id="device-assignment-title">Choose devices</h3><p>${escapeHtml(game.display_name)}</p></div>
+        <button class="icon-button" type="button" data-close-assignment aria-label="Close device picker">×</button>
+      </div>
+      ${choices}
+      <p class="assignment-note">Selections update immediately. Apply each device when you are ready to sync.</p>
+    </section>
+  </div>`;
 }
 
 function deviceTargetState(game) {
@@ -985,7 +994,8 @@ function gamesTable(data, deviceMode = false) {
         <tbody>${gameRows(data.items, deviceMode)}</tbody>
       </table>
     </div>
-    ${infiniteFooter(data, data.total === 1 ? "game" : "games")}`;
+    ${infiniteFooter(data, data.total === 1 ? "game" : "games")}
+    ${deviceMode ? "" : deviceAssignmentPopover(data.items)}`;
 }
 
 function artworkThumb(game, interactive = true) {
@@ -1211,6 +1221,12 @@ async function renderOverview() {
 async function renderLibrary() {
   const renderVersion = beginPageRender();
   setHeading("Library", "Browse, rename, and clean the canonical collection.");
+  if (!state.libraryPlatformInitialized) {
+    state.platform = state.platforms.find((item) => item.platform.toLowerCase() === "gba")?.platform
+      || state.platforms[0]?.platform
+      || "";
+    state.libraryPlatformInitialized = true;
+  }
   const response = await getGames();
   const ranking = state.rankingOpen && state.platform
     ? await api(`/api/rankings/${encodeURIComponent(state.platform)}`)
@@ -1670,13 +1686,14 @@ function bindGameEvents(data, deviceMode) {
       state.assignmentDevices = detail.devices;
       state.editingId = null;
       await renderCurrentView();
+      view.querySelector(".device-assignment-popover")?.focus({ preventScroll: true });
     } catch (error) { toast(error.message, "error"); }
   }));
-  view.querySelector("[data-close-assignment]")?.addEventListener("click", () => {
+  view.querySelectorAll("[data-close-assignment]").forEach((button) => button.addEventListener("click", () => {
     state.assigningId = null;
     state.assignmentDevices = [];
     renderCurrentView();
-  });
+  }));
   view.querySelectorAll("[data-assignment-checkbox]").forEach((checkbox) => checkbox.addEventListener("change", async () => {
     checkbox.disabled = true;
     const deviceId = Number(checkbox.dataset.deviceId);
@@ -1690,6 +1707,7 @@ function bindGameEvents(data, deviceMode) {
       if (device) device.selected = checkbox.checked ? 1 : 0;
       toast(`${checkbox.checked ? "Included on" : "Removed from"} ${device?.name || "device"}. Apply that device to sync files.`);
       await renderCurrentView();
+      view.querySelector(`input[data-device-id="${deviceId}"]`)?.focus({ preventScroll: true });
     } catch (error) {
       checkbox.checked = !checkbox.checked;
       checkbox.disabled = false;
@@ -2949,6 +2967,7 @@ function navigateTo(viewName, options = {}, historyMode = "push") {
   state.offset = 0;
   state.search = "";
   state.platform = options.platform || "";
+  state.libraryPlatformInitialized = viewName === "library" && Object.hasOwn(options, "platform");
   state.duplicate = options.duplicate || (state.view === "duplicates" ? "exact" : "all");
   if (options.jobId) {
     state.jobReportId = options.jobId;
@@ -2992,6 +3011,12 @@ window.matchMedia("(min-width: 721px)").addEventListener("change", (event) => {
   if (event.matches) setMobileNavigation(false);
 });
 
+document.addEventListener("click", (event) => {
+  document.querySelectorAll(".mobile-actions-menu[open]").forEach((menu) => {
+    if (!menu.contains(event.target)) menu.open = false;
+  });
+});
+
 scanButton.addEventListener("click", () => startScan());
 stopJobButton.addEventListener("click", () => cancelJob(Number(stopJobButton.dataset.jobId), stopJobButton));
 refreshButton.addEventListener("click", async () => {
@@ -3000,6 +3025,20 @@ refreshButton.addEventListener("click", async () => {
 });
 
 document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    const openMenu = document.querySelector(".mobile-actions-menu[open]");
+    if (openMenu) {
+      openMenu.open = false;
+      openMenu.querySelector("summary")?.focus();
+      return;
+    }
+    if (state.assigningId) {
+      state.assigningId = null;
+      state.assignmentDevices = [];
+      renderCurrentView();
+      return;
+    }
+  }
   if (event.key === "Escape" && document.body.classList.contains("nav-open")) {
     setMobileNavigation(false);
     mobileMenuButton.focus();
