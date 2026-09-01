@@ -329,6 +329,11 @@ input[type="checkbox"] { width: 15px; height: 15px; margin: 0; accent-color: var
 .icon-button { display: grid; width: 36px; height: 36px; flex: 0 0 auto; padding: 0; place-items: center; border: 1px solid var(--border); border-radius: 50%; background: var(--surface); color: var(--text-muted); cursor: pointer; font-size: 1.2rem; line-height: 1; }
 .icon-button:hover { border-color: var(--border-strong); background: var(--accent-soft); color: var(--text); }
 .assignment-note { margin: 0; color: var(--text-faint); font-size: 0.72rem; }
+.assignment-footer { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding-top: 4px; }
+.assignment-footer .assignment-note { max-width: 44ch; }
+.assignment-footer .button { flex: 0 0 auto; }
+.device-plan-list li { display: grid; gap: 2px; }
+.device-plan-list li span { color: var(--text-muted); font-size: 0.76rem; }
 .device-choices { display: flex; flex-wrap: wrap; gap: 8px; }
 .device-choice {
   display: inline-flex;
@@ -1192,6 +1197,8 @@ dialog form { padding: 18px; }
     flex-direction: column;
   }
   .bulk-bar .bulk-actions .button { flex: 1; }
+  .assignment-footer { align-items: stretch; flex-direction: column; }
+  .assignment-footer .button { width: 100%; }
   .empty-state { min-height: 260px; padding: 32px 18px; }
   .device-strip { align-items: stretch; flex-direction: column; gap: 10px; }
   .device-summary { justify-content: flex-start; gap: 8px 14px; }

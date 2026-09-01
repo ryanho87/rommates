@@ -46,6 +46,9 @@ const state = {
   editingId: null,
   assigningId: null,
   assignmentDevices: [],
+  assignmentChangedDevices: new Set(),
+  bulkAssigning: false,
+  bulkAssignmentDeviceIds: new Set(),
   deviceId: null,
   deviceScope: "on_device",
   refreshTimer: null,
@@ -961,7 +964,10 @@ function deviceAssignmentPopover(items) {
         <button class="icon-button" type="button" data-close-assignment aria-label="Close device picker">×</button>
       </div>
       ${choices}
-      <p class="assignment-note">Selections update immediately. Apply each device when you are ready to sync.</p>
+      <div class="assignment-footer">
+        <p class="assignment-note">Selections update immediately. Applying also includes any other pending changes already staged for these devices.</p>
+        <button class="button" type="button" data-apply-assignment ${state.assignmentChangedDevices.size ? "" : "disabled"}>Review and apply${state.assignmentChangedDevices.size ? ` (${state.assignmentChangedDevices.size})` : ""}</button>
+      </div>
     </section>
   </div>`;
 }
@@ -1062,8 +1068,29 @@ function bulkBarHtml() {
   }
   const hint = offScreen
     ? `<span class="meta"> · ${offScreen} not shown by the current filters</span>`
-    : `<span class="meta"> for library cleanup</span>`;
-  return `<div class="bulk-bar"><div><strong>${count} selected</strong>${hint}</div><div class="bulk-actions"><button class="button secondary" data-clear-selection>Clear selection</button><button class="button danger" data-delete-selected>Move ${count} to trash</button></div></div>`;
+    : `<span class="meta"> ready for a bulk action</span>`;
+  const assignment = state.bulkAssigning ? bulkAssignmentPopover(count) : "";
+  return `<div class="bulk-bar"><div><strong>${count} selected</strong>${hint}</div><div class="bulk-actions"><button class="button secondary" data-clear-selection>Clear</button><button class="button" data-assign-selected>Add to devices</button><button class="button danger-subtle" data-delete-selected>Trash</button></div></div>${assignment}`;
+}
+
+function bulkAssignmentPopover(gameCount) {
+  const choices = state.devices.length
+    ? `<div class="device-choices">${state.devices.map((device) => `<label class="device-choice"><input type="checkbox" data-bulk-assignment-device="${device.id}" ${state.bulkAssignmentDeviceIds.has(device.id) ? "checked" : ""}><span>${escapeHtml(device.name)}</span></label>`).join("")}</div>`
+    : `<p class="meta">No device folders have been discovered. Create a device/roms directory and scan again.</p>`;
+  return `<div class="device-assignment-layer">
+    <button class="device-assignment-backdrop" type="button" data-close-bulk-assignment aria-label="Close device picker"></button>
+    <section class="device-assignment-popover" role="dialog" aria-modal="true" aria-labelledby="bulk-assignment-title" tabindex="-1">
+      <div class="assignment-head">
+        <div><h3 id="bulk-assignment-title">Add ${gameCount} ${gameCount === 1 ? "game" : "games"} to devices</h3><p>Choose every device that should receive this selection.</p></div>
+        <button class="icon-button" type="button" data-close-bulk-assignment aria-label="Close device picker">×</button>
+      </div>
+      ${choices}
+      <div class="assignment-footer">
+        <p class="assignment-note">You will review the complete file plan before ROMmates applies it.</p>
+        <button class="button" type="button" data-stage-bulk-devices disabled>Choose devices</button>
+      </div>
+    </section>
+  </div>`;
 }
 
 // Row selection is client-side state, so refresh just this strip instead of refetching
@@ -1083,6 +1110,30 @@ function bindBulkBarEvents() {
     if (selectAll) { selectAll.checked = false; selectAll.indeterminate = false; }
     renderBulkBar();
   });
+  view.querySelector("[data-assign-selected]")?.addEventListener("click", () => {
+    state.bulkAssigning = true;
+    state.bulkAssignmentDeviceIds.clear();
+    renderBulkBar();
+    view.querySelector(".device-assignment-popover")?.focus({ preventScroll: true });
+  });
+  view.querySelectorAll("[data-close-bulk-assignment]").forEach((button) => button.addEventListener("click", () => {
+    state.bulkAssigning = false;
+    state.bulkAssignmentDeviceIds.clear();
+    renderBulkBar();
+  }));
+  view.querySelectorAll("[data-bulk-assignment-device]").forEach((checkbox) => checkbox.addEventListener("change", () => {
+    const deviceId = Number(checkbox.dataset.bulkAssignmentDevice);
+    if (checkbox.checked) state.bulkAssignmentDeviceIds.add(deviceId);
+    else state.bulkAssignmentDeviceIds.delete(deviceId);
+    const action = view.querySelector("[data-stage-bulk-devices]");
+    if (action) {
+      action.disabled = state.bulkAssignmentDeviceIds.size === 0;
+      action.textContent = state.bulkAssignmentDeviceIds.size
+        ? `Review and apply to ${state.bulkAssignmentDeviceIds.size} ${state.bulkAssignmentDeviceIds.size === 1 ? "device" : "devices"}`
+        : "Choose devices";
+    }
+  }));
+  view.querySelector("[data-stage-bulk-devices]")?.addEventListener("click", bulkAssignSelected);
   view.querySelector("[data-delete-selected]")?.addEventListener("click", deleteSelected);
 }
 
@@ -1677,6 +1728,7 @@ function bindGameEvents(data, deviceMode) {
     if (state.assigningId === gameId) {
       state.assigningId = null;
       state.assignmentDevices = [];
+      state.assignmentChangedDevices.clear();
       await renderCurrentView();
       return;
     }
@@ -1684,6 +1736,7 @@ function bindGameEvents(data, deviceMode) {
       const detail = await api(`/api/games/${gameId}`);
       state.assigningId = gameId;
       state.assignmentDevices = detail.devices;
+      state.assignmentChangedDevices.clear();
       state.editingId = null;
       await renderCurrentView();
       view.querySelector(".device-assignment-popover")?.focus({ preventScroll: true });
@@ -1692,6 +1745,7 @@ function bindGameEvents(data, deviceMode) {
   view.querySelectorAll("[data-close-assignment]").forEach((button) => button.addEventListener("click", () => {
     state.assigningId = null;
     state.assignmentDevices = [];
+    state.assignmentChangedDevices.clear();
     renderCurrentView();
   }));
   view.querySelectorAll("[data-assignment-checkbox]").forEach((checkbox) => checkbox.addEventListener("change", async () => {
@@ -1705,6 +1759,7 @@ function bindGameEvents(data, deviceMode) {
       });
       const device = state.assignmentDevices.find((item) => item.id === deviceId);
       if (device) device.selected = checkbox.checked ? 1 : 0;
+      state.assignmentChangedDevices.add(deviceId);
       toast(`${checkbox.checked ? "Included on" : "Removed from"} ${device?.name || "device"}. Apply that device to sync files.`);
       await renderCurrentView();
       view.querySelector(`input[data-device-id="${deviceId}"]`)?.focus({ preventScroll: true });
@@ -1714,6 +1769,22 @@ function bindGameEvents(data, deviceMode) {
       toast(error.message, "error");
     }
   }));
+  view.querySelector("[data-apply-assignment]")?.addEventListener("click", async (event) => {
+    event.currentTarget.disabled = true;
+    const game = byId.get(state.assigningId);
+    const applied = await reviewAndApplyDeviceChanges(
+      [...state.assignmentChangedDevices],
+      game ? `“${game.display_name}”` : "This game",
+    );
+    if (applied) {
+      state.assigningId = null;
+      state.assignmentDevices = [];
+      state.assignmentChangedDevices.clear();
+    }
+    await refreshStatus();
+    await loadReferenceData();
+    await renderCurrentView();
+  });
   view.querySelector("[data-clear-filters]")?.addEventListener("click", () => { state.search = ""; state.platform = ""; state.duplicate = state.view === "duplicates" ? "exact" : "all"; renderCurrentView(); });
   view.querySelector("[data-scan]")?.addEventListener("click", () => startScan());
 }
@@ -1785,6 +1856,91 @@ async function deleteSelected() {
   }
   state.selectedRows.clear();
   toast(`Moved ${completed} ${completed === 1 ? "bundle" : "bundles"} to trash`);
+  await refreshStatus();
+  await loadReferenceData();
+  await renderCurrentView();
+}
+
+async function reviewAndApplyDeviceChanges(deviceIds, contextLabel) {
+  const uniqueIds = [...new Set(deviceIds.map(Number).filter(Boolean))];
+  if (!uniqueIds.length) return false;
+  let plans;
+  try {
+    plans = await Promise.all(uniqueIds.map((deviceId) => api(`/api/devices/${deviceId}/preview`)));
+  } catch (error) {
+    toast(`Could not preview device changes: ${error.message}`, "error");
+    return false;
+  }
+  const actionable = plans.filter((plan) => Number(plan.additions) || Number(plan.removals) || Number(plan.conversions));
+  if (!actionable.length) {
+    toast("Those games are already applied to the selected devices");
+    return true;
+  }
+  const rows = actionable.map((plan) => {
+    const changes = [
+      Number(plan.additions) ? `${Number(plan.additions).toLocaleString()} ${Number(plan.additions) === 1 ? "file" : "files"} to add or update` : "",
+      Number(plan.conversions) ? `${Number(plan.conversions).toLocaleString()} ${Number(plan.conversions) === 1 ? "copy" : "copies"} to convert` : "",
+      Number(plan.removals) ? `${Number(plan.removals).toLocaleString()} ${Number(plan.removals) === 1 ? "file" : "files"} to remove` : "",
+    ].filter(Boolean).join(", ");
+    return `<li><strong>${escapeHtml(plan.device.name)}</strong><span>${escapeHtml(changes)}</span></li>`;
+  }).join("");
+  const removals = actionable.reduce((total, plan) => total + Number(plan.removals || 0), 0);
+  view.querySelector(".device-assignment-layer")?.classList.add("hidden");
+  const confirmed = await confirmAction({
+    title: `Apply changes to ${actionable.length} ${actionable.length === 1 ? "device" : "devices"}?`,
+    content: `<p class="warning-copy">${escapeHtml(contextLabel)} will be included with every other pending change already staged for these devices.</p><ul class="confirm-list device-plan-list">${rows}</ul>`,
+    confirmLabel: `Apply to ${actionable.length} ${actionable.length === 1 ? "device" : "devices"}`,
+    cancelLabel: "Keep changes staged",
+    danger: removals > 0,
+  });
+  if (!confirmed) {
+    toast("Device selections saved; filesystem changes remain staged");
+    return false;
+  }
+  let completed = 0;
+  for (const plan of actionable) {
+    try {
+      await requestJob(`/api/devices/${plan.device.id}/apply`, { method: "POST" }, `Applying ${plan.device.name}`);
+      completed += 1;
+    } catch (error) {
+      toast(`Applied ${completed} of ${actionable.length} devices: ${error.message}`, "error");
+      break;
+    }
+  }
+  if (completed !== actionable.length) return false;
+  toast(`Applied device changes to ${completed} ${completed === 1 ? "device" : "devices"}`);
+  return true;
+}
+
+async function bulkAssignSelected() {
+  const gameIds = [...state.selectedRows.keys()];
+  const deviceIds = [...state.bulkAssignmentDeviceIds];
+  if (!gameIds.length || !deviceIds.length) return;
+  const action = view.querySelector("[data-stage-bulk-devices]");
+  if (action) action.disabled = true;
+  try {
+    for (const deviceId of deviceIds) {
+      for (let index = 0; index < gameIds.length; index += 1000) {
+        await api(`/api/devices/${deviceId}/selections`, {
+          method: "PUT",
+          body: JSON.stringify({ game_ids: gameIds.slice(index, index + 1000), selected: true }),
+        });
+      }
+    }
+  } catch (error) {
+    toast(`Could not stage all device selections: ${error.message}`, "error");
+    if (action) action.disabled = false;
+    return;
+  }
+  const applied = await reviewAndApplyDeviceChanges(
+    deviceIds,
+    `${gameIds.length} selected ${gameIds.length === 1 ? "game" : "games"}`,
+  );
+  if (applied) {
+    state.selectedRows.clear();
+    state.bulkAssigning = false;
+    state.bulkAssignmentDeviceIds.clear();
+  }
   await refreshStatus();
   await loadReferenceData();
   await renderCurrentView();
@@ -2981,6 +3137,9 @@ function navigateTo(viewName, options = {}, historyMode = "push") {
   state.artworkId = null;
   state.artworkDetail = null;
   state.assignmentDevices = [];
+  state.assignmentChangedDevices.clear();
+  state.bulkAssigning = false;
+  state.bulkAssignmentDeviceIds.clear();
   if (state.view !== "naming") state.namingSelected.clear();
   if (state.view !== "saves") state.saveSnapshotId = null;
   if (state.view !== "trash") state.trashSelected.clear();
@@ -3035,7 +3194,14 @@ document.addEventListener("keydown", (event) => {
     if (state.assigningId) {
       state.assigningId = null;
       state.assignmentDevices = [];
+      state.assignmentChangedDevices.clear();
       renderCurrentView();
+      return;
+    }
+    if (state.bulkAssigning) {
+      state.bulkAssigning = false;
+      state.bulkAssignmentDeviceIds.clear();
+      renderBulkBar();
       return;
     }
   }
