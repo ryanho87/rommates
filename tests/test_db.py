@@ -61,7 +61,7 @@ class DatabaseMigrationTests(unittest.TestCase):
                 versions = {row["version"] for row in upgraded.execute("SELECT version FROM schema_migrations")}
             self.assertIn("result_json", columns)
             self.assertIn("progress_json", columns)
-            self.assertEqual(versions, {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19})
+            self.assertEqual(versions, set(range(1, 21)))
             with db.connect() as upgraded:
                 tables = {
                     row["name"]
@@ -78,6 +78,67 @@ class DatabaseMigrationTests(unittest.TestCase):
             self.assertIn("device_inventory_files", tables)
             self.assertIn("idx_device_selections_game", indexes)
             self.assertIn("idx_deployments_game", indexes)
+
+    def test_member_and_device_ownership_migration_preserves_accounts_and_sessions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "accounts.db"
+            connection = sqlite3.connect(path)
+            connection.executescript(
+                """
+                CREATE TABLE users (
+                    id INTEGER PRIMARY KEY, username TEXT NOT NULL,
+                    username_normalized TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL,
+                    password_hash TEXT NOT NULL,
+                    role TEXT NOT NULL CHECK(role IN ('viewer','contributor','admin')),
+                    active INTEGER NOT NULL DEFAULT 1,
+                    must_change_password INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    last_login_at TEXT
+                );
+                CREATE TABLE auth_sessions (
+                    token_hash TEXT PRIMARY KEY,
+                    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    expires_at INTEGER NOT NULL
+                );
+                CREATE TABLE devices (
+                    id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, path TEXT NOT NULL UNIQUE,
+                    deployment_mode TEXT NOT NULL DEFAULT 'copy',
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE TABLE jobs (
+                    id INTEGER PRIMARY KEY, kind TEXT, status TEXT, detail TEXT, progress INTEGER,
+                    created_at TEXT, completed_at TEXT
+                );
+                INSERT INTO users(id,username,username_normalized,display_name,password_hash,role)
+                VALUES(7,'ryan','ryan','Ryan','hash','admin');
+                INSERT INTO auth_sessions(token_hash,user_id,expires_at) VALUES('token',7,9999999999);
+                INSERT INTO devices(id,name,path) VALUES(3,'handheld','handheld');
+                """
+            )
+            connection.commit()
+            connection.close()
+
+            db = Database(path)
+            db.initialize()
+            with db.write() as upgraded:
+                account = upgraded.execute("SELECT id,role FROM users WHERE id=7").fetchone()
+                session = upgraded.execute(
+                    "SELECT user_id FROM auth_sessions WHERE token_hash='token'"
+                ).fetchone()
+                device = upgraded.execute(
+                    "SELECT owner_user_id FROM devices WHERE id=3"
+                ).fetchone()
+                upgraded.execute(
+                    "INSERT INTO users(username,username_normalized,display_name,password_hash,role) "
+                    "VALUES('brother','brother','Brother','hash','member')"
+                )
+                foreign_key_issues = upgraded.execute("PRAGMA foreign_key_check").fetchall()
+            self.assertEqual((account["id"], account["role"]), (7, "admin"))
+            self.assertEqual(session["user_id"], 7)
+            self.assertIsNone(device["owner_user_id"])
+            self.assertEqual(foreign_key_issues, [])
 
     def test_screenscraper_ratings_are_backfilled_from_cached_metadata(self):
         with tempfile.TemporaryDirectory() as directory:

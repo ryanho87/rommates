@@ -900,7 +900,12 @@ class LibraryService:
             connection.execute(f"DELETE FROM devices WHERE name IN ({placeholders})", stale)
         return stale
 
-    def create_device(self, name: str, deployment_mode: str = "hardlink") -> dict[str, object]:
+    def create_device(
+        self,
+        name: str,
+        deployment_mode: str = "hardlink",
+        owner_user_id: int | None = None,
+    ) -> dict[str, object]:
         """Create and register a device directory without requiring a library scan."""
         device_name = name.strip()
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", device_name):
@@ -937,8 +942,8 @@ class LibraryService:
 
         with self.db.write() as connection:
             connection.execute(
-                "INSERT INTO devices(name,path,deployment_mode) VALUES(?,?,?)",
-                (device_name, device_name, deployment_mode),
+                "INSERT INTO devices(name,path,deployment_mode,owner_user_id) VALUES(?,?,?,?)",
+                (device_name, device_name, deployment_mode, owner_user_id),
             )
             row = connection.execute(
                 "SELECT * FROM devices WHERE id=last_insert_rowid()"

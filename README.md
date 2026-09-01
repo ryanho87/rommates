@@ -41,6 +41,7 @@ The MVP supports:
 - Authenticated per-game downloads, with streamed ZIP output for multi-file bundles
 - Cross-page duplicate keeper review with one confirmed batch move to recoverable Trash
 - Per-device desired game selections and previewed reconciliation
+- Per-user device ownership with member-scoped onboarding, library assignments, and apply jobs
 - Actual device-directory inventory shown in device views and on each Library game row
 - Per-game device assignment directly from the Library screen
 - Inline device status tags showing synced, pending-add, and pending-remove assignments
@@ -130,6 +131,8 @@ other sessions.
   short-lived, single-use ROM download.
 - **Contributor:** Viewer access plus resumable uploads. Completed uploads remain in the
   isolated staging directory until an administrator approves them.
+- **Member:** Viewer access plus onboarding and management of devices they own. Members can
+  select ROMs, apply their device changes, and inspect or stop only their own apply jobs.
 - **Admin:** complete access to scans, cleanup, naming, devices, saves, jobs,
   notifications, upload review, and user management.
 
@@ -370,6 +373,10 @@ For a new handheld, **Devices > Add device** creates
 handheld, then accept the share on the handheld using its top-level `Emulation/roms` directory.
 This Syncthing pairing/acceptance step is still required because ROMmates deliberately does not
 edit Syncthing's cluster configuration.
+
+Devices created by a Member are owned by that account automatically. Existing device folders
+remain administrator-only after upgrade until an administrator chooses an owner on the Devices
+page. Ownership is enforced by the API, not just hidden in the browser.
 
 Library assignments update the desired selections only. Open Devices and apply a target when you want ROMmates to change its filesystem.
 

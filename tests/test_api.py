@@ -257,6 +257,102 @@ class ApiIntegrationTests(unittest.TestCase):
         cleanup = self.client.post("/api/scan?confirm_prune=true", headers=self.headers)
         self.assertEqual(self.wait_for_job(cleanup.json()["job_id"])["status"], "complete")
 
+    def test_member_can_only_manage_owned_devices_and_jobs(self):
+        created_user = self.client.post(
+            "/api/users",
+            headers=self.headers,
+            json={
+                "username": "member-test",
+                "display_name": "Member Test",
+                "password": "member-test-password",
+                "role": "member",
+            },
+        )
+        self.assertEqual(created_user.status_code, 201, created_user.text)
+        member_id = created_user.json()["id"]
+        admin_device = self.client.post(
+            "/api/devices",
+            headers=self.headers,
+            json={"name": "admin-only-device", "deployment_mode": "hardlink"},
+        ).json()
+
+        login = self.client.post(
+            "/api/auth/login",
+            json={"username": "member-test", "password": "member-test-password"},
+        )
+        self.assertEqual(login.status_code, 200, login.text)
+        changed = self.client.post(
+            "/api/auth/password",
+            json={
+                "current_password": "member-test-password",
+                "new_password": "member-test-password-changed",
+            },
+        )
+        self.assertEqual(changed.status_code, 200, changed.text)
+        self.assertEqual(self.client.get("/api/devices").json(), [])
+
+        created_device = self.client.post(
+            "/api/devices",
+            json={"name": "member-handheld", "deployment_mode": "hardlink"},
+        )
+        self.assertEqual(created_device.status_code, 201, created_device.text)
+        owned = created_device.json()
+        self.assertEqual(owned["owner_user_id"], member_id)
+        listed = self.client.get("/api/devices").json()
+        self.assertEqual([item["name"] for item in listed], ["member-handheld"])
+        self.assertEqual(
+            self.client.get(f"/api/devices/{admin_device['id']}/preview").status_code,
+            404,
+        )
+
+        games = self.client.get("/api/games").json()["items"]
+        game_id = games[0]["id"]
+        selected = self.client.put(
+            f"/api/devices/{owned['id']}/selection",
+            json={"game_id": game_id, "selected": True},
+        )
+        self.assertEqual(selected.status_code, 200, selected.text)
+        detail = self.client.get(f"/api/games/{game_id}").json()
+        self.assertEqual([item["name"] for item in detail["devices"]], ["member-handheld"])
+        self.assertTrue(detail["devices"][0]["selected"])
+        applied = self.client.post(f"/api/devices/{owned['id']}/apply")
+        self.assertEqual(applied.status_code, 202, applied.text)
+        job_id = applied.json()["job_id"]
+        for _ in range(100):
+            own_job = self.client.get(f"/api/jobs/{job_id}")
+            self.assertEqual(own_job.status_code, 200, own_job.text)
+            if own_job.json()["status"] in {"complete", "failed", "cancelled"}:
+                break
+            time.sleep(0.02)
+        self.assertEqual(own_job.json()["status"], "complete", own_job.text)
+        self.assertEqual(own_job.json()["requested_by"], member_id)
+
+        admin_scan = self.client.post("/api/scan", headers=self.headers)
+        self.assertEqual(admin_scan.status_code, 202, admin_scan.text)
+        self.assertEqual(
+            self.client.get(f"/api/jobs/{admin_scan.json()['job_id']}").status_code,
+            404,
+        )
+        self.assertEqual(
+            self.client.put(
+                f"/api/devices/{admin_device['id']}/selection",
+                json={"game_id": game_id, "selected": True},
+            ).status_code,
+            404,
+        )
+
+        assigned = self.client.put(
+            f"/api/devices/{admin_device['id']}/owner",
+            headers=self.headers,
+            json={"owner_user_id": member_id},
+        )
+        self.assertEqual(assigned.status_code, 200, assigned.text)
+        self.assertIn(
+            "admin-only-device",
+            [item["name"] for item in self.client.get("/api/devices").json()],
+        )
+        self.client.post("/api/auth/logout")
+
     def test_syncthing_status_is_private_and_explains_unconfigured_state(self):
         self.assertEqual(self.client.get("/api/syncthing/status").status_code, 401)
         response = self.client.get("/api/syncthing/status", headers=self.headers)

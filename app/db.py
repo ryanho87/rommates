@@ -169,6 +169,7 @@ CREATE TABLE IF NOT EXISTS devices (
     name TEXT NOT NULL UNIQUE,
     path TEXT NOT NULL UNIQUE,
     deployment_mode TEXT NOT NULL DEFAULT 'copy' CHECK(deployment_mode IN ('copy','hardlink')),
+    owner_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -213,6 +214,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     progress INTEGER NOT NULL DEFAULT 0,
     result_json TEXT,
     progress_json TEXT,
+    requested_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     completed_at TEXT
 );
@@ -338,7 +340,7 @@ CREATE TABLE IF NOT EXISTS users (
     username_normalized TEXT NOT NULL UNIQUE,
     display_name TEXT NOT NULL,
     password_hash TEXT NOT NULL,
-    role TEXT NOT NULL CHECK(role IN ('viewer','contributor','admin')),
+    role TEXT NOT NULL CHECK(role IN ('viewer','contributor','member','admin')),
     active INTEGER NOT NULL DEFAULT 1,
     must_change_password INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -531,6 +533,60 @@ class Database:
                     "ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0"
                 )
             connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(19)")
+
+            # SQLite cannot alter a CHECK constraint in place. Rebuild only older
+            # user tables so the new member role can be persisted without losing
+            # accounts or their stable ids.
+            users_sql_row = connection.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='users'"
+            ).fetchone()
+            users_sql = str(users_sql_row["sql"] or "") if users_sql_row else ""
+            if "'member'" not in users_sql:
+                connection.commit()
+                connection.execute("PRAGMA foreign_keys=OFF")
+                connection.executescript(
+                    """
+                    BEGIN;
+                    CREATE TABLE users_member_migration (
+                        id INTEGER PRIMARY KEY,
+                        username TEXT NOT NULL,
+                        username_normalized TEXT NOT NULL UNIQUE,
+                        display_name TEXT NOT NULL,
+                        password_hash TEXT NOT NULL,
+                        role TEXT NOT NULL CHECK(role IN ('viewer','contributor','member','admin')),
+                        active INTEGER NOT NULL DEFAULT 1,
+                        must_change_password INTEGER NOT NULL DEFAULT 0,
+                        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        last_login_at TEXT
+                    );
+                    INSERT INTO users_member_migration(
+                        id,username,username_normalized,display_name,password_hash,role,
+                        active,must_change_password,created_at,last_login_at
+                    ) SELECT id,username,username_normalized,display_name,password_hash,role,
+                        active,must_change_password,created_at,last_login_at FROM users;
+                    DROP TABLE users;
+                    ALTER TABLE users_member_migration RENAME TO users;
+                    COMMIT;
+                    """
+                )
+                connection.execute("PRAGMA foreign_keys=ON")
+
+            device_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(devices)")
+            }
+            if "owner_user_id" not in device_columns:
+                connection.execute(
+                    "ALTER TABLE devices ADD COLUMN owner_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL"
+                )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_devices_owner ON devices(owner_user_id,name)"
+            )
+            job_columns = {row["name"] for row in connection.execute("PRAGMA table_info(jobs)")}
+            if "requested_by" not in job_columns:
+                connection.execute(
+                    "ALTER TABLE jobs ADD COLUMN requested_by INTEGER REFERENCES users(id) ON DELETE SET NULL"
+                )
+            connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(20)")
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:

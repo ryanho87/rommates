@@ -12,7 +12,7 @@ from .db import Database
 from .library import LibraryError
 
 
-ROLES = ("viewer", "contributor", "admin")
+ROLES = ("viewer", "contributor", "member", "admin")
 SESSION_SECONDS = 30 * 24 * 60 * 60
 PASSWORD_MIN_LENGTH = 12
 

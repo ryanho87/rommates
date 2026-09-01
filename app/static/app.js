@@ -29,6 +29,7 @@ const state = {
   status: null,
   platforms: [],
   devices: [],
+  users: [],
   search: "",
   platform: "",
   libraryPlatformInitialized: false,
@@ -96,7 +97,7 @@ const state = {
   uploadProgress: null,
   trashSelected: new Map(),
   principal: null,
-  permissions: { admin: false, upload: false, download: false },
+  permissions: { admin: false, manageDevices: false, upload: false, download: false },
 };
 
 const view = document.querySelector("#view");
@@ -117,12 +118,17 @@ const navBackdrop = document.querySelector("#nav-backdrop");
 const sidebarCloseButton = document.querySelector("#sidebar-close-button");
 
 function isAdmin() { return state.permissions.admin; }
+function canManageDevices() { return state.permissions.manageDevices; }
 function canUpload() { return state.permissions.upload; }
 
 function allowedViews() {
   if (state.principal?.must_change_password) return new Set();
   if (isAdmin()) return new Set(Object.keys(VIEW_ROUTES));
-  return new Set(["library", ...(canUpload() ? ["transfers"] : [])]);
+  return new Set([
+    "library",
+    ...(canManageDevices() ? ["devices"] : []),
+    ...(canUpload() ? ["transfers"] : []),
+  ]);
 }
 
 function setMobileNavigation(open) {
@@ -473,6 +479,7 @@ async function refreshStatus() {
   state.principal = state.status.user;
   state.permissions = {
     admin: state.principal?.role === "admin" && !state.principal?.must_change_password,
+    manageDevices: ["admin", "member"].includes(state.principal?.role) && !state.principal?.must_change_password,
     upload: ["admin", "contributor"].includes(state.principal?.role) && !state.principal?.must_change_password,
     download: !state.principal?.must_change_password,
   };
@@ -524,10 +531,14 @@ function scheduleStatusRefresh() {
 }
 
 async function loadReferenceData() {
-  [state.platforms, state.devices] = await Promise.all([
+  const [platforms, devices, users] = await Promise.all([
     api("/api/platforms"),
-    isAdmin() ? api("/api/devices") : Promise.resolve([]),
+    canManageDevices() ? api("/api/devices") : Promise.resolve([]),
+    isAdmin() ? api("/api/users") : Promise.resolve({ items: [] }),
   ]);
+  state.platforms = platforms;
+  state.devices = devices;
+  state.users = users.items || [];
   if (!state.deviceId && state.devices.length) state.deviceId = state.devices[0].id;
 }
 
@@ -903,12 +914,12 @@ function mobileDeviceAction(game) {
 function mobileActionsMenu(game) {
   const devices = game.devices || [];
   const pending = devices.some((device) => device.state === "pending_add" || device.state === "pending_remove");
-  const deviceAction = isAdmin() ? mobileDeviceAction(game) : "";
+  const deviceAction = canManageDevices() ? mobileDeviceAction(game) : "";
   const cleanupActions = isAdmin() ? `
     <button class="button secondary small" data-rename="${game.id}">Rename</button>
     <button class="button danger-subtle small" data-delete="${game.id}" data-name="${escapeHtml(game.display_name)}">Trash</button>` : "";
   return `<details class="mobile-actions-menu ${devices.length ? "has-devices" : ""} ${pending ? "pending" : ""}">
-    <summary aria-label="Actions for ${escapeHtml(game.display_name)}"><span aria-hidden="true">•••</span>${isAdmin() && devices.length ? `<span class="mobile-menu-count">${devices.length}</span>` : ""}</summary>
+    <summary aria-label="Actions for ${escapeHtml(game.display_name)}"><span aria-hidden="true">•••</span>${canManageDevices() && devices.length ? `<span class="mobile-menu-count">${devices.length}</span>` : ""}</summary>
     <div>
       ${deviceAction}
       <button class="button secondary small" data-download="${game.id}" data-name="${escapeHtml(game.display_name)}">Download</button>
@@ -919,7 +930,7 @@ function mobileActionsMenu(game) {
 
 function gameRows(items, deviceMode = false) {
   return items.map((game) => {
-    const checked = isAdmin() && (deviceMode ? game.selected : state.selectedRows.has(game.id));
+    const checked = canManageDevices() && (deviceMode ? game.selected : state.selectedRows.has(game.id));
     const editor = state.editingId === game.id ? `
       <tr class="inline-editor">
         <td colspan="${deviceMode ? 8 : 10}">
@@ -933,8 +944,8 @@ function gameRows(items, deviceMode = false) {
       </tr>` : "";
     const artwork = !deviceMode && state.artworkId === game.id ? artworkPanel(game) : "";
     return `
-      <tr class="game-row ${isAdmin() ? "" : "read-only-row"}">
-        <td class="checkbox-cell">${isAdmin() ? `<input type="checkbox" aria-label="Select ${escapeHtml(game.display_name)}" data-${deviceMode ? "device" : "row"}-select="${game.id}" ${checked ? "checked" : ""}>` : ""}</td>
+      <tr class="game-row ${canManageDevices() ? "" : "read-only-row"}">
+        <td class="checkbox-cell">${canManageDevices() ? `<input type="checkbox" aria-label="Select ${escapeHtml(game.display_name)}" data-${deviceMode ? "device" : "row"}-select="${game.id}" ${checked ? "checked" : ""}>` : ""}</td>
         <td class="artwork-cell">${artworkThumb(game, !deviceMode && (isAdmin() || Number(game.artwork_count) > 0))}</td>
         <td class="name-cell" title="${escapeHtml(game.primary_relpath)}"><strong>${escapeHtml(game.display_name)}</strong><span class="path-line">${escapeHtml(game.primary_relpath)}</span>${mobileGameMeta(game)}</td>
         <td class="platform-cell">${escapeHtml(game.platform)}</td>
@@ -942,7 +953,7 @@ function gameRows(items, deviceMode = false) {
         ${deviceMode ? "" : `<td class="duplicate-cell">${duplicateLabel(game.duplicate_status)}</td>`}
         <td class="meta size-cell">${formatBytes(game.size)}</td>
         <td class="meta optional-column">${game.file_count} ${game.file_count === 1 ? "file" : "files"}</td>
-        <td class="meta optional-column">${deviceMode ? deviceTargetState(game) : deviceSummary(game, isAdmin())}</td>
+        <td class="meta optional-column">${deviceMode ? deviceTargetState(game) : deviceSummary(game, canManageDevices())}</td>
         ${deviceMode ? "" : `<td class="nowrap actions-cell">
           <span class="desktop-row-actions"><button class="button secondary small download-action" data-download="${game.id}" data-name="${escapeHtml(game.display_name)}">Download</button>${isAdmin() ? `<button class="button secondary small" data-rename="${game.id}">Rename</button><button class="button danger-subtle small" data-delete="${game.id}" data-name="${escapeHtml(game.display_name)}">Trash</button>` : ""}</span>
           ${mobileActionsMenu(game)}
@@ -996,7 +1007,7 @@ function gamesTable(data, deviceMode = false) {
     <div class="table-wrap library-table">
       <table>
         <thead><tr>
-          <th class="checkbox-cell">${isAdmin() ? '<input type="checkbox" aria-label="Select visible ROMs" data-select-all>' : ""}</th>
+          <th class="checkbox-cell">${canManageDevices() ? '<input type="checkbox" aria-label="Select visible ROMs" data-select-all>' : ""}</th>
           <th class="artwork-cell">Art</th><th>Filename</th><th>Platform</th><th>Rating</th>${deviceMode ? "" : "<th>Duplicate status</th>"}<th>Size</th><th class="optional-column">Bundle</th><th class="optional-column">${deviceMode ? "Target state" : "Devices"}</th>${deviceMode ? "" : "<th>Actions</th>"}
         </tr></thead>
         <tbody>${gameRows(data.items, deviceMode)}</tbody>
@@ -1059,7 +1070,7 @@ async function loadArtworkImages() {
 }
 
 function bulkBarHtml() {
-  if (!isAdmin()) return "";
+  if (!canManageDevices()) return "";
   const count = state.selectedRows.size;
   if (!count) return "";
   // Selections survive filter changes, so say plainly when some are no longer on screen.
@@ -1072,7 +1083,7 @@ function bulkBarHtml() {
     ? `<span class="meta"> · ${offScreen} not shown by the current filters</span>`
     : `<span class="meta"> ready for a bulk action</span>`;
   const assignment = state.bulkAssigning ? bulkAssignmentPopover(count) : "";
-  return `<div class="bulk-bar"><div><strong>${count} selected</strong>${hint}</div><div class="bulk-actions"><button class="button secondary" data-clear-selection>Clear</button><button class="button" data-assign-selected>Add to devices</button><button class="button danger-subtle" data-delete-selected>Trash</button></div></div>${assignment}`;
+  return `<div class="bulk-bar"><div><strong>${count} selected</strong>${hint}</div><div class="bulk-actions"><button class="button secondary" data-clear-selection>Clear</button><button class="button" data-assign-selected>Add to devices</button>${isAdmin() ? '<button class="button danger-subtle" data-delete-selected>Trash</button>' : ""}</div></div>${assignment}`;
 }
 
 function bulkAssignmentPopover(gameCount) {
@@ -2078,6 +2089,7 @@ async function renderDevices() {
     ${createdDevicePanel()}
     <div class="device-strip">
       <label class="field"><span>Target device</span><select id="device-select">${state.devices.map((item) => `<option value="${item.id}" ${item.id === device.id ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("")}</select></label>
+      ${isAdmin() ? `<label class="field"><span>Owner</span><select id="device-owner"><option value="">Administrators only</option>${state.users.filter((user) => user.active && ["member", "admin"].includes(user.role)).map((user) => `<option value="${user.id}" ${Number(device.owner_user_id) === Number(user.id) ? "selected" : ""}>${escapeHtml(user.display_name)} (${escapeHtml(user.username)})</option>`).join("")}</select></label>` : `<div class="field device-owner-summary"><span>Owner</span><strong>${escapeHtml(device.owner_display_name || "You")}</strong></div>`}
       <label class="field"><span>Deployment storage</span><select id="deployment-mode"><option value="copy" ${device.deployment_mode === "copy" ? "selected" : ""}>Independent copies</option><option value="hardlink" ${device.deployment_mode === "hardlink" ? "selected" : ""}>Prefer hardlinks</option></select></label>
       <div class="device-summary">
         ${deviceMetric(preview.hardlinked, "hardlinked", "Individual device files that share storage with their canonical library files on the NUC.")}
@@ -2119,6 +2131,22 @@ async function renderDevices() {
       await loadReferenceData();
       await renderDevices();
     } catch (error) { select.value = device.deployment_mode; select.disabled = false; toast(error.message, "error"); }
+  });
+  document.querySelector("#device-owner")?.addEventListener("change", async (event) => {
+    const select = event.currentTarget;
+    select.disabled = true;
+    try {
+      await api(`/api/devices/${device.id}/owner`, {
+        method: "PUT",
+        body: JSON.stringify({ owner_user_id: select.value ? Number(select.value) : null }),
+      });
+      toast(select.value ? "Device owner updated" : "Device returned to administrator-only access");
+      await loadReferenceData();
+      await renderDevices();
+    } catch (error) {
+      toast(error.message, "error");
+      await renderDevices();
+    }
   });
   view.querySelectorAll("[data-device-scope]").forEach((button) => button.addEventListener("click", () => {
     state.deviceScope = button.dataset.deviceScope;
@@ -2874,10 +2902,11 @@ async function renderUsers() {
   const roleCopy = {
     viewer: "Browse and download ROMs",
     contributor: "Browse, download, and submit staged uploads",
+    member: "Browse, download, and manage only their own devices",
     admin: "Full library, device, save, cleanup, and user access",
   };
   const rows = data.items.map((user) => `<tr><td class="name-cell"><strong>${escapeHtml(user.display_name)}</strong><span class="path-line">${escapeHtml(user.username)}${state.principal?.id === user.id ? " · You" : ""}</span></td><td><select data-user-role="${user.id}" aria-label="Role for ${escapeHtml(user.username)}">${data.roles.map((role) => `<option value="${role}" ${user.role === role ? "selected" : ""}>${escapeHtml(role)}</option>`).join("")}</select><span class="path-line">${escapeHtml(roleCopy[user.role] || "")}</span></td><td><label class="device-choice compact"><input type="checkbox" data-user-active="${user.id}" ${user.active ? "checked" : ""}><span>${user.active ? "Active" : "Disabled"}</span></label>${user.must_change_password ? '<span class="path-line credential-pending">Password change required</span>' : ""}</td><td class="meta">${escapeHtml(user.last_login_at || "Never")}</td><td><form class="inline-password" data-user-password-form="${user.id}"><input class="input" name="password" type="password" required minlength="12" autocomplete="new-password" placeholder="Temporary password" aria-label="Temporary password for ${escapeHtml(user.username)}"><button class="button secondary small">Reset</button></form></td></tr>`).join("");
-  setViewHtml(`<section class="user-create"><div><h2>Add account</h2><p>Set a temporary password of at least 12 characters. The new user must replace it at first login.</p></div><form class="user-create-form" id="user-create-form"><label class="field"><span>Username</span><input class="input" name="username" required maxlength="64" autocomplete="off"></label><label class="field"><span>Display name</span><input class="input" name="display_name" maxlength="100" autocomplete="off"></label><label class="field"><span>Temporary password</span><input class="input" name="password" type="password" required minlength="12" autocomplete="new-password"></label><label class="field"><span>Role</span><select name="role"><option value="viewer">Viewer</option><option value="contributor">Contributor</option><option value="admin">Admin</option></select></label><button class="button" type="submit">Create account</button></form></section><div class="section-heading"><div><h2>Accounts</h2><p>Role and status changes take effect on the next request. Password resets require another change at login.</p></div><span class="meta">${data.items.length.toLocaleString()} total</span></div><div class="table-wrap"><table><thead><tr><th>User</th><th>Role</th><th>Status</th><th>Last login</th><th>Credentials</th></tr></thead><tbody>${rows}</tbody></table></div>`);
+  setViewHtml(`<section class="user-create"><div><h2>Add account</h2><p>Set a temporary password of at least 12 characters. The new user must replace it at first login.</p></div><form class="user-create-form" id="user-create-form"><label class="field"><span>Username</span><input class="input" name="username" required maxlength="64" autocomplete="off"></label><label class="field"><span>Display name</span><input class="input" name="display_name" maxlength="100" autocomplete="off"></label><label class="field"><span>Temporary password</span><input class="input" name="password" type="password" required minlength="12" autocomplete="new-password"></label><label class="field"><span>Role</span><select name="role">${data.roles.map((role) => `<option value="${role}">${escapeHtml(role[0].toUpperCase() + role.slice(1))}</option>`).join("")}</select></label><button class="button" type="submit">Create account</button></form></section><div class="section-heading"><div><h2>Accounts</h2><p>Members can onboard and manage only devices explicitly assigned to them. Existing unassigned devices remain administrator-only.</p></div><span class="meta">${data.items.length.toLocaleString()} total</span></div><div class="table-wrap"><table><thead><tr><th>User</th><th>Role</th><th>Status</th><th>Last login</th><th>Credentials</th></tr></thead><tbody>${rows}</tbody></table></div>`);
   view.querySelector("#user-create-form")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
@@ -3335,7 +3364,7 @@ logoutButton.addEventListener("click", async () => {
   localStorage.removeItem("rommates-token");
   localStorage.removeItem("rom-manager-token");
   state.principal = null;
-  state.permissions = { admin: false, upload: false, download: false };
+  state.permissions = { admin: false, manageDevices: false, upload: false, download: false };
   document.querySelector("#account-state")?.classList.add("hidden");
   renderAuthentication();
 });

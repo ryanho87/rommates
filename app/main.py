@@ -376,13 +376,21 @@ def run_job(
             job_cancellations.pop(job_id, None)
 
 
-def enqueue_job(kind: str, detail: str, operation, *args, coalesce: bool = False) -> int:
+def enqueue_job(
+    kind: str,
+    detail: str,
+    operation,
+    *args,
+    coalesce: bool = False,
+    requested_by: int | None = None,
+) -> int:
     with db.write() as connection:
         if coalesce:
             active = connection.execute(
                 "SELECT id FROM jobs WHERE kind=? AND detail=? "
-                "AND status IN ('queued','running','paused','cancelling') ORDER BY id LIMIT 1",
-                (kind, detail),
+                "AND requested_by IS ? AND status IN ('queued','running','paused','cancelling') "
+                "ORDER BY id LIMIT 1",
+                (kind, detail, requested_by),
             ).fetchone()
             if active:
                 return active["id"]
@@ -392,8 +400,8 @@ def enqueue_job(kind: str, detail: str, operation, *args, coalesce: bool = False
         if active_count >= 25:
             raise LibraryError("Too many jobs are already queued; wait for one to finish")
         connection.execute(
-            "INSERT INTO jobs(kind,status,detail) VALUES(?,'queued',?)",
-            (kind, detail),
+            "INSERT INTO jobs(kind,status,detail,requested_by) VALUES(?,'queued',?,?)",
+            (kind, detail, requested_by),
         )
         job_id = connection.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
     cancellation = threading.Event()
@@ -417,12 +425,18 @@ def queue_scan_job() -> dict[str, object]:
     return {"job_id": job_id, "already_running": False}
 
 
-def queue_device_apply_job(device_id: int) -> dict[str, object]:
+def queue_device_apply_job(
+    device_id: int, requested_by: int | None = None
+) -> dict[str, object]:
     with db.connect() as connection:
         if not connection.execute("SELECT 1 FROM devices WHERE id=?", (device_id,)).fetchone():
             raise LibraryError("Device was not found")
     job_id = enqueue_job(
-        "device_apply", f"Applying device {device_id}", apply_device_and_rescan, device_id
+        "device_apply",
+        f"Applying device {device_id}",
+        apply_device_and_rescan,
+        device_id,
+        requested_by=requested_by,
     )
     return {"job_id": job_id}
 
@@ -646,6 +660,10 @@ class DeviceCreateRequest(BaseModel):
     deployment_mode: str = Field(default="hardlink", pattern="^(copy|hardlink)$")
 
 
+class DeviceOwnerRequest(BaseModel):
+    owner_user_id: int | None = Field(default=None, ge=1)
+
+
 class DatImportRequest(BaseModel):
     source_name: str = Field(min_length=1, max_length=255)
     platform: str = Field(min_length=1, max_length=100)
@@ -761,11 +779,11 @@ class UserCreateRequest(BaseModel):
     username: str = Field(min_length=1, max_length=64)
     display_name: str = Field(default="", max_length=100)
     password: str = Field(min_length=PASSWORD_MIN_LENGTH, max_length=1024)
-    role: str = Field(pattern="^(viewer|contributor|admin)$")
+    role: str = Field(pattern="^(viewer|contributor|member|admin)$")
 
 
 class UserUpdateRequest(BaseModel):
-    role: str | None = Field(default=None, pattern="^(viewer|contributor|admin)$")
+    role: str | None = Field(default=None, pattern="^(viewer|contributor|member|admin)$")
     active: bool | None = None
     password: str = Field(default="", max_length=1024)
 
@@ -781,6 +799,32 @@ def request_principal(request: Request) -> Principal:
     return principal
 
 
+def can_manage_devices(principal: Principal) -> bool:
+    return principal.role in {"member", "admin"}
+
+
+def require_device_access(device_id: int, principal: Principal):
+    with db.connect() as connection:
+        row = connection.execute("SELECT * FROM devices WHERE id=?", (device_id,)).fetchone()
+    if not row or (
+        principal.role != "admin"
+        and (principal.id is None or row["owner_user_id"] != principal.id)
+    ):
+        raise HTTPException(status_code=404, detail="Device was not found")
+    return row
+
+
+def require_job_access(job_id: int, principal: Principal):
+    with db.connect() as connection:
+        row = connection.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+    if not row or (
+        principal.role != "admin"
+        and (principal.id is None or row["requested_by"] != principal.id)
+    ):
+        raise HTTPException(status_code=404, detail="Job was not found")
+    return row
+
+
 def role_allows(role: str, method: str, path: str) -> bool:
     if role == "admin":
         return True
@@ -793,6 +837,26 @@ def role_allows(role: str, method: str, path: str) -> bool:
         or path.startswith("/api/rankings/")
     ):
         return True
+    if role == "member":
+        if method == "GET" and (
+            path == "/api/devices"
+            or path.startswith("/api/devices/")
+            or path.startswith("/api/jobs/")
+            or path == "/api/syncthing/status"
+        ):
+            return True
+        if method == "POST" and (
+            path == "/api/devices"
+            or (path.startswith("/api/devices/") and path.endswith("/apply"))
+            or (path.startswith("/api/jobs/") and path.endswith("/cancel"))
+        ):
+            return True
+        if (
+            method == "PUT"
+            and path.startswith("/api/devices/")
+            and not path.endswith("/owner")
+        ):
+            return True
     if method == "POST" and path.startswith("/api/games/") and path.endswith("/download-ticket"):
         return True
     if (
@@ -957,6 +1021,7 @@ def current_user(request: Request):
         "roles": list(ROLES),
         "permissions": {
             "admin": principal.role == "admin" and not principal.must_change_password,
+            "manage_devices": can_manage_devices(principal) and not principal.must_change_password,
             "upload": principal.role in {"admin", "contributor"} and not principal.must_change_password,
             "download": not principal.must_change_password,
         },
@@ -1013,15 +1078,27 @@ def status(request: Request):
         counts = connection.execute(
             "SELECT COUNT(*) AS games,COUNT(DISTINCT platform) AS platforms,COALESCE(SUM(size),0) AS bytes FROM games"
         ).fetchone()
-        devices = connection.execute("SELECT COUNT(*) AS count FROM devices").fetchone()["count"]
+        if principal.role == "admin":
+            devices = connection.execute("SELECT COUNT(*) AS count FROM devices").fetchone()["count"]
+            current_job = connection.execute(
+                "SELECT * FROM jobs ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        elif principal.role == "member" and principal.id is not None:
+            devices = connection.execute(
+                "SELECT COUNT(*) AS count FROM devices WHERE owner_user_id=?", (principal.id,)
+            ).fetchone()["count"]
+            current_job = connection.execute(
+                "SELECT * FROM jobs WHERE requested_by=? ORDER BY id DESC LIMIT 1",
+                (principal.id,),
+            ).fetchone()
+        else:
+            devices = 0
+            current_job = None
         trash = connection.execute("SELECT COUNT(*) AS count FROM trash_items").fetchone()["count"]
         duplicates = connection.execute(
             "SELECT COALESCE(SUM(item_count),0) AS count FROM "
             "(SELECT COUNT(*) AS item_count FROM games GROUP BY bundle_hash HAVING COUNT(*)>1)"
         ).fetchone()["count"]
-        current_job = connection.execute(
-            "SELECT * FROM jobs ORDER BY id DESC LIMIT 1"
-        ).fetchone()
         save_snapshots = connection.execute(
             "SELECT COUNT(*) AS count FROM save_snapshots"
         ).fetchone()["count"]
@@ -1031,7 +1108,7 @@ def status(request: Request):
         "trash": trash,
         "duplicates": duplicates,
         "save_snapshots": save_snapshots,
-        "job": job_payload(current_job) if current_job and principal.role == "admin" else None,
+        "job": job_payload(current_job) if current_job else None,
         "roots": {
             "library": str(settings.library_root) if principal.role == "admin" else "ROM library",
             "devices": str(settings.devices_root) if principal.role == "admin" else "Device library",
@@ -1048,8 +1125,28 @@ def status(request: Request):
 
 
 @app.get("/api/syncthing/status")
-def syncthing_status(refresh: bool = False):
-    return syncthing.status(refresh=refresh)
+def syncthing_status(request: Request, refresh: bool = False):
+    principal = request_principal(request)
+    payload = dict(syncthing.status(refresh=refresh))
+    if principal.role == "admin":
+        return payload
+    with db.connect() as connection:
+        owned_names = {
+            str(row["name"]).casefold()
+            for row in connection.execute(
+                "SELECT name FROM devices WHERE owner_user_id=?", (principal.id,)
+            )
+        }
+    visible = [
+        item
+        for item in payload.get("devices", [])
+        if isinstance(item, dict) and str(item.get("name") or "").casefold() in owned_names
+    ]
+    payload["devices"] = visible
+    payload["online"] = sum(1 for item in visible if item.get("connected"))
+    payload["total"] = len(visible)
+    payload.pop("local_device_id", None)
+    return payload
 
 
 @app.get("/api/dashboard")
@@ -1189,10 +1286,18 @@ def games(
     offset: int = Query(0, ge=0),
 ):
     principal = request_principal(request)
-    if principal.role != "admin" and (device_id is not None or device_scope != "all"):
-        raise HTTPException(status_code=403, detail="Administrator access is required for device views")
+    if device_id is not None:
+        if not can_manage_devices(principal):
+            raise HTTPException(status_code=403, detail="Device management access is required")
+        require_device_access(device_id, principal)
     if device_scope != "all" and device_id is None:
         raise HTTPException(status_code=400, detail="A device is required for this view")
+    def visible_device(alias: str) -> str:
+        if principal.role == "admin":
+            return "1=1"
+        if principal.role == "member" and principal.id is not None:
+            return f"{alias}.owner_user_id={int(principal.id)}"
+        return "0=1"
     present_relpaths = (
         library.device_inventory(device_id, refresh=offset == 0)
         if device_id is not None
@@ -1273,7 +1378,8 @@ def games(
         rows = connection.execute(
             f"SELECT g.*,({status_expr}) AS duplicate_status,"
             f"(SELECT COUNT(*) FROM game_files gf WHERE gf.game_id=g.id) AS file_count,"
-            f"(SELECT COUNT(*) FROM device_selections ds WHERE ds.game_id=g.id) AS device_count,"
+            f"(SELECT COUNT(*) FROM device_selections ds JOIN devices dc ON dc.id=ds.device_id "
+            f"WHERE ds.game_id=g.id AND {visible_device('dc')}) AS device_count,"
             f"(SELECT id FROM game_assets ga WHERE ga.game_id=g.id AND ga.kind='cover' LIMIT 1) AS cover_asset_id,"
             f"(SELECT COUNT(*) FROM game_assets ga WHERE ga.game_id=g.id) AS artwork_count,"
             f"gm.rating AS rating,gm.top_staff AS top_staff,({platform_rank_expr}) AS platform_rank,"
@@ -1294,14 +1400,16 @@ def games(
                 "AND (SELECT COUNT(*) FROM game_files gf WHERE gf.game_id=ds.game_id)>0 "
                 "THEN 'synced' ELSE 'pending_add' END AS state "
                 "FROM device_selections ds JOIN devices d ON d.id=ds.device_id "
-                f"WHERE ds.game_id IN ({placeholders}) ORDER BY d.name COLLATE NOCASE",
+                f"WHERE ds.game_id IN ({placeholders}) AND {visible_device('d')} "
+                "ORDER BY d.name COLLATE NOCASE",
                 game_ids,
             ).fetchall()
             removal_states = connection.execute(
                 f"SELECT DISTINCT dp.game_id,d.id AS device_id,d.name,'pending_remove' AS state "
                 "FROM deployments dp JOIN devices d ON d.id=dp.device_id "
                 "WHERE NOT EXISTS(SELECT 1 FROM device_selections ds WHERE ds.device_id=dp.device_id AND ds.game_id=dp.game_id) "
-                f"AND dp.game_id IN ({placeholders}) ORDER BY d.name COLLATE NOCASE",
+                f"AND dp.game_id IN ({placeholders}) AND {visible_device('d')} "
+                "ORDER BY d.name COLLATE NOCASE",
                 game_ids,
             ).fetchall()
             by_game: dict[int, list[dict[str, object]]] = {game_id: [] for game_id in game_ids}
@@ -1332,7 +1440,7 @@ def games(
                         "FROM game_files gf JOIN device_inventory_files dif "
                         "ON dif.relpath=gf.device_relpath "
                         "JOIN devices d ON d.id=dif.device_id "
-                        f"WHERE gf.game_id IN ({placeholders}) "
+                        f"WHERE gf.game_id IN ({placeholders}) AND {visible_device('d')} "
                         "ORDER BY d.name COLLATE NOCASE",
                         game_ids,
                     )
@@ -1392,7 +1500,7 @@ def games(
         for item in items:
             item["devices"].sort(key=lambda device: str(device["name"]).casefold())
             item["device_count"] = len(item["devices"])
-    if principal.role != "admin":
+    if not can_manage_devices(principal):
         for item in items:
             item["devices"] = []
             item["device_count"] = 0
@@ -1573,12 +1681,15 @@ def game_detail(game_id: int, request: Request):
     game, files = library.game_bundle(game_id)
     devices: list[dict[str, object]] = []
     impact = {"status": "none", "groups": 0, "files": 0, "save_files": 0, "state_files": 0, "paths": [], "content_names": []}
-    if principal.role == "admin":
+    if can_manage_devices(principal):
         with db.connect() as connection:
+            owner_filter = "" if principal.role == "admin" else "WHERE d.owner_user_id=?"
+            owner_params = [] if principal.role == "admin" else [principal.id]
             devices = [dict(row) for row in connection.execute(
                 "SELECT d.id,d.name,EXISTS(SELECT 1 FROM device_selections ds WHERE ds.device_id=d.id AND ds.game_id=?) AS selected "
-                "FROM devices d ORDER BY d.name", (game_id,)
+                f"FROM devices d {owner_filter} ORDER BY d.name", [game_id, *owner_params]
             )]
+    if principal.role == "admin":
         impact = saves.save_impacts([game_id]).get(game_id, impact)
     return {"game": game, "files": files, "devices": devices, "artwork": screenscraper.detail(game_id), "save_impact": impact}
 
@@ -1808,41 +1919,81 @@ def delete_game(game_id: int):
 
 
 @app.get("/api/devices")
-def devices():
+def devices(request: Request):
+    principal = request_principal(request)
     with db.connect() as connection:
+        owner_filter = "" if principal.role == "admin" else "WHERE d.owner_user_id=?"
+        params = [] if principal.role == "admin" else [principal.id]
         rows = connection.execute(
-            "SELECT d.*,COUNT(DISTINCT ds.game_id) AS selected_games,COUNT(DISTINCT dp.game_id) AS deployed_games "
+            "SELECT d.*,u.username AS owner_username,u.display_name AS owner_display_name,"
+            "COUNT(DISTINCT ds.game_id) AS selected_games,COUNT(DISTINCT dp.game_id) AS deployed_games "
             "FROM devices d LEFT JOIN device_selections ds ON ds.device_id=d.id "
-            "LEFT JOIN deployments dp ON dp.device_id=d.id GROUP BY d.id ORDER BY d.name COLLATE NOCASE"
+            "LEFT JOIN deployments dp ON dp.device_id=d.id "
+            "LEFT JOIN users u ON u.id=d.owner_user_id "
+            f"{owner_filter} GROUP BY d.id ORDER BY d.name COLLATE NOCASE",
+            params,
         ).fetchall()
     return [dict(row) for row in rows]
 
 
 @app.post("/api/devices", status_code=201)
-def create_device(payload: DeviceCreateRequest):
-    return library.create_device(payload.name, payload.deployment_mode)
+def create_device(payload: DeviceCreateRequest, request: Request):
+    principal = request_principal(request)
+    owner_user_id = principal.id if principal.role == "member" else None
+    return library.create_device(payload.name, payload.deployment_mode, owner_user_id)
+
+
+@app.put("/api/devices/{device_id}/owner")
+def update_device_owner(device_id: int, payload: DeviceOwnerRequest, request: Request):
+    principal = request_principal(request)
+    require_device_access(device_id, principal)
+    with db.write() as connection:
+        owner = None
+        if payload.owner_user_id is not None:
+            owner = connection.execute(
+                "SELECT id,username,display_name,role,active FROM users WHERE id=?",
+                (payload.owner_user_id,),
+            ).fetchone()
+            if not owner or not owner["active"] or owner["role"] not in {"member", "admin"}:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Choose an active member or administrator",
+                )
+        connection.execute(
+            "UPDATE devices SET owner_user_id=? WHERE id=?",
+            (payload.owner_user_id, device_id),
+        )
+    owner_label = owner["display_name"] if owner else "administrators"
+    db.activity("device", f"Assigned device {device_id} to {owner_label}")
+    return {"device_id": device_id, "owner_user_id": payload.owner_user_id}
 
 
 @app.put("/api/devices/{device_id}/selection")
-def update_selection(device_id: int, payload: SelectionRequest):
+def update_selection(device_id: int, payload: SelectionRequest, request: Request):
+    require_device_access(device_id, request_principal(request))
     library.set_selection(device_id, payload.game_id, payload.selected)
     return {"selected": payload.selected}
 
 
 @app.put("/api/devices/{device_id}/selections")
-def update_selections(device_id: int, payload: BulkSelectionRequest):
+def update_selections(device_id: int, payload: BulkSelectionRequest, request: Request):
+    require_device_access(device_id, request_principal(request))
     updated = library.set_selections(device_id, payload.game_ids, payload.selected)
     return {"selected": payload.selected, "updated": updated}
 
 
 @app.put("/api/devices/{device_id}/deployment-mode")
-def update_device_deployment_mode(device_id: int, payload: DeviceDeploymentModeRequest):
+def update_device_deployment_mode(
+    device_id: int, payload: DeviceDeploymentModeRequest, request: Request
+):
+    require_device_access(device_id, request_principal(request))
     library.set_device_deployment_mode(device_id, payload.mode)
     return {"mode": payload.mode}
 
 
 @app.get("/api/devices/{device_id}/preview")
-def device_preview(device_id: int):
+def device_preview(device_id: int, request: Request):
+    require_device_access(device_id, request_principal(request))
     with db.connect() as connection:
         device = connection.execute("SELECT * FROM devices WHERE id=?", (device_id,)).fetchone()
         if not device:
@@ -1878,8 +2029,10 @@ def device_preview(device_id: int):
 
 
 @app.post("/api/devices/{device_id}/apply", status_code=202)
-def apply_device(device_id: int):
-    return queue_device_apply_job(device_id)
+def apply_device(device_id: int, request: Request):
+    principal = request_principal(request)
+    require_device_access(device_id, principal)
+    return queue_device_apply_job(device_id, principal.id)
 
 
 @app.get("/api/trash")
@@ -2247,7 +2400,9 @@ def restore_save_snapshot(snapshot_id: int, payload: SaveRestoreRequest):
 
 
 @app.get("/api/jobs/{job_id}")
-def job(job_id: int):
+def job(job_id: int, request: Request):
+    principal = request_principal(request)
+    require_job_access(job_id, principal)
     with db.connect() as connection:
         row = connection.execute(
             "SELECT j.*,(SELECT COUNT(*) FROM job_issues i WHERE i.job_id=j.id) AS issue_count "
@@ -2275,9 +2430,11 @@ def jobs():
 @app.get("/api/jobs/{job_id}/issues")
 def job_issues(
     job_id: int,
+    request: Request,
     limit: int = Query(250, ge=1, le=1000),
     offset: int = Query(0, ge=0),
 ):
+    require_job_access(job_id, request_principal(request))
     with db.connect() as connection:
         job_row = connection.execute(
             "SELECT j.*,(SELECT COUNT(*) FROM job_issues i WHERE i.job_id=j.id) AS issue_count "
@@ -2304,7 +2461,8 @@ def job_issues(
 
 
 @app.post("/api/jobs/{job_id}/cancel", status_code=202)
-def cancel_job(job_id: int):
+def cancel_job(job_id: int, request: Request):
+    require_job_access(job_id, request_principal(request))
     try:
         return request_job_cancel(job_id)
     except LibraryError as exc:
