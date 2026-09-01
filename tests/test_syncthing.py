@@ -90,6 +90,60 @@ class SyncthingServiceTests(unittest.TestCase):
         self.assertTrue(status["checking"])
         self.assertFalse(status["available"])
 
+    def test_rescan_device_matches_device_folder_and_requests_scan(self):
+        calls = []
+
+        def fake_urlopen(request, timeout):
+            calls.append((request.get_method(), request.full_url, timeout))
+            if request.get_method() == "GET":
+                return FakeResponse(
+                    json.dumps(
+                        [
+                            {
+                                "id": "retroid-roms",
+                                "label": "Retroid Pocket 5 ROMs",
+                                "path": "/media/Emulation/devices/retroid-pocket-5/roms",
+                            }
+                        ]
+                    ).encode()
+                )
+            return FakeResponse(b"")
+
+        service = SyncthingService(self.settings())
+        with patch("app.syncthing.urlopen", side_effect=fake_urlopen):
+            result = service.rescan_device("retroid-pocket-5")
+
+        self.assertTrue(result["requested"])
+        self.assertEqual(result["folders"], [{"folder_id": "retroid-roms", "subpath": ""}])
+        self.assertEqual(calls[1][0], "POST")
+        self.assertIn("/rest/db/scan?folder=retroid-roms", calls[1][1])
+
+    def test_rescan_device_can_target_a_subpath_of_emulation_share(self):
+        def fake_urlopen(request, timeout):
+            if request.get_method() == "GET":
+                return FakeResponse(
+                    json.dumps([{"id": "emulation", "path": "/media/Emulation"}]).encode()
+                )
+            self.assertIn("sub=devices%2Fodin2%2Froms", request.full_url)
+            return FakeResponse(b"")
+
+        service = SyncthingService(self.settings(devices_root=Path("/emulation/devices")))
+        with patch("app.syncthing.urlopen", side_effect=fake_urlopen):
+            result = service.rescan_device("odin2")
+
+        self.assertTrue(result["requested"])
+        self.assertEqual(result["folders"][0]["subpath"], "devices/odin2/roms")
+
+    def test_rescan_device_is_best_effort_when_no_folder_matches(self):
+        service = SyncthingService(self.settings())
+        with patch(
+            "app.syncthing.urlopen",
+            return_value=FakeResponse(json.dumps([{"id": "saves", "path": "/saves"}]).encode()),
+        ):
+            result = service.rescan_device("odin2")
+        self.assertFalse(result["requested"])
+        self.assertIn("No Syncthing folder matched", result["error"])
+
 
 if __name__ == "__main__":
     unittest.main()

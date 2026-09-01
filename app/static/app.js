@@ -51,6 +51,8 @@ const state = {
   bulkAssignmentDeviceIds: new Set(),
   deviceId: null,
   deviceScope: "on_device",
+  deviceOnboarding: false,
+  createdDevice: null,
   refreshTimer: null,
   gamesController: null,
   // Job ids already surfaced to the user, so the poller and an awaited job do not
@@ -1952,12 +1954,93 @@ function deviceMetric(value, label, explanation) {
   return `<span class="device-metric" tabindex="0" aria-label="${escapeHtml(accessibleLabel)}" data-tooltip="${escapeHtml(explanation)}"><strong>${count}</strong> ${escapeHtml(label)} <span class="metric-info" aria-hidden="true">ⓘ</span></span>`;
 }
 
+function deviceOnboardingPanel() {
+  if (!state.deviceOnboarding) return "";
+  return `<section class="device-onboarding" aria-labelledby="device-onboarding-title">
+    <div class="device-onboarding-copy">
+      <span class="eyebrow">New handheld</span>
+      <h2 id="device-onboarding-title">Create its ROM workspace</h2>
+      <p>ROMmates will create and register a device folder immediately. No library scan is required.</p>
+    </div>
+    <form class="device-onboarding-form" data-device-onboarding-form>
+      <label class="field"><span>Device folder name</span><input class="input" name="name" placeholder="retroid-pocket-6" autocomplete="off" autocapitalize="none" maxlength="64" required><small>Letters, numbers, dots, dashes, and underscores.</small></label>
+      <label class="field"><span>Deployment storage</span><select name="deployment_mode"><option value="hardlink">Prefer hardlinks</option><option value="copy">Independent copies</option></select></label>
+      <div class="device-path-preview"><span>ROM folder</span><code data-device-path-preview>devices/new-device/roms</code></div>
+      <div class="device-onboarding-actions"><button class="button secondary" type="button" data-cancel-device-onboarding>Cancel</button><button class="button" type="submit">Create device</button></div>
+    </form>
+  </section>`;
+}
+
+function createdDevicePanel() {
+  const device = state.createdDevice;
+  if (!device) return "";
+  return `<section class="device-created" aria-labelledby="device-created-title">
+    <div><span class="badge unique">Folder ready</span><h2 id="device-created-title">${escapeHtml(device.name)} is ready in ROMmates</h2><p>Next, add this folder in Syncthing and share it with the new handheld. On the handheld, accept the share and point it at that device's top-level <code>Emulation/roms</code> directory.</p></div>
+    <div class="device-created-path"><span>Syncthing folder path on the ROMmates host</span><code>${escapeHtml(device.roms_path)}</code><button class="button secondary small" type="button" data-copy-device-path="${escapeHtml(device.roms_path)}">Copy path</button></div>
+    <button class="icon-button" type="button" data-dismiss-created-device aria-label="Dismiss onboarding instructions">×</button>
+  </section>`;
+}
+
+function bindDeviceOnboarding() {
+  view.querySelectorAll("[data-new-device]").forEach((button) => button.addEventListener("click", () => {
+    state.deviceOnboarding = true;
+    renderDevices();
+  }));
+  view.querySelector("[data-cancel-device-onboarding]")?.addEventListener("click", () => {
+    state.deviceOnboarding = false;
+    renderDevices();
+  });
+  const form = view.querySelector("[data-device-onboarding-form]");
+  const input = form?.elements.name;
+  const preview = view.querySelector("[data-device-path-preview]");
+  input?.addEventListener("input", () => {
+    const slug = input.value.trim().toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9._-]/g, "").replace(/-+/g, "-");
+    if (preview) preview.textContent = `devices/${slug || "new-device"}/roms`;
+  });
+  form?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const submit = form.querySelector('[type="submit"]');
+    const slug = input.value.trim().toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9._-]/g, "").replace(/-+/g, "-");
+    if (!slug) return toast("Enter a device name", "error");
+    submit.disabled = true;
+    try {
+      const created = await api("/api/devices", {
+        method: "POST",
+        body: JSON.stringify({ name: slug, deployment_mode: form.elements.deployment_mode.value }),
+      });
+      state.deviceOnboarding = false;
+      state.createdDevice = created;
+      await loadReferenceData();
+      state.deviceId = created.id;
+      state.deviceScope = "all";
+      toast(`${created.name} is ready. Add its ROM path to Syncthing next.`);
+      await renderDevices();
+    } catch (error) {
+      submit.disabled = false;
+      toast(error.message, "error");
+    }
+  });
+  view.querySelector("[data-dismiss-created-device]")?.addEventListener("click", () => {
+    state.createdDevice = null;
+    renderDevices();
+  });
+  view.querySelector("[data-copy-device-path]")?.addEventListener("click", async (event) => {
+    try {
+      await navigator.clipboard.writeText(event.currentTarget.dataset.copyDevicePath);
+      toast("Device ROM path copied");
+    } catch (_) {
+      toast("Press and hold the path to copy it", "error");
+    }
+  });
+}
+
 async function renderDevices() {
   const renderVersion = beginPageRender();
   setHeading("Devices", "See what is present now, then choose what changes next.");
   if (!state.devices.length) {
-    setViewHtml(`<div class="empty-state"><div><h2>No device folders found</h2><p>Create a directory such as <code>/devices/retroid/roms</code>, then scan the library. Device folders are discovered automatically.</p><button class="button" data-scan>Scan again</button></div></div>`);
-    view.querySelector("[data-scan]")?.addEventListener("click", () => startScan());
+    state.deviceOnboarding = true;
+    setViewHtml(deviceOnboardingPanel());
+    bindDeviceOnboarding();
     return;
   }
   const device = state.devices.find((item) => item.id === Number(state.deviceId)) || state.devices[0];
@@ -1990,6 +2073,9 @@ async function renderDevices() {
     table = `<div class="empty-state device-empty-state"><div><h2>${escapeHtml(device.name)} is up to date</h2><p>The desired selection matches the ROMs currently present in its device directory.</p></div></div>`;
   }
   setViewHtml(`
+    <div class="device-page-actions"><button class="button secondary" type="button" data-new-device>＋ Add device</button></div>
+    ${deviceOnboardingPanel()}
+    ${createdDevicePanel()}
     <div class="device-strip">
       <label class="field"><span>Target device</span><select id="device-select">${state.devices.map((item) => `<option value="${item.id}" ${item.id === device.id ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("")}</select></label>
       <label class="field"><span>Deployment storage</span><select id="deployment-mode"><option value="copy" ${device.deployment_mode === "copy" ? "selected" : ""}>Independent copies</option><option value="hardlink" ${device.deployment_mode === "hardlink" ? "selected" : ""}>Prefer hardlinks</option></select></label>
@@ -2014,6 +2100,7 @@ async function renderDevices() {
     ${inventory.unmatched_files ? `<p class="device-inventory-note">${deviceMetric(inventory.unmatched_files, inventory.unmatched_files === 1 ? "file does not match a library bundle" : "files do not match library bundles", "These physical files exist in the device directory, but ROMmates cannot associate their paths with games in the current library index.")}</p>` : ""}
     ${libraryToolbar(false, platformItems, platformCountSuffix)}${table}`);
   bindFilters(renderDevices);
+  bindDeviceOnboarding();
   document.querySelector("#device-select").addEventListener("change", (event) => {
     state.deviceId = Number(event.target.value);
     state.deviceScope = "on_device";
@@ -2073,7 +2160,9 @@ async function renderDevices() {
     if (!confirmed) return;
     try {
       const result = await requestJob(`/api/devices/${device.id}/apply`, { method: "POST" }, `Applying ${device.name}`);
-      toast(`Applied ${device.name}: ${result.linked} linked, ${result.converted} converted, ${result.copied} copied, ${result.removed} removed${result.link_fallbacks ? `, ${result.link_fallbacks} link fallbacks` : ""}`);
+      const sync = result.syncthing_rescan;
+      const syncDetail = sync?.requested ? "; Syncthing rescan requested" : sync?.error ? `; Syncthing rescan skipped (${sync.error})` : "";
+      toast(`Applied ${device.name}: ${result.linked} linked, ${result.converted} converted, ${result.copied} copied, ${result.removed} removed${result.link_fallbacks ? `, ${result.link_fallbacks} link fallbacks` : ""}${syncDetail}`);
       await loadReferenceData();
       await renderDevices();
     } catch (error) { toast(error.message, "error"); }

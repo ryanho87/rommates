@@ -75,7 +75,9 @@ Emulation/
 └── .rommates-trash/
 ```
 
-Every direct child of `devices` containing a `roms` directory is discovered as a device during a library scan.
+Every direct child of `devices` containing a `roms` directory is discovered during a library
+scan. Administrators can also use **Devices > Add device** to create and register that folder
+immediately from a phone, without waiting for a scan.
 
 ## Deploy with Docker Compose
 
@@ -202,9 +204,12 @@ Add these patterns to the Syncthing folder ignore list as another layer of prote
 ## Syncthing device presence
 
 ROMmates can show the live connection state of every device configured on the NUC's
-Syncthing instance. The integration is read-only and cached: ROMmates requests fixed status
-endpoints, never sends Syncthing configuration changes, and never exposes the Syncthing API
-key to the browser.
+Syncthing instance. Status is cached, and the API key is never exposed to the browser.
+After a successful device apply, ROMmates also asks Syncthing to rescan the matching device
+folder. It recognizes a dedicated device ROM folder or a parent `Emulation`/`devices` share;
+if no folder matches or Syncthing is unavailable, the completed deployment remains successful
+and the job result explains why the rescan was skipped. ROMmates does not change Syncthing's
+folder or device configuration.
 
 Create or copy an API key from **Syncthing > Actions > Settings > General > API Key**, then
 set these values in ROMmates' `.env`:
@@ -359,6 +364,12 @@ You can build the desired set in either direction:
 
 - **Library:** Find a game, select its device count, and choose every device that should include it.
 - **Devices:** Choose one device and select or unselect many games, then review and apply its pending changes.
+
+For a new handheld, **Devices > Add device** creates
+`/emulation/devices/{device}/roms`. Add that host path as a Syncthing folder, share it with the
+handheld, then accept the share on the handheld using its top-level `Emulation/roms` directory.
+This Syncthing pairing/acceptance step is still required because ROMmates deliberately does not
+edit Syncthing's cluster configuration.
 
 Library assignments update the desired selections only. Open Devices and apply a target when you want ROMmates to change its filesystem.
 

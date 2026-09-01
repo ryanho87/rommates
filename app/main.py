@@ -150,11 +150,18 @@ def job_result_detail(kind: str, result: object, fallback: str) -> str:
             f"{result.get('trashed', 0)} bundles to trash"
         )
     if kind == "device_apply":
-        return (
+        summary = (
             f"Linked {result.get('linked', 0)}, converted {result.get('converted', 0)}, "
             f"copied {result.get('copied', 0)}, removed {result.get('removed', 0)}, "
             f"left {result.get('unchanged', 0)} unchanged"
         )
+        rescan = result.get("syncthing_rescan")
+        if isinstance(rescan, dict):
+            if rescan.get("requested"):
+                summary += "; requested Syncthing rescan"
+            elif rescan.get("error"):
+                summary += f"; Syncthing rescan skipped: {rescan['error']}"
+        return summary
     if kind == "save_snapshot":
         if result.get("unchanged"):
             return f"Save files unchanged; retained snapshot #{result.get('snapshot_id')}"
@@ -415,9 +422,35 @@ def queue_device_apply_job(device_id: int) -> dict[str, object]:
         if not connection.execute("SELECT 1 FROM devices WHERE id=?", (device_id,)).fetchone():
             raise LibraryError("Device was not found")
     job_id = enqueue_job(
-        "device_apply", f"Applying device {device_id}", library.apply_device, device_id
+        "device_apply", f"Applying device {device_id}", apply_device_and_rescan, device_id
     )
     return {"job_id": job_id}
+
+
+def apply_device_and_rescan(
+    device_id: int, cancel_check=None
+) -> dict[str, object]:
+    result: dict[str, object] = dict(library.apply_device(device_id, cancel_check=cancel_check))
+    with db.connect() as connection:
+        device = connection.execute("SELECT name FROM devices WHERE id=?", (device_id,)).fetchone()
+    if device:
+        result["syncthing_rescan"] = syncthing.rescan_device(device["name"])
+    return result
+
+
+def apply_reviewed_device_and_rescan(
+    device_id: int, preview_token: str, cancel_check=None
+) -> dict[str, object]:
+    result = dict(
+        mcp_service.execute_reviewed_device_apply(
+            device_id, preview_token, cancel_check=cancel_check
+        )
+    )
+    with db.connect() as connection:
+        device = connection.execute("SELECT name FROM devices WHERE id=?", (device_id,)).fetchone()
+    if device:
+        result["syncthing_rescan"] = syncthing.rescan_device(device["name"])
+    return result
 
 
 def queue_reviewed_device_apply_job(device_id: int, preview_token: str) -> dict[str, object]:
@@ -427,7 +460,7 @@ def queue_reviewed_device_apply_job(device_id: int, preview_token: str) -> dict[
     job_id = enqueue_job(
         "device_apply",
         f"Applying reviewed MCP plan for device {device_id}",
-        mcp_service.execute_reviewed_device_apply,
+        apply_reviewed_device_and_rescan,
         device_id,
         preview_token,
     )
@@ -606,6 +639,11 @@ class BulkSelectionRequest(BaseModel):
 
 class DeviceDeploymentModeRequest(BaseModel):
     mode: str = Field(pattern="^(copy|hardlink)$")
+
+
+class DeviceCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=64)
+    deployment_mode: str = Field(default="hardlink", pattern="^(copy|hardlink)$")
 
 
 class DatImportRequest(BaseModel):
@@ -1778,6 +1816,11 @@ def devices():
             "LEFT JOIN deployments dp ON dp.device_id=d.id GROUP BY d.id ORDER BY d.name COLLATE NOCASE"
         ).fetchall()
     return [dict(row) for row in rows]
+
+
+@app.post("/api/devices", status_code=201)
+def create_device(payload: DeviceCreateRequest):
+    return library.create_device(payload.name, payload.deployment_mode)
 
 
 @app.put("/api/devices/{device_id}/selection")

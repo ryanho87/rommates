@@ -266,6 +266,26 @@ class ApiIntegrationTests(unittest.TestCase):
         self.assertFalse(payload["available"])
         self.assertEqual(payload["devices"], [])
 
+    def test_create_device_registers_it_without_a_library_scan(self):
+        unauthorized = self.client.post(
+            "/api/devices", json={"name": "zz-new-device", "deployment_mode": "hardlink"}
+        )
+        self.assertEqual(unauthorized.status_code, 401)
+
+        response = self.client.post(
+            "/api/devices",
+            headers=self.headers,
+            json={"name": "zz-new-device", "deployment_mode": "hardlink"},
+        )
+        self.assertEqual(response.status_code, 201, response.text)
+        created = response.json()
+        self.assertEqual(created["name"], "zz-new-device")
+        self.assertEqual(created["relative_path"], "devices/zz-new-device/roms")
+        self.assertTrue((self.root / "devices/zz-new-device/roms").is_dir())
+
+        listed = self.client.get("/api/devices", headers=self.headers).json()
+        self.assertIn("zz-new-device", [device["name"] for device in listed])
+
     def test_upload_resumes_finalizes_and_downloads_without_bearer_token(self):
         manifest = {
             "platform": "gba",

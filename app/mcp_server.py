@@ -347,7 +347,7 @@ class RommatesMCPService:
         return {**result, "reviewed_preview": preview}
 
     def execute_reviewed_device_apply(
-        self, device_id: int, preview_token: str
+        self, device_id: int, preview_token: str, cancel_check=None
     ) -> dict[str, object]:
         """Revalidate a reviewed plan inside the serialized filesystem worker."""
         preview = self._device_preview(device_id)
@@ -355,7 +355,7 @@ class RommatesMCPService:
             raise LibraryError(
                 "The device plan changed while the job was queued. Review and apply it again."
             )
-        return self.library.apply_device(device_id)
+        return self.library.apply_device(device_id, cancel_check=cancel_check)
 
     def stop_job(self, job_id: int) -> dict[str, object]:
         """Request cooperative cancellation of a queued or cancellable background job."""

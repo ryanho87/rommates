@@ -900,6 +900,56 @@ class LibraryService:
             connection.execute(f"DELETE FROM devices WHERE name IN ({placeholders})", stale)
         return stale
 
+    def create_device(self, name: str, deployment_mode: str = "hardlink") -> dict[str, object]:
+        """Create and register a device directory without requiring a library scan."""
+        device_name = name.strip()
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", device_name):
+            raise LibraryError(
+                "Device names must be 1 to 64 characters using letters, numbers, dots, dashes, or underscores"
+            )
+        if device_name in {".", ".."}:
+            raise LibraryError("Choose a different device name")
+        if deployment_mode not in {"copy", "hardlink"}:
+            raise LibraryError("Deployment mode must be copy or hardlink")
+
+        root = self.settings.devices_root.resolve()
+        root.mkdir(parents=True, exist_ok=True)
+        device_root = _inside(root, root / device_name)
+        if device_root.is_symlink():
+            raise LibraryError("Device folders cannot be symbolic links")
+        if device_root.exists() and not device_root.is_dir():
+            raise LibraryError("A file already uses that device name")
+
+        with self.db.connect() as connection:
+            existing = connection.execute(
+                "SELECT id FROM devices WHERE name=? OR path=?", (device_name, device_name)
+            ).fetchone()
+        if existing:
+            raise LibraryError("A device with that name already exists")
+
+        roms_root = device_root / "roms"
+        try:
+            roms_root.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise LibraryError(f"Could not create the device folder: {exc}") from exc
+        if roms_root.is_symlink() or not roms_root.is_dir():
+            raise LibraryError("The device ROM path is not a regular directory")
+
+        with self.db.write() as connection:
+            connection.execute(
+                "INSERT INTO devices(name,path,deployment_mode) VALUES(?,?,?)",
+                (device_name, device_name, deployment_mode),
+            )
+            row = connection.execute(
+                "SELECT * FROM devices WHERE id=last_insert_rowid()"
+            ).fetchone()
+        self.db.activity("device", f"Created device {device_name}")
+        return {
+            **dict(row),
+            "roms_path": str(roms_root),
+            "relative_path": f"devices/{device_name}/roms",
+        }
+
     def scan(
         self,
         force_prune: bool = False,

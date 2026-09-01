@@ -521,6 +521,44 @@ input[type="checkbox"] { width: 15px; height: 15px; margin: 0; accent-color: var
 .empty-state p { max-width: 52ch; margin: 0 0 16px; color: var(--text-muted); }
 
 .device-strip { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 12px; }
+.device-page-actions { display: flex; justify-content: flex-end; margin-bottom: 10px; }
+.device-onboarding {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.65fr) minmax(460px, 1.35fr);
+  gap: 28px;
+  margin-bottom: 14px;
+  padding: 20px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow);
+}
+.device-onboarding-copy { align-self: center; }
+.device-onboarding-copy .eyebrow { color: var(--accent); font-size: 0.68rem; font-weight: 750; letter-spacing: 0.08em; text-transform: uppercase; }
+.device-onboarding-copy h2, .device-created h2 { margin: 5px 0 6px; font-size: 1rem; }
+.device-onboarding-copy p, .device-created p { max-width: 60ch; margin: 0; color: var(--text-muted); font-size: 0.78rem; line-height: 1.5; }
+.device-onboarding-form { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(170px, 0.6fr); gap: 12px; }
+.device-onboarding-form .field small { margin-top: 3px; color: var(--text-faint); font-size: 0.65rem; }
+.device-path-preview { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; min-width: 0; color: var(--text-muted); font-size: 0.7rem; }
+.device-path-preview code { overflow: hidden; color: var(--text); text-overflow: ellipsis; white-space: nowrap; }
+.device-onboarding-actions { grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: 8px; }
+.device-created {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(300px, auto);
+  gap: 18px;
+  align-items: center;
+  margin-bottom: 14px;
+  padding: 15px 52px 15px 16px;
+  border: 1px solid color-mix(in oklch, var(--success) 42%, var(--border));
+  border-radius: var(--radius-md);
+  background: color-mix(in oklch, var(--success) 8%, var(--surface));
+}
+.device-created > .icon-button { position: absolute; top: 9px; right: 9px; }
+.device-created-path { display: grid; gap: 5px; min-width: 0; }
+.device-created-path span { color: var(--text-muted); font-size: 0.68rem; }
+.device-created-path code { overflow: hidden; color: var(--text); font-size: 0.72rem; text-overflow: ellipsis; white-space: nowrap; }
+.device-created-path .button { justify-self: start; }
 .device-summary { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 16px; color: var(--text-muted); font-size: 0.8rem; }
 .device-summary strong { color: var(--text); }
 .device-metric { position: relative; display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; cursor: help; }
@@ -1200,6 +1238,13 @@ dialog form { padding: 18px; }
   .assignment-footer { align-items: stretch; flex-direction: column; }
   .assignment-footer .button { width: 100%; }
   .empty-state { min-height: 260px; padding: 32px 18px; }
+  .device-page-actions .button { width: 100%; }
+  .device-onboarding { grid-template-columns: 1fr; gap: 16px; padding: 16px 14px; }
+  .device-onboarding-form { grid-template-columns: 1fr; }
+  .device-onboarding-form > * { grid-column: 1; }
+  .device-onboarding-actions .button { flex: 1; }
+  .device-created { grid-template-columns: 1fr; gap: 14px; padding: 15px 46px 15px 14px; }
+  .device-created-path code { white-space: normal; overflow-wrap: anywhere; }
   .device-strip { align-items: stretch; flex-direction: column; gap: 10px; }
   .device-summary { justify-content: flex-start; gap: 8px 14px; }
   .device-scope, .save-tabs, .artwork-scope-tabs { display: flex; max-width: 100%; overflow-x: auto; }

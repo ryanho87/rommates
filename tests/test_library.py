@@ -62,6 +62,26 @@ class LibraryServiceTests(unittest.TestCase):
         with self.db.connect() as connection:
             return connection.execute("SELECT id FROM games WHERE display_name=?", (name,)).fetchone()["id"]
 
+    def test_create_device_makes_roms_directory_and_registers_immediately(self):
+        created = self.service.create_device("retroid-pocket-6", "hardlink")
+
+        self.assertEqual(created["name"], "retroid-pocket-6")
+        self.assertEqual(created["deployment_mode"], "hardlink")
+        self.assertTrue((self.devices / "retroid-pocket-6" / "roms").is_dir())
+        with self.db.connect() as connection:
+            row = connection.execute(
+                "SELECT name,path FROM devices WHERE id=?", (created["id"],)
+            ).fetchone()
+        self.assertEqual(dict(row), {"name": "retroid-pocket-6", "path": "retroid-pocket-6"})
+
+    def test_create_device_rejects_unsafe_and_duplicate_names(self):
+        for unsafe in ("../outside", "nested/device", "device name", ".hidden"):
+            with self.subTest(unsafe=unsafe), self.assertRaises(LibraryError):
+                self.service.create_device(unsafe)
+        self.service.create_device("odin2")
+        with self.assertRaises(LibraryError):
+            self.service.create_device("odin2")
+
     def test_name_normalization_removes_release_tags(self):
         self.assertEqual(normalize_name("Final.Fantasy_VII (USA) [Rev 1].chd"), "final fantasy vii")
 
