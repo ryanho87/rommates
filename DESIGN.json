@@ -1,0 +1,210 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-09-01T20:54:32Z",
+  "title": "Design System: ROMmates",
+  "extensions": {
+    "colorMeta": {
+      "primary": {
+        "role": "primary",
+        "displayName": "Library Violet",
+        "tonalRamp": ["oklch(15% 0.05 286)", "oklch(25% 0.08 286)", "oklch(35% 0.11 286)", "oklch(45% 0.15 286)", "oklch(55% 0.19 286)", "oklch(68% 0.16 286)", "oklch(82% 0.10 286)", "oklch(94% 0.045 286)"]
+      },
+      "primary-hover": {
+        "role": "primary",
+        "displayName": "Pressed Library Violet",
+        "tonalRamp": ["oklch(15% 0.05 286)", "oklch(25% 0.08 286)", "oklch(35% 0.11 286)", "oklch(45% 0.15 286)", "oklch(55% 0.19 286)", "oklch(68% 0.16 286)", "oklch(82% 0.10 286)", "oklch(94% 0.045 286)"]
+      },
+      "primary-soft": {
+        "role": "primary",
+        "displayName": "Violet Wash",
+        "tonalRamp": ["oklch(15% 0.05 286)", "oklch(25% 0.08 286)", "oklch(35% 0.11 286)", "oklch(45% 0.15 286)", "oklch(55% 0.19 286)", "oklch(68% 0.16 286)", "oklch(82% 0.10 286)", "oklch(94% 0.045 286)"]
+      },
+      "on-primary": {
+        "role": "neutral",
+        "displayName": "Clean Cartridge Label",
+        "tonalRamp": ["oklch(15% 0.01 285)", "oklch(28% 0.01 285)", "oklch(42% 0.01 285)", "oklch(57% 0.01 285)", "oklch(70% 0.008 285)", "oklch(82% 0.007 285)", "oklch(91% 0.006 285)", "oklch(98% 0.005 285)"]
+      },
+      "success": {
+        "role": "secondary",
+        "displayName": "Verified Green",
+        "tonalRamp": ["oklch(15% 0.04 150)", "oklch(25% 0.06 150)", "oklch(35% 0.09 150)", "oklch(46% 0.12 150)", "oklch(58% 0.13 150)", "oklch(73% 0.13 150)", "oklch(84% 0.08 150)", "oklch(94% 0.035 150)"]
+      },
+      "success-soft": {
+        "role": "secondary",
+        "displayName": "Verified Green Wash",
+        "tonalRamp": ["oklch(15% 0.04 150)", "oklch(25% 0.06 150)", "oklch(35% 0.09 150)", "oklch(46% 0.12 150)", "oklch(58% 0.13 150)", "oklch(73% 0.13 150)", "oklch(84% 0.08 150)", "oklch(94% 0.035 150)"]
+      },
+      "warning": {
+        "role": "secondary",
+        "displayName": "Review Amber",
+        "tonalRamp": ["oklch(15% 0.04 75)", "oklch(25% 0.06 75)", "oklch(36% 0.09 75)", "oklch(52% 0.13 75)", "oklch(65% 0.14 75)", "oklch(78% 0.13 75)", "oklch(86% 0.09 75)", "oklch(94% 0.05 75)"]
+      },
+      "warning-soft": {
+        "role": "secondary",
+        "displayName": "Review Amber Wash",
+        "tonalRamp": ["oklch(15% 0.04 75)", "oklch(25% 0.06 75)", "oklch(36% 0.09 75)", "oklch(52% 0.13 75)", "oklch(65% 0.14 75)", "oklch(78% 0.13 75)", "oklch(86% 0.09 75)", "oklch(94% 0.05 75)"]
+      },
+      "danger": {
+        "role": "secondary",
+        "displayName": "Recovery Red",
+        "tonalRamp": ["oklch(15% 0.05 25)", "oklch(25% 0.08 25)", "oklch(36% 0.12 25)", "oklch(52% 0.18 25)", "oklch(63% 0.18 25)", "oklch(72% 0.17 25)", "oklch(84% 0.10 25)", "oklch(94% 0.045 25)"]
+      },
+      "danger-soft": {
+        "role": "secondary",
+        "displayName": "Recovery Red Wash",
+        "tonalRamp": ["oklch(15% 0.05 25)", "oklch(25% 0.08 25)", "oklch(36% 0.12 25)", "oklch(52% 0.18 25)", "oklch(63% 0.18 25)", "oklch(72% 0.17 25)", "oklch(84% 0.10 25)", "oklch(94% 0.045 25)"]
+      },
+      "canvas-light": {"role": "neutral", "displayName": "Archive Paper", "tonalRamp": ["oklch(15% 0.014 285)", "oklch(22% 0.016 285)", "oklch(28% 0.018 285)", "oklch(38% 0.024 285)", "oklch(57% 0.018 285)", "oklch(70% 0.018 285)", "oklch(88% 0.012 285)", "oklch(98% 0.006 285)"]},
+      "surface-light": {"role": "neutral", "displayName": "Workbench Surface", "tonalRamp": ["oklch(15% 0.014 285)", "oklch(22% 0.016 285)", "oklch(28% 0.018 285)", "oklch(38% 0.024 285)", "oklch(57% 0.018 285)", "oklch(70% 0.018 285)", "oklch(88% 0.012 285)", "oklch(99% 0.004 285)"]},
+      "surface-raised-light": {"role": "neutral", "displayName": "Raised Sheet", "tonalRamp": ["oklch(15% 0.014 285)", "oklch(22% 0.016 285)", "oklch(28% 0.018 285)", "oklch(38% 0.024 285)", "oklch(57% 0.018 285)", "oklch(70% 0.018 285)", "oklch(88% 0.012 285)", "oklch(100% 0.003 285)"]},
+      "sidebar-light": {"role": "neutral", "displayName": "Quiet Rail", "tonalRamp": ["oklch(15% 0.014 285)", "oklch(22% 0.016 285)", "oklch(28% 0.018 285)", "oklch(38% 0.024 285)", "oklch(57% 0.018 285)", "oklch(70% 0.018 285)", "oklch(88% 0.012 285)", "oklch(95% 0.008 285)"]},
+      "border-light": {"role": "neutral", "displayName": "Hairline Violet Gray", "tonalRamp": ["oklch(15% 0.014 285)", "oklch(22% 0.016 285)", "oklch(28% 0.018 285)", "oklch(38% 0.024 285)", "oklch(57% 0.018 285)", "oklch(70% 0.018 285)", "oklch(88% 0.012 285)", "oklch(98% 0.006 285)"]},
+      "border-strong-light": {"role": "neutral", "displayName": "Structural Violet Gray", "tonalRamp": ["oklch(15% 0.014 285)", "oklch(22% 0.016 285)", "oklch(28% 0.018 285)", "oklch(38% 0.024 285)", "oklch(57% 0.018 285)", "oklch(70% 0.018 285)", "oklch(78% 0.018 285)", "oklch(92% 0.009 285)"]},
+      "text-light": {"role": "neutral", "displayName": "Catalog Ink", "tonalRamp": ["oklch(15% 0.014 285)", "oklch(25% 0.018 285)", "oklch(38% 0.024 285)", "oklch(49% 0.018 285)", "oklch(61% 0.014 285)", "oklch(72% 0.013 285)", "oklch(88% 0.01 285)", "oklch(98% 0.006 285)"]},
+      "text-muted-light": {"role": "neutral", "displayName": "Annotation Gray", "tonalRamp": ["oklch(15% 0.014 285)", "oklch(25% 0.018 285)", "oklch(38% 0.024 285)", "oklch(49% 0.018 285)", "oklch(61% 0.014 285)", "oklch(72% 0.013 285)", "oklch(88% 0.01 285)", "oklch(98% 0.006 285)"]},
+      "text-faint-light": {"role": "neutral", "displayName": "Index Gray", "tonalRamp": ["oklch(15% 0.014 285)", "oklch(25% 0.018 285)", "oklch(38% 0.024 285)", "oklch(49% 0.018 285)", "oklch(61% 0.014 285)", "oklch(72% 0.013 285)", "oklch(88% 0.01 285)", "oklch(98% 0.006 285)"]},
+      "canvas-dark": {"role": "neutral", "displayName": "Night Archive", "tonalRamp": ["oklch(15% 0.014 285)", "oklch(22% 0.016 285)", "oklch(28% 0.018 285)", "oklch(38% 0.024 285)", "oklch(57% 0.018 285)", "oklch(70% 0.018 285)", "oklch(88% 0.012 285)", "oklch(98% 0.006 285)"]},
+      "surface-dark": {"role": "neutral", "displayName": "Night Workbench", "tonalRamp": ["oklch(15% 0.014 285)", "oklch(22% 0.016 285)", "oklch(28% 0.018 285)", "oklch(38% 0.024 285)", "oklch(57% 0.018 285)", "oklch(70% 0.018 285)", "oklch(88% 0.012 285)", "oklch(98% 0.006 285)"]},
+      "surface-raised-dark": {"role": "neutral", "displayName": "Raised Night Sheet", "tonalRamp": ["oklch(15% 0.014 285)", "oklch(22% 0.016 285)", "oklch(28% 0.018 285)", "oklch(38% 0.024 285)", "oklch(57% 0.018 285)", "oklch(70% 0.018 285)", "oklch(88% 0.012 285)", "oklch(98% 0.006 285)"]},
+      "sidebar-dark": {"role": "neutral", "displayName": "Night Rail", "tonalRamp": ["oklch(14% 0.014 285)", "oklch(22% 0.016 285)", "oklch(28% 0.018 285)", "oklch(38% 0.024 285)", "oklch(57% 0.018 285)", "oklch(70% 0.018 285)", "oklch(88% 0.012 285)", "oklch(98% 0.006 285)"]},
+      "border-dark": {"role": "neutral", "displayName": "Night Hairline", "tonalRamp": ["oklch(15% 0.014 285)", "oklch(22% 0.016 285)", "oklch(28% 0.018 285)", "oklch(38% 0.024 285)", "oklch(57% 0.018 285)", "oklch(70% 0.018 285)", "oklch(88% 0.012 285)", "oklch(98% 0.006 285)"]},
+      "border-strong-dark": {"role": "neutral", "displayName": "Night Structure", "tonalRamp": ["oklch(15% 0.014 285)", "oklch(22% 0.016 285)", "oklch(28% 0.018 285)", "oklch(38% 0.024 285)", "oklch(57% 0.018 285)", "oklch(70% 0.018 285)", "oklch(88% 0.012 285)", "oklch(98% 0.006 285)"]},
+      "text-dark": {"role": "neutral", "displayName": "Night Catalog Ink", "tonalRamp": ["oklch(15% 0.014 285)", "oklch(25% 0.018 285)", "oklch(38% 0.024 285)", "oklch(49% 0.018 285)", "oklch(61% 0.014 285)", "oklch(70% 0.018 285)", "oklch(91% 0.012 285)", "oklch(98% 0.006 285)"]},
+      "text-muted-dark": {"role": "neutral", "displayName": "Night Annotation", "tonalRamp": ["oklch(15% 0.014 285)", "oklch(25% 0.018 285)", "oklch(38% 0.024 285)", "oklch(49% 0.018 285)", "oklch(57% 0.018 285)", "oklch(70% 0.018 285)", "oklch(91% 0.012 285)", "oklch(98% 0.006 285)"]},
+      "text-faint-dark": {"role": "neutral", "displayName": "Night Index", "tonalRamp": ["oklch(15% 0.014 285)", "oklch(25% 0.018 285)", "oklch(38% 0.024 285)", "oklch(49% 0.018 285)", "oklch(57% 0.018 285)", "oklch(70% 0.018 285)", "oklch(91% 0.012 285)", "oklch(98% 0.006 285)"]}
+    },
+    "typographyMeta": {
+      "headline": {"displayName": "Route Headline", "purpose": "Names the current workspace without competing with content."},
+      "title": {"displayName": "Operational Title", "purpose": "Names groups, panels, and meaningful empty states."},
+      "body": {"displayName": "Working Copy", "purpose": "Carries controls, explanations, and filenames."},
+      "label": {"displayName": "Catalog Label", "purpose": "Carries dense metadata, headings, and state descriptions."}
+    },
+    "shadows": [
+      {"name": "ambient-lift", "value": "0 12px 36px oklch(25% 0.02 285 / 12%)", "purpose": "Temporary raised surfaces in light mode."},
+      {"name": "focused-overlay", "value": "0 24px 70px oklch(8% 0.015 285 / 48%)", "purpose": "Centered assignment and confirmation overlays."},
+      {"name": "mobile-menu-lift", "value": "0 14px 34px oklch(8% 0.01 285 / 42%)", "purpose": "Mobile action menus floating above a record."},
+      {"name": "row-separation", "value": "0 1px 0 oklch(8% 0.01 285 / 18%)", "purpose": "Subtle separation beneath mobile library records."}
+    ],
+    "motion": [
+      {"name": "state-fast", "value": "120ms ease-out", "purpose": "Tooltips, compact reveals, and immediate state feedback."},
+      {"name": "state-standard", "value": "160ms cubic-bezier(.22,1,.36,1)", "purpose": "Button, border, and surface state transitions."},
+      {"name": "panel-reveal", "value": "190ms cubic-bezier(.22,1,.36,1)", "purpose": "Mobile drawer and panel reveals."}
+    ],
+    "breakpoints": [
+      {"name": "mobile", "value": "720px"},
+      {"name": "compact-desktop", "value": "1020px"},
+      {"name": "toolbar-wrap", "value": "1320px"}
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The default action for the next safe, intentional step.",
+      "html": "<button class=\"ds-button-primary\">Review and apply</button>",
+      "css": ".ds-button-primary { min-height: 34px; padding: 0 12px; border: 1px solid var(--accent); border-radius: var(--radius-sm); background: var(--accent); color: oklch(98% 0.005 285); font: 590 0.875rem/1.45 var(--font-ui); cursor: pointer; transition: background-color 160ms cubic-bezier(.22,1,.36,1), border-color 160ms cubic-bezier(.22,1,.36,1); } .ds-button-primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); } .ds-button-primary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; } .ds-button-primary:active { transform: translateY(1px); }"
+    },
+    {
+      "name": "Secondary Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "A familiar neutral action that does not compete with the primary step.",
+      "html": "<button class=\"ds-button-secondary\">Refresh</button>",
+      "css": ".ds-button-secondary { min-height: 34px; padding: 0 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); color: var(--text); font: 590 0.875rem/1.45 var(--font-ui); cursor: pointer; transition: background-color 160ms cubic-bezier(.22,1,.36,1), border-color 160ms cubic-bezier(.22,1,.36,1); } .ds-button-secondary:hover { border-color: var(--border-strong); background: var(--surface-raised); } .ds-button-secondary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }"
+    },
+    {
+      "name": "Text Field",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "A compact field for search, names, paths, and settings.",
+      "html": "<input class=\"ds-input\" value=\"Pokemon Emerald\" aria-label=\"Search ROMs\">",
+      "css": ".ds-input { width: 100%; height: 34px; padding: 0 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); color: var(--text); font: 400 0.875rem/1.45 var(--font-ui); } .ds-input:hover { border-color: var(--border-strong); } .ds-input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; } .ds-input::placeholder { color: var(--text-faint); }"
+    },
+    {
+      "name": "Status Chip",
+      "kind": "chip",
+      "refersTo": "chip",
+      "description": "Compact text-backed status for unique, pending, failed, and complete states.",
+      "html": "<span class=\"ds-chip ds-chip-success\">Complete</span>",
+      "css": ".ds-chip { display: inline-flex; align-items: center; min-height: 24px; padding: 0 7px; border: 1px solid var(--border); border-radius: var(--radius-pill); background: var(--surface); color: var(--text-muted); font: 620 0.72rem/1.35 var(--font-ui); white-space: nowrap; } .ds-chip-success { background: var(--success-soft); color: var(--success); } .ds-chip-warning { background: var(--warning-soft); color: var(--warning); } .ds-chip-danger { background: var(--danger-soft); color: var(--danger); }"
+    },
+    {
+      "name": "Navigation Item",
+      "kind": "nav",
+      "description": "A compact rail destination with a trailing count and quiet active state.",
+      "html": "<a class=\"ds-nav-item ds-nav-active\" href=\"#\"><span>Library</span><span class=\"ds-nav-count\">5,508</span></a>",
+      "css": ".ds-nav-item { display: flex; align-items: center; justify-content: space-between; min-height: 36px; padding: 0 10px; border: 1px solid transparent; border-radius: var(--radius-sm); background: transparent; color: var(--text-muted); font: 400 0.875rem/1.45 var(--font-ui); text-decoration: none; } .ds-nav-item:hover { background: var(--surface); color: var(--text); } .ds-nav-active { border-color: var(--border); background: var(--accent-soft); color: var(--text); } .ds-nav-item:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; } .ds-nav-count { color: var(--text-faint); font-size: 0.75rem; font-variant-numeric: tabular-nums; }"
+    },
+    {
+      "name": "Workbench Panel",
+      "kind": "card",
+      "refersTo": "panel",
+      "description": "A bordered, flat container for one coherent task or dataset.",
+      "html": "<section class=\"ds-panel\"><h3>Current deployment</h3><p>2 games selected, 0 files to remove.</p></section>",
+      "css": ".ds-panel { padding: 16px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface); color: var(--text); font-family: var(--font-ui); } .ds-panel h3 { margin: 0; font-size: 1rem; line-height: 1.35; } .ds-panel p { margin: 4px 0 0; max-width: 72ch; color: var(--text-muted); font-size: 0.76rem; line-height: 1.45; }"
+    },
+    {
+      "name": "Mobile Library Record",
+      "kind": "custom",
+      "description": "The condensed phone representation of one ROM with one action entry point.",
+      "html": "<article class=\"ds-game-record\"><input type=\"checkbox\" aria-label=\"Select game\"><div><strong>Pokemon Emerald Version (USA, Europe)</strong><small><span class=\"ds-platform\">GBA</span> 16.0 MB · Unique</small></div><button aria-label=\"Game actions\">•••</button></article>",
+      "css": ".ds-game-record { display: grid; grid-template-columns: 38px minmax(0,1fr) 44px; align-items: center; gap: 0; padding: 7px 8px; border: 1px solid var(--border-strong); border-radius: var(--radius-lg); background: var(--surface); color: var(--text); font-family: var(--font-ui); } .ds-game-record strong { display: -webkit-box; overflow: hidden; font-size: 0.9rem; line-height: 1.25; -webkit-box-orient: vertical; -webkit-line-clamp: 2; } .ds-game-record small { display: block; margin-top: 3px; color: var(--text-faint); font-size: 0.68rem; } .ds-game-record button { width: 44px; height: 44px; border: 1px solid var(--border); border-radius: var(--radius-md); background: transparent; color: var(--text-muted); } .ds-game-record button:hover { border-color: var(--accent); color: var(--accent); } .ds-platform { padding: 2px 7px; border-radius: var(--radius-pill); background: var(--accent); color: oklch(98% 0.005 285); font-weight: 800; }"
+    },
+    {
+      "name": "Device Group",
+      "kind": "custom",
+      "description": "One owner-scoped roster that presents multiple devices as a single deployment target.",
+      "html": "<section class=\"ds-device-group\"><header><div><small>DEVICE GROUP</small><h3>Travel Handhelds</h3><p>One desired game roster, delivered independently to 2 devices.</p></div><button>Group settings</button></header><div class=\"ds-device-row\"><strong>retroid-pocket-5</strong><span>Applied</span></div><div class=\"ds-device-row\"><strong>anbernic-rg-rotate</strong><span>2 pending</span></div></section>",
+      "css": ".ds-device-group { overflow: hidden; border: 1px solid var(--border-strong); border-radius: var(--radius-lg); background: var(--surface-raised); color: var(--text); font-family: var(--font-ui); } .ds-device-group header { display: flex; justify-content: space-between; gap: 20px; padding: 16px; } .ds-device-group h3 { margin: 2px 0 3px; font-size: 1rem; } .ds-device-group p { margin: 0; color: var(--text-muted); font-size: 0.74rem; } .ds-device-group small { color: var(--accent); font-weight: 750; letter-spacing: 0.08em; } .ds-device-group button { min-height: 30px; padding: 0 9px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); color: var(--accent); font-weight: 700; } .ds-device-row { display: flex; justify-content: space-between; gap: 14px; min-height: 52px; padding: 9px 16px; align-items: center; border-top: 1px solid var(--border); } .ds-device-row span { color: var(--warning); font-size: 0.7rem; font-weight: 700; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Curator's Workbench",
+    "overview": "ROMmates is a focused workstation for people managing thousands of files, multiple handhelds, and filesystem operations with real consequences. The interface should feel like a well-organized workbench: dense without crowding, calm without becoming vague, and friendly without turning into a novelty. The name carries the joke. The interface earns trust.\n\nThe system is desktop-first because comparison, cleanup, and bulk operations benefit from width and density. The phone experience is not a reduced demo. It preserves every essential task through structural adaptation: the sidebar becomes a drawer, tables become compact records, secondary actions move into menus, and controls remain touch-friendly. Light and dark themes follow the operating system so the same restrained violet-tinted vocabulary works in a bright room or a dim one.\n\nROMmates explicitly rejects decorative retro-gaming launcher styling, arcade cabinet skins, generic card-heavy admin templates, and Finder's slow spatial file-browser feel. Information hierarchy, filenames, system state, and reversible consequences always outrank ornament.",
+    "keyCharacteristics": [
+      "Quiet, dense, and operational.",
+      "Restrained violet accent with explicit semantic state colors.",
+      "Gently rounded, consistently bordered controls and containers.",
+      "Compact rows on desktop, readable records on mobile.",
+      "Visible consequences before filesystem changes.",
+      "Familiar controls that disappear into the task."
+    ],
+    "rules": [
+      {"name": "The Consequence-First Rule", "body": "The visual hierarchy must make pending additions, removals, conflicts, destructive actions, and recovery paths easier to see than decoration.", "section": "overview"},
+      {"name": "The Structural Responsiveness Rule", "body": "At 720px and below, restructure the interaction instead of merely shrinking it. At intermediate widths, wrap toolbars and simplify grids before content collides.", "section": "overview"},
+      {"name": "The One Accent Rule", "body": "Violet is reserved for primary actions, current selection, focus, and actionable text. It must not become decorative wallpaper.", "section": "colors"},
+      {"name": "The State Has Words Rule", "body": "Success, warning, and danger colors must always be reinforced by text, an icon, or a recognizable state label. Color alone never carries meaning.", "section": "colors"},
+      {"name": "The Theme Parity Rule", "body": "Light and dark themes preserve the same hierarchy and semantics. Dark mode is not a separate neon aesthetic.", "section": "colors"},
+      {"name": "The Filename Wins Rule", "body": "Filenames and game titles receive the strongest weight in collection views. Metadata, paths, platform, and operational state step down in that order.", "section": "typography"},
+      {"name": "The Two-Line Limit Rule", "body": "Mobile game titles may use at most two lines. Supporting metadata stays on one compact wrapping row, and long paths use ellipsis or intentional wrapping according to context.", "section": "typography"},
+      {"name": "The Flat-Until-Temporary Rule", "body": "Persistent page structure uses borders and tonal layers. Shadows are reserved for temporary overlays or a control actively floating above content.", "section": "elevation"},
+      {"name": "The Single Surface Rule", "body": "Never nest a decorative card inside another decorative card. Use dividers, rows, and spacing inside a container.", "section": "elevation"}
+    ],
+    "dos": [
+      "Do optimize for scanning thousands of filenames: compact rows, sticky headings, indexed search, filters, and bulk actions.",
+      "Do use the shared radius scale for every fully bordered control or container.",
+      "Do keep the violet accent rare enough that primary actions and current selection remain obvious.",
+      "Do preview filesystem consequences before rename, trash, restore, deployment, clone, or group synchronization operations.",
+      "Do make destructive operations recoverable and show where the recovery path lives.",
+      "Do preserve complete functionality on mobile through drawers, record layouts, action menus, and 44px touch targets.",
+      "Do test new pages at 1440px, 1024px, 768px, and 390px before shipping.",
+      "Do use semantic controls, visible focus, non-color labels, and WCAG 2.1 AA contrast as the baseline.",
+      "Do use the filesystem as operational truth while presenting database-backed intent and ownership clearly."
+    ],
+    "donts": [
+      "Don't resemble a decorative retro-gaming launcher or an arcade cabinet skin.",
+      "Don't build a generic card-heavy admin template. A row or divider is usually enough.",
+      "Don't recreate Finder's slow spatial file browser with folders as the primary discovery model.",
+      "Don't use oversized dashboard metrics. Collection health must remain proportional to the work around it.",
+      "Don't use ornamental game imagery when it competes with filenames, state, or actions.",
+      "Don't hide destructive behavior or collapse consequences into vague confirmation copy.",
+      "Don't use playful styling that competes with filenames and operational status. The ROMmates name supplies the personality.",
+      "Don't use sharp bordered rectangles beside rounded components. The shared radius tokens are mandatory.",
+      "Don't allow text, menus, tables, or toolbars to create page-level horizontal overflow.",
+      "Don't use gradient text, glassmorphism, colored side-stripe borders, decorative motion, or bounce easing.",
+      "Don't invent a new button, chip, input, or card vocabulary for one screen. Extend the central system instead.",
+      "Don't rely on color alone for success, warning, danger, ownership, selection, or connectivity."
+    ]
+  }
+}
