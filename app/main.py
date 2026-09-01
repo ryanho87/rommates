@@ -675,6 +675,20 @@ class DeviceRosterLinkRequest(BaseModel):
     target_device_ids: list[int] = Field(min_length=1, max_length=20)
 
 
+class DeviceRosterCloneRequest(BaseModel):
+    source_device_id: int = Field(ge=1)
+
+
+class DeviceGroupUpdateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=64)
+
+
+class DeviceGroupCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=64)
+    source_device_id: int = Field(ge=1)
+    member_device_ids: list[int] = Field(min_length=1, max_length=20)
+
+
 class DatImportRequest(BaseModel):
     source_name: str = Field(min_length=1, max_length=255)
     platform: str = Field(min_length=1, max_length=100)
@@ -835,6 +849,24 @@ def require_device_access(device_id: int, principal: Principal):
     return row
 
 
+def require_device_group_access(group_id: int, principal: Principal):
+    with db.connect() as connection:
+        group = connection.execute(
+            "SELECT * FROM device_roster_groups WHERE id=?", (group_id,)
+        ).fetchone()
+        members = connection.execute(
+            "SELECT * FROM devices WHERE roster_group_id=? ORDER BY name COLLATE NOCASE",
+            (group_id,),
+        ).fetchall()
+    if not group or len(members) < 2:
+        raise HTTPException(status_code=404, detail="Device group was not found")
+    if not principal.has_role("admin") and (
+        principal.id is None or group["owner_user_id"] != principal.id
+    ):
+        raise HTTPException(status_code=404, detail="Device group was not found")
+    return group, members
+
+
 def require_job_access(job_id: int, principal: Principal):
     with db.connect() as connection:
         row = connection.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
@@ -863,6 +895,7 @@ def role_allows(principal: Principal, method: str, path: str) -> bool:
     if principal.has_role("member"):
         if method == "GET" and (
             path == "/api/devices"
+            or path.startswith("/api/device-groups")
             or path.startswith("/api/devices/")
             or path.startswith("/api/jobs/")
             or path == "/api/syncthing/status"
@@ -870,13 +903,20 @@ def role_allows(principal: Principal, method: str, path: str) -> bool:
             return True
         if method == "POST" and (
             path == "/api/devices"
+            or path == "/api/device-groups"
+            or (path.startswith("/api/device-groups/") and path.endswith("/apply"))
             or (path.startswith("/api/devices/") and path.endswith("/apply"))
             or (path.startswith("/api/devices/") and path.endswith("/export-ticket"))
+            or (path.startswith("/api/devices/") and path.endswith("/roster-clone"))
             or (path.startswith("/api/devices/") and path.endswith("/roster-link"))
             or (path.startswith("/api/jobs/") and path.endswith("/cancel"))
         ):
             return True
         if method == "DELETE" and path.startswith("/api/devices/") and path.endswith("/roster-link"):
+            return True
+        if method == "DELETE" and path.startswith("/api/device-groups/"):
+            return True
+        if method == "PUT" and path.startswith("/api/device-groups/"):
             return True
         if (
             method == "PUT"
@@ -1395,7 +1435,7 @@ def games(
     platform: str = "",
     duplicate: str = Query("all", pattern="^(all|exact|possible|unique)$"),
     device_id: int | None = None,
-    device_scope: str = Query("all", pattern="^(all|on_device|changes)$"),
+    device_scope: str = Query("all", pattern="^(all|selected|on_device|changes)$"),
     sort: str = Query(
         "name_asc", pattern="^(name_asc|name_desc|rating_desc|rating_asc|size_desc|size_asc)$"
     ),
@@ -1456,6 +1496,8 @@ def games(
         params_for_select: list[object] = []
         if device_scope == "on_device":
             where.append(f"({present_expr})")
+        elif device_scope == "selected":
+            where.append(f"({selected_expr})")
         elif device_scope == "changes":
             where.append(f"(({selected_expr}) != ({synced_expr}))")
     else:
@@ -1566,6 +1608,7 @@ def games(
         if device_id is not None:
             scope_expr = {
                 "on_device": present_expr,
+                "selected": selected_expr,
                 "changes": f"({selected_expr}) != ({synced_expr})",
                 "all": "1=1",
             }[device_scope]
@@ -2042,15 +2085,57 @@ def devices(request: Request):
         owner_filter = "" if principal.has_role("admin") else "WHERE d.owner_user_id=?"
         params = [] if principal.has_role("admin") else [principal.id]
         rows = connection.execute(
-            "SELECT d.*,u.username AS owner_username,u.display_name AS owner_display_name,"
+            "SELECT d.*,rg.name AS roster_group_name,"
+            "rg.owner_user_id AS roster_group_owner_user_id,"
+            "u.username AS owner_username,u.display_name AS owner_display_name,"
             "COUNT(DISTINCT ds.game_id) AS selected_games,COUNT(DISTINCT dp.game_id) AS deployed_games "
             "FROM devices d LEFT JOIN device_selections ds ON ds.device_id=d.id "
             "LEFT JOIN deployments dp ON dp.device_id=d.id "
+            "LEFT JOIN device_roster_groups rg ON rg.id=d.roster_group_id "
             "LEFT JOIN users u ON u.id=d.owner_user_id "
             f"{owner_filter} GROUP BY d.id ORDER BY d.name COLLATE NOCASE",
             params,
         ).fetchall()
     return [dict(row) for row in rows]
+
+
+@app.get("/api/device-groups")
+def device_groups(request: Request):
+    principal = request_principal(request)
+    with db.connect() as connection:
+        owner_filter = "" if principal.has_role("admin") else "WHERE rg.owner_user_id=?"
+        params = [] if principal.has_role("admin") else [principal.id]
+        groups = connection.execute(
+            "SELECT rg.*,u.username AS owner_username,u.display_name AS owner_display_name,"
+            "COUNT(DISTINCT d.id) AS device_count,"
+            "COUNT(DISTINCT ds.game_id) AS selected_games "
+            "FROM device_roster_groups rg "
+            "LEFT JOIN users u ON u.id=rg.owner_user_id "
+            "LEFT JOIN devices d ON d.roster_group_id=rg.id "
+            "LEFT JOIN device_selections ds ON ds.device_id=d.id "
+            f"{owner_filter} GROUP BY rg.id ORDER BY rg.name COLLATE NOCASE",
+            params,
+        ).fetchall()
+        result = []
+        for group in groups:
+            members = connection.execute(
+                "SELECT id,name,path,deployment_mode,delivery_mode,syncthing_ready_at "
+                "FROM devices WHERE roster_group_id=? ORDER BY name COLLATE NOCASE",
+                (group["id"],),
+            ).fetchall()
+            result.append({**dict(group), "members": [dict(member) for member in members]})
+    return result
+
+
+@app.post("/api/device-groups", status_code=201)
+def create_device_group(payload: DeviceGroupCreateRequest, request: Request):
+    principal = request_principal(request)
+    device_ids = sorted({payload.source_device_id, *payload.member_device_ids})
+    for device_id in device_ids:
+        require_device_access(device_id, principal)
+    return library.create_device_group(
+        payload.name, payload.source_device_id, payload.member_device_ids
+    )
 
 
 @app.post("/api/devices", status_code=201)
@@ -2102,10 +2187,58 @@ def link_device_rosters(
     return library.link_device_rosters(device_id, target_ids)
 
 
+@app.post("/api/devices/{device_id}/roster-clone")
+def clone_device_roster(
+    device_id: int, payload: DeviceRosterCloneRequest, request: Request
+):
+    principal = request_principal(request)
+    require_device_access(device_id, principal)
+    require_device_access(payload.source_device_id, principal)
+    if payload.source_device_id == device_id:
+        raise HTTPException(status_code=400, detail="Choose a different source device")
+    return library.clone_device_roster(payload.source_device_id, device_id)
+
+
 @app.delete("/api/devices/{device_id}/roster-link")
 def unlink_device_roster(device_id: int, request: Request):
     require_device_access(device_id, request_principal(request))
     return library.unlink_device_roster(device_id)
+
+
+@app.put("/api/device-groups/{group_id}")
+def update_device_group(
+    group_id: int, payload: DeviceGroupUpdateRequest, request: Request
+):
+    principal = request_principal(request)
+    require_device_group_access(group_id, principal)
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Enter a group name")
+    with db.write() as connection:
+        connection.execute(
+            "UPDATE device_roster_groups SET name=? WHERE id=?", (name, group_id)
+        )
+    db.activity("device", f"Renamed device group {group_id} to {name}")
+    return {"id": group_id, "name": name}
+
+
+@app.delete("/api/device-groups/{group_id}")
+def delete_device_group(group_id: int, request: Request):
+    require_device_group_access(group_id, request_principal(request))
+    return library.delete_device_group(group_id)
+
+
+@app.post("/api/device-groups/{group_id}/apply", status_code=202)
+def apply_device_group(group_id: int, request: Request):
+    principal = request_principal(request)
+    group, members = require_device_group_access(group_id, principal)
+    jobs = [queue_device_apply_job(int(member["id"]), principal.id) for member in members]
+    db.activity("device_apply", f"Queued all devices in {group['name']}")
+    return {
+        "group_id": group_id,
+        "devices": len(members),
+        "job_ids": [int(job["job_id"]) for job in jobs],
+    }
 
 
 @app.put("/api/devices/{device_id}/syncthing-ready")

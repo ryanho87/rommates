@@ -42,7 +42,7 @@ The MVP supports:
 - Owner-scoped device packages that stream every selected ROM as one ES-DE-ready ZIP
 - Cross-page duplicate keeper review with one confirmed batch move to recoverable Trash
 - Per-device desired game selections and previewed reconciliation
-- Device cloning and optional linked rosters that keep game selections matched across handhelds
+- One-time device cloning plus owner-scoped device groups with shared rosters and full create, rename, membership, and delete controls
 - Per-user device ownership with member-scoped onboarding, library assignments, and apply jobs
 - Actual device-directory inventory shown in device views and on each Library game row
 - Per-game device assignment directly from the Library screen
@@ -386,11 +386,16 @@ Devices created by a Member are owned by that account automatically. Existing de
 remain administrator-only after upgrade until an administrator chooses an owner on the Devices
 page. Ownership is enforced by the API, not just hidden in the browser.
 
-New devices can clone the desired roster from an existing accessible device. Enable roster sync
-during cloning, or link existing devices from the Devices page, to propagate future game selection
-changes across the group. Linking replaces each target's desired roster with the chosen source
-roster. It never changes ROM files automatically: review and apply each device separately. Unlinking
-a device preserves its current desired games and makes future changes independent.
+New and existing devices can copy the desired roster from another accessible device as a one-time
+operation. Devices can also be combined into a named, owner-specific group. A group appears once
+in the target picker, owns one shared desired roster, and hides its individual members from the
+top-level list. Members see and manage only groups they own; administrators can see every group.
+All devices in a group must have the same owner. From **Devices**, use **Create group** to choose a
+name, source roster, and members; group settings allow renaming, adding or removing devices, and
+deleting the group. Deleting a group preserves its devices and selected games. Adding or removing
+a game updates the complete group; **Review and apply group** queues a separate filesystem
+reconciliation and Syncthing rescan for every member. Removing a member preserves its current
+desired games and makes future changes independent.
 
 Library assignments update the desired selections only. Open Devices and apply a target when you want ROMmates to change its filesystem.
 

@@ -88,9 +88,15 @@ class LibraryServiceTests(unittest.TestCase):
         self.service.scan()
         alpha = self.game_id("Alpha")
         beta = self.game_id("Beta")
-        source = self.service.create_device("rg-rotate")
-        target = self.service.create_device("rg-sp")
-        clone = self.service.create_device("travel-sp")
+        with self.db.write() as connection:
+            connection.execute(
+                "INSERT INTO users(username,username_normalized,display_name,password_hash,role) "
+                "VALUES('roster-owner','roster-owner','Roster Owner','unused','member')"
+            )
+            owner_id = connection.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
+        source = self.service.create_device("rg-rotate", owner_user_id=owner_id)
+        target = self.service.create_device("rg-sp", owner_user_id=owner_id)
+        clone = self.service.create_device("travel-sp", owner_user_id=owner_id)
         self.service.set_selection(source["id"], alpha, True)
         self.service.set_selection(target["id"], beta, True)
 

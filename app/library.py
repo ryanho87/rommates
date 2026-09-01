@@ -1825,8 +1825,14 @@ class LibraryService:
             ).fetchone()
             if not source or not target:
                 raise LibraryError("Device was not found")
+            if target["roster_group_id"] and not keep_in_sync:
+                raise LibraryError(
+                    "Unlink the target device before replacing its roster"
+                )
             if keep_in_sync and source["owner_user_id"] != target["owner_user_id"]:
                 raise LibraryError("Linked rosters must have the same owner")
+            if keep_in_sync and source["owner_user_id"] is None:
+                raise LibraryError("Assign an owner to both devices before creating a group")
             connection.execute("DELETE FROM device_selections WHERE device_id=?", (target_device_id,))
             connection.execute(
                 "INSERT INTO device_selections(device_id,game_id) "
@@ -1835,8 +1841,17 @@ class LibraryService:
             )
             if keep_in_sync:
                 group_id = source["roster_group_id"]
+                if group_id:
+                    group_owner = connection.execute(
+                        "SELECT owner_user_id FROM device_roster_groups WHERE id=?", (group_id,)
+                    ).fetchone()
+                    if not group_owner or group_owner["owner_user_id"] != source["owner_user_id"]:
+                        raise LibraryError("The source device group has a different owner")
                 if not group_id:
-                    connection.execute("INSERT INTO device_roster_groups DEFAULT VALUES")
+                    connection.execute(
+                        "INSERT INTO device_roster_groups(name,owner_user_id) VALUES(?,?)",
+                        (f"{source['name']} group", source["owner_user_id"]),
+                    )
                     group_id = connection.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
                     connection.execute(
                         "UPDATE devices SET roster_group_id=? WHERE id=?", (group_id, source_device_id)
@@ -1853,6 +1868,85 @@ class LibraryService:
             + (" and linked their rosters" if keep_in_sync else ""),
         )
         return {"games": count, "linked": keep_in_sync}
+
+    def create_device_group(
+        self, name: str, source_device_id: int, member_device_ids: Iterable[int]
+    ) -> dict[str, object]:
+        group_name = name.strip()
+        if not group_name:
+            raise LibraryError("Enter a group name")
+        device_ids = sorted({source_device_id, *(int(value) for value in member_device_ids)})
+        if len(device_ids) < 2:
+            raise LibraryError("Choose at least two devices")
+        placeholders = ",".join("?" for _ in device_ids)
+        with self.db.write() as connection:
+            devices = connection.execute(
+                f"SELECT id,name,owner_user_id,roster_group_id FROM devices "
+                f"WHERE id IN ({placeholders}) ORDER BY name COLLATE NOCASE",
+                device_ids,
+            ).fetchall()
+            if len(devices) != len(device_ids):
+                raise LibraryError("One or more devices were not found")
+            source = next((item for item in devices if item["id"] == source_device_id), None)
+            if not source:
+                raise LibraryError("Source device was not found")
+            if source["owner_user_id"] is None:
+                raise LibraryError("Assign an owner to the devices before creating a group")
+            if any(item["owner_user_id"] != source["owner_user_id"] for item in devices):
+                raise LibraryError("Every device in a group must have the same owner")
+            grouped = [item["name"] for item in devices if item["roster_group_id"]]
+            if grouped:
+                raise LibraryError(
+                    "Remove these devices from their current group first: " + ", ".join(grouped)
+                )
+            connection.execute(
+                "INSERT INTO device_roster_groups(name,owner_user_id) VALUES(?,?)",
+                (group_name, source["owner_user_id"]),
+            )
+            group_id = connection.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
+            for device_id in device_ids:
+                if device_id != source_device_id:
+                    connection.execute("DELETE FROM device_selections WHERE device_id=?", (device_id,))
+                    connection.execute(
+                        "INSERT INTO device_selections(device_id,game_id) "
+                        "SELECT ?,game_id FROM device_selections WHERE device_id=?",
+                        (device_id, source_device_id),
+                    )
+                connection.execute(
+                    "UPDATE devices SET roster_group_id=? WHERE id=?", (group_id, device_id)
+                )
+            games = connection.execute(
+                "SELECT COUNT(*) AS count FROM device_selections WHERE device_id=?",
+                (source_device_id,),
+            ).fetchone()["count"]
+        self.db.activity(
+            "device", f"Created device group {group_name} with {len(device_ids)} devices"
+        )
+        return {
+            "id": group_id,
+            "name": group_name,
+            "owner_user_id": source["owner_user_id"],
+            "member_ids": device_ids,
+            "devices": len(device_ids),
+            "games": games,
+        }
+
+    def delete_device_group(self, group_id: int) -> dict[str, object]:
+        with self.db.write() as connection:
+            group = connection.execute(
+                "SELECT id,name FROM device_roster_groups WHERE id=?", (group_id,)
+            ).fetchone()
+            if not group:
+                raise LibraryError("Device group was not found")
+            members = connection.execute(
+                "SELECT COUNT(*) AS count FROM devices WHERE roster_group_id=?", (group_id,)
+            ).fetchone()["count"]
+            connection.execute(
+                "UPDATE devices SET roster_group_id=NULL WHERE roster_group_id=?", (group_id,)
+            )
+            connection.execute("DELETE FROM device_roster_groups WHERE id=?", (group_id,))
+        self.db.activity("device", f"Deleted device group {group['name']}")
+        return {"deleted": True, "devices": members}
 
     def link_device_rosters(
         self, source_device_id: int, target_device_ids: Iterable[int]
@@ -1878,14 +1972,25 @@ class LibraryService:
                 raise LibraryError(
                     "Linked rosters must have the same owner: " + ", ".join(different_owner)
                 )
+            if source["owner_user_id"] is None:
+                raise LibraryError("Assign an owner to the devices before creating a group")
             conflicting = [row["name"] for row in targets if row["roster_group_id"] and row["roster_group_id"] != source["roster_group_id"]]
             if conflicting:
                 raise LibraryError(
                     "Unlink these devices from their current roster first: " + ", ".join(conflicting)
                 )
             group_id = source["roster_group_id"]
+            if group_id:
+                group_owner = connection.execute(
+                    "SELECT owner_user_id FROM device_roster_groups WHERE id=?", (group_id,)
+                ).fetchone()
+                if not group_owner or group_owner["owner_user_id"] != source["owner_user_id"]:
+                    raise LibraryError("The source device group has a different owner")
             if not group_id:
-                connection.execute("INSERT INTO device_roster_groups DEFAULT VALUES")
+                connection.execute(
+                    "INSERT INTO device_roster_groups(name,owner_user_id) VALUES(?,?)",
+                    (f"{source['name']} group", source["owner_user_id"]),
+                )
                 group_id = connection.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
                 connection.execute(
                     "UPDATE devices SET roster_group_id=? WHERE id=?", (group_id, source_device_id)

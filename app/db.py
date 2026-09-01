@@ -180,6 +180,8 @@ CREATE INDEX IF NOT EXISTS idx_naming_entries_name ON naming_entries(normalized_
 
 CREATE TABLE IF NOT EXISTS device_roster_groups (
     id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL DEFAULT '',
+    owner_user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -726,6 +728,42 @@ class Database:
                 "ON devices(roster_group_id,name)"
             )
             connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(25)")
+            group_columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(device_roster_groups)")
+            }
+            if "name" not in group_columns:
+                connection.execute(
+                    "ALTER TABLE device_roster_groups ADD COLUMN name TEXT NOT NULL DEFAULT ''"
+                )
+            connection.execute(
+                "UPDATE device_roster_groups SET name=COALESCE(("
+                "SELECT d.name || ' group' FROM devices d "
+                "WHERE d.roster_group_id=device_roster_groups.id "
+                "ORDER BY d.name COLLATE NOCASE LIMIT 1), 'Device group') WHERE name=''"
+            )
+            connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(26)")
+            group_columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(device_roster_groups)")
+            }
+            if "owner_user_id" not in group_columns:
+                connection.execute(
+                    "ALTER TABLE device_roster_groups ADD COLUMN owner_user_id INTEGER "
+                    "REFERENCES users(id) ON DELETE CASCADE"
+                )
+            connection.execute(
+                "UPDATE device_roster_groups SET owner_user_id=("
+                "SELECT d.owner_user_id FROM devices d "
+                "WHERE d.roster_group_id=device_roster_groups.id "
+                "AND d.owner_user_id IS NOT NULL ORDER BY d.id LIMIT 1) "
+                "WHERE owner_user_id IS NULL"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_device_roster_groups_owner "
+                "ON device_roster_groups(owner_user_id,name)"
+            )
+            connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(27)")
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:

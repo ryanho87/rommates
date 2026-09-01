@@ -526,11 +526,31 @@ class ApiIntegrationTests(unittest.TestCase):
         (self.root / "devices/zz-export-device").rmdir()
 
     def test_device_creation_can_clone_and_link_an_existing_roster(self):
+        if not self.client.get("/api/games", headers=self.headers).json()["items"]:
+            self.main.library.scan(force_prune=True)
         source = self.client.post(
             "/api/devices",
             headers=self.headers,
             json={"name": "zz-roster-source", "deployment_mode": "hardlink"},
         ).json()
+        with self.main.db.connect() as connection:
+            owner = connection.execute(
+                "SELECT id FROM users WHERE username_normalized='roster-owner-test'"
+            ).fetchone()
+        if owner is None:
+            owner = self.main.auth.create_user(
+                "roster-owner-test",
+                "Roster Owner Test",
+                "roster-owner-test-password",
+                ["member"],
+            )
+        owner_id = owner["id"]
+        assigned = self.client.put(
+            f"/api/devices/{source['id']}/owner",
+            headers=self.headers,
+            json={"owner_user_id": owner_id},
+        )
+        self.assertEqual(assigned.status_code, 200, assigned.text)
         game = self.client.get("/api/games", headers=self.headers).json()["items"][0]
         self.client.put(
             f"/api/devices/{source['id']}/selection",
@@ -555,6 +575,29 @@ class ApiIntegrationTests(unittest.TestCase):
         clone_row = next(item for item in devices if item["id"] == clone_payload["id"])
         self.assertEqual(source_row["roster_group_id"], clone_row["roster_group_id"])
         self.assertIsNotNone(source_row["roster_group_id"])
+        group_id = source_row["roster_group_id"]
+        renamed = self.client.put(
+            f"/api/device-groups/{group_id}",
+            headers=self.headers,
+            json={"name": "Travel handhelds"},
+        )
+        self.assertEqual(renamed.status_code, 200, renamed.text)
+        self.assertEqual(renamed.json()["name"], "Travel handhelds")
+        devices = self.client.get("/api/devices", headers=self.headers).json()
+        self.assertEqual(
+            {item["roster_group_name"] for item in devices if item["roster_group_id"] == group_id},
+            {"Travel handhelds"},
+        )
+        with patch.object(
+            self.main,
+            "queue_device_apply_job",
+            side_effect=[{"job_id": 901}, {"job_id": 902}],
+        ):
+            applied = self.client.post(
+                f"/api/device-groups/{group_id}/apply", headers=self.headers
+            )
+        self.assertEqual(applied.status_code, 202, applied.text)
+        self.assertEqual(applied.json()["job_ids"], [901, 902])
 
         self.client.put(
             f"/api/devices/{clone_payload['id']}/selection",
@@ -573,6 +616,121 @@ class ApiIntegrationTests(unittest.TestCase):
         for name in ("zz-roster-source", "zz-roster-clone"):
             (self.root / "devices" / name / "roms").rmdir()
             (self.root / "devices" / name).rmdir()
+
+    def test_existing_device_can_clone_another_roster_once(self):
+        if not self.client.get("/api/games", headers=self.headers).json()["items"]:
+            self.main.library.scan(force_prune=True)
+        source = self.client.post(
+            "/api/devices", headers=self.headers,
+            json={"name": "zz-existing-clone-source", "deployment_mode": "hardlink"},
+        ).json()
+        target = self.client.post(
+            "/api/devices", headers=self.headers,
+            json={"name": "zz-existing-clone-target", "deployment_mode": "hardlink"},
+        ).json()
+        game = self.client.get("/api/games", headers=self.headers).json()["items"][0]
+        self.client.put(
+            f"/api/devices/{source['id']}/selection", headers=self.headers,
+            json={"game_id": game["id"], "selected": True},
+        )
+
+        response = self.client.post(
+            f"/api/devices/{target['id']}/roster-clone", headers=self.headers,
+            json={"source_device_id": source["id"]},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json(), {"games": 1, "linked": False})
+        selected = self.client.get(
+            f"/api/games?device_id={target['id']}&device_scope=selected",
+            headers=self.headers,
+        )
+        self.assertEqual(selected.status_code, 200, selected.text)
+        self.assertEqual([item["id"] for item in selected.json()["items"]], [game["id"]])
+        devices = self.client.get("/api/devices", headers=self.headers).json()
+        target_row = next(item for item in devices if item["id"] == target["id"])
+        self.assertEqual(target_row["selected_games"], 1)
+        self.assertIsNone(target_row["roster_group_id"])
+
+        with self.main.db.write() as connection:
+            connection.execute("DELETE FROM devices WHERE id IN (?,?)", (source["id"], target["id"]))
+        for name in ("zz-existing-clone-source", "zz-existing-clone-target"):
+            (self.root / "devices" / name / "roms").rmdir()
+            (self.root / "devices" / name).rmdir()
+
+    def test_device_group_crud_persists_owner_and_preserves_members(self):
+        if not self.client.get("/api/games", headers=self.headers).json()["items"]:
+            self.main.library.scan(force_prune=True)
+        with self.main.db.connect() as connection:
+            owner = connection.execute(
+                "SELECT id FROM users WHERE username_normalized='group-owner-test'"
+            ).fetchone()
+        if owner is None:
+            owner = self.main.auth.create_user(
+                "group-owner-test",
+                "Group Owner Test",
+                "group-owner-test-password",
+                ["member"],
+            )
+        owner_id = owner["id"]
+        devices = []
+        for name in ("zz-group-crud-source", "zz-group-crud-target"):
+            device = self.client.post(
+                "/api/devices", headers=self.headers,
+                json={"name": name, "deployment_mode": "hardlink"},
+            ).json()
+            self.client.put(
+                f"/api/devices/{device['id']}/owner", headers=self.headers,
+                json={"owner_user_id": owner_id},
+            )
+            devices.append(device)
+        game = self.client.get("/api/games", headers=self.headers).json()["items"][0]
+        self.client.put(
+            f"/api/devices/{devices[0]['id']}/selection", headers=self.headers,
+            json={"game_id": game["id"], "selected": True},
+        )
+
+        created = self.client.post(
+            "/api/device-groups", headers=self.headers,
+            json={
+                "name": "Owned handhelds",
+                "source_device_id": devices[0]["id"],
+                "member_device_ids": [devices[1]["id"]],
+            },
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        group = created.json()
+        self.assertEqual(group["owner_user_id"], owner_id)
+        self.assertEqual(group["games"], 1)
+        listed = self.client.get("/api/device-groups", headers=self.headers)
+        self.assertEqual(listed.status_code, 200, listed.text)
+        listed_group = next(item for item in listed.json() if item["id"] == group["id"])
+        self.assertEqual(listed_group["name"], "Owned handhelds")
+        self.assertEqual(listed_group["owner_user_id"], owner_id)
+        self.assertEqual({item["id"] for item in listed_group["members"]}, {item["id"] for item in devices})
+
+        renamed = self.client.put(
+            f"/api/device-groups/{group['id']}", headers=self.headers,
+            json={"name": "Pocket systems"},
+        )
+        self.assertEqual(renamed.status_code, 200, renamed.text)
+        deleted = self.client.delete(
+            f"/api/device-groups/{group['id']}", headers=self.headers
+        )
+        self.assertEqual(deleted.status_code, 200, deleted.text)
+        self.assertEqual(deleted.json(), {"deleted": True, "devices": 2})
+        current = self.client.get("/api/devices", headers=self.headers).json()
+        for device in devices:
+            row = next(item for item in current if item["id"] == device["id"])
+            self.assertIsNone(row["roster_group_id"])
+            self.assertEqual(row["selected_games"], 1)
+
+        with self.main.db.write() as connection:
+            connection.execute(
+                "DELETE FROM devices WHERE id IN (?,?)", (devices[0]["id"], devices[1]["id"])
+            )
+        for device in devices:
+            (self.root / "devices" / device["name"] / "roms").rmdir()
+            (self.root / "devices" / device["name"]).rmdir()
 
     def test_upload_resumes_finalizes_and_downloads_without_bearer_token(self):
         manifest = {

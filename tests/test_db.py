@@ -61,7 +61,7 @@ class DatabaseMigrationTests(unittest.TestCase):
                 versions = {row["version"] for row in upgraded.execute("SELECT version FROM schema_migrations")}
             self.assertIn("result_json", columns)
             self.assertIn("progress_json", columns)
-            self.assertEqual(versions, set(range(1, 26)))
+            self.assertEqual(versions, set(range(1, 28)))
             with db.connect() as upgraded:
                 tables = {
                     row["name"]
@@ -75,6 +75,12 @@ class DatabaseMigrationTests(unittest.TestCase):
                         "SELECT name FROM sqlite_master WHERE type='index'"
                     )
                 }
+                group_columns = {
+                    row["name"]
+                    for row in upgraded.execute("PRAGMA table_info(device_roster_groups)")
+                }
+                self.assertIn("name", group_columns)
+                self.assertIn("owner_user_id", group_columns)
             self.assertIn("device_inventory_files", tables)
             self.assertIn("user_onboarding", tables)
             self.assertIn("user_notifications", tables)
