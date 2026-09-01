@@ -1085,17 +1085,26 @@ dialog form { padding: 18px; }
   .mobile-game-meta > span + span::before { position: absolute; left: -6px; content: "·"; }
   .mobile-game-meta > .mobile-platform {
     margin-right: 2px;
-    padding: 1px 5px;
-    border: 1px solid color-mix(in oklch, var(--accent) 42%, var(--border));
+    padding: 2px 7px;
+    border: 1px solid color-mix(in oklch, var(--platform-color) 70%, white 8%);
     border-radius: 999px;
-    background: var(--accent-soft);
-    color: var(--accent);
-    font-size: 0.6rem;
-    font-weight: 750;
-    letter-spacing: 0.055em;
-    line-height: 1.35;
+    background: color-mix(in oklch, var(--platform-color) 68%, var(--surface));
+    color: white;
+    font-size: 0.65rem;
+    font-weight: 800;
+    letter-spacing: 0.045em;
+    line-height: 1.3;
+    text-shadow: 0 1px 1px oklch(10% 0.02 285 / 45%);
     text-transform: uppercase;
   }
+  .mobile-platform.platform-tone-0 { --platform-color: oklch(58% 0.19 285); }
+  .mobile-platform.platform-tone-1 { --platform-color: oklch(57% 0.16 245); }
+  .mobile-platform.platform-tone-2 { --platform-color: oklch(55% 0.15 195); }
+  .mobile-platform.platform-tone-3 { --platform-color: oklch(55% 0.15 150); }
+  .mobile-platform.platform-tone-4 { --platform-color: oklch(62% 0.17 80); }
+  .mobile-platform.platform-tone-5 { --platform-color: oklch(58% 0.19 35); }
+  .mobile-platform.platform-tone-6 { --platform-color: oklch(56% 0.18 330); }
+  .mobile-platform.platform-tone-7 { --platform-color: oklch(57% 0.12 220); }
   .mobile-game-meta > .mobile-platform + span::before { content: none; }
   .button.secondary.mobile-device-button {
     display: inline-flex;

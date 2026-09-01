@@ -865,6 +865,15 @@ function gameRating(game) {
   return `<span class="rating-summary" title="ScreenScraper community rating"><strong>${score.toLocaleString(undefined, { maximumFractionDigits: 1 })}<small>/20</small></strong>${rank ? `<span>${rank}</span>` : ""}${game.top_staff ? '<span class="staff-pick">Staff pick</span>' : ""}</span>`;
 }
 
+function platformTone(platform) {
+  const value = String(platform || "");
+  let hash = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    hash = ((hash << 5) - hash + value.charCodeAt(index)) | 0;
+  }
+  return Math.abs(hash) % 8;
+}
+
 function mobileGameMeta(game) {
   const parts = [
     formatBytes(game.size),
@@ -875,7 +884,7 @@ function mobileGameMeta(game) {
   if (Number(game.file_count) > 1) parts.push(`${Number(game.file_count).toLocaleString()} files`);
   if (game.duplicate_status === "exact") parts.push("Exact duplicate");
   else if (game.duplicate_status === "possible") parts.push("Possible duplicate");
-  return `<span class="mobile-game-meta"><span class="mobile-platform">${escapeHtml(game.platform)}</span>${parts.map((part) => `<span>${part}</span>`).join("")}</span>`;
+  return `<span class="mobile-game-meta"><span class="mobile-platform platform-tone-${platformTone(game.platform)}">${escapeHtml(game.platform)}</span>${parts.map((part) => `<span>${part}</span>`).join("")}</span>`;
 }
 
 function mobileDeviceAction(game) {
