@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import tomllib
 import unittest
 from pathlib import Path
@@ -39,6 +40,12 @@ class PackagingTests(unittest.TestCase):
             "  .table-wrap:not(.responsive-records) > table,",
             styles,
         )
+
+    def test_every_css_custom_property_is_defined(self):
+        styles = (REPO_ROOT / "app/static/styles.css").read_text(encoding="utf-8")
+        definitions = set(re.findall(r"(--[a-zA-Z0-9-]+)\s*:", styles))
+        uses = set(re.findall(r"var\((--[a-zA-Z0-9-]+)", styles))
+        self.assertEqual(set(), uses - definitions)
 
 
 if __name__ == "__main__":

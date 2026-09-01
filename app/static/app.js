@@ -789,7 +789,7 @@ function libraryToolbar(includeDuplicate = true, platformItems = state.platforms
     ? `<button class="button secondary ${state.rankingOpen ? "active" : ""}" type="button" data-toggle-ranking ${selectedPlatform ? "" : "disabled"}>Top 100 coverage</button>`
     : "";
   const auxiliaryTools = ratingAction || rankingAction
-    ? `<details class="library-aux-tools"><summary>Ratings and rankings</summary><div>${ratingAction}${rankingAction}</div></details>`
+    ? `<details class="library-aux-tools" ${window.matchMedia("(min-width: 721px)").matches ? "open" : ""}><summary>Ratings and rankings</summary><div>${ratingAction}${rankingAction}</div></details>`
     : "";
   return `
     <div class="toolbar library-toolbar">
