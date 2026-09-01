@@ -2048,6 +2048,41 @@ function bindDeviceOnboarding() {
   });
 }
 
+function deviceOwnership(device) {
+  if (!device.owner_user_id) {
+    return { key: "unassigned", group: "Unassigned", label: "Unassigned", tone: "unassigned" };
+  }
+  if (Number(device.owner_user_id) === Number(state.principal?.id)) {
+    return { key: "mine", group: "My devices", label: "Owned by you", tone: "mine" };
+  }
+  const owner = device.owner_display_name || device.owner_username || "Another user";
+  return { key: "other", group: "Other people's devices", label: `Owned by ${owner}`, tone: "other" };
+}
+
+function devicePickerOptions(selectedId) {
+  const groups = ["mine", "other", "unassigned"];
+  return groups.map((key) => {
+    const devices = state.devices.filter((device) => deviceOwnership(device).key === key);
+    if (!devices.length) return "";
+    const label = deviceOwnership(devices[0]).group;
+    const options = devices.map((device) => {
+      const ownership = deviceOwnership(device);
+      return `<option value="${device.id}" ${device.id === selectedId ? "selected" : ""}>${escapeHtml(device.name)} — ${escapeHtml(ownership.label)}</option>`;
+    }).join("");
+    return `<optgroup label="${escapeHtml(label)}">${options}</optgroup>`;
+  }).join("");
+}
+
+function deviceOwnershipOverview(currentDevice) {
+  const current = deviceOwnership(currentDevice);
+  if (!isAdmin()) {
+    return `<div class="device-ownership-overview"><span class="ownership-badge ${current.tone}">${escapeHtml(current.label)}</span></div>`;
+  }
+  const counts = { mine: 0, other: 0, unassigned: 0 };
+  state.devices.forEach((device) => { counts[deviceOwnership(device).key] += 1; });
+  return `<div class="device-ownership-overview"><span class="ownership-badge ${current.tone}">${escapeHtml(current.label)}</span><span>${counts.mine.toLocaleString()} mine</span><span>${counts.other.toLocaleString()} owned by other people</span><span>${counts.unassigned.toLocaleString()} unassigned</span></div>`;
+}
+
 async function renderDevices() {
   const renderVersion = beginPageRender();
   setHeading("Devices", "See what is present now, then choose what changes next.");
@@ -2090,9 +2125,10 @@ async function renderDevices() {
     <div class="device-page-actions"><button class="button secondary" type="button" data-new-device>＋ Add device</button></div>
     ${deviceOnboardingPanel()}
     ${createdDevicePanel()}
+    ${deviceOwnershipOverview(device)}
     <div class="device-strip">
-      <label class="field"><span>Target device</span><select id="device-select">${state.devices.map((item) => `<option value="${item.id}" ${item.id === device.id ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("")}</select></label>
-      ${isAdmin() ? `<label class="field"><span>Owner</span><select id="device-owner"><option value="">Administrators only</option>${state.users.filter((user) => user.active && (user.roles || [user.role]).some((role) => ["member", "admin"].includes(role))).map((user) => `<option value="${user.id}" ${Number(device.owner_user_id) === Number(user.id) ? "selected" : ""}>${escapeHtml(user.display_name)} (${escapeHtml(user.username)})</option>`).join("")}</select></label>` : `<div class="field device-owner-summary"><span>Owner</span><strong>${escapeHtml(device.owner_display_name || "You")}</strong></div>`}
+      <label class="field"><span>Target device</span><select id="device-select">${devicePickerOptions(device.id)}</select></label>
+      ${isAdmin() ? `<label class="field"><span>Owner</span><select id="device-owner"><option value="">Unassigned · administrators can manage</option>${state.users.filter((user) => user.active && (user.roles || [user.role]).some((role) => ["member", "admin"].includes(role))).map((user) => `<option value="${user.id}" ${Number(device.owner_user_id) === Number(user.id) ? "selected" : ""}>${escapeHtml(user.display_name)} (${escapeHtml(user.username)})${Number(user.id) === Number(state.principal?.id) ? " · You" : ""}</option>`).join("")}</select>${!device.owner_user_id ? "<small>Select your account to mark this device as yours.</small>" : ""}</label>` : `<div class="field device-owner-summary"><span>Owner</span><strong>${escapeHtml(device.owner_display_name || "You")}</strong></div>`}
       <label class="field"><span>Deployment storage</span><select id="deployment-mode"><option value="copy" ${device.deployment_mode === "copy" ? "selected" : ""}>Independent copies</option><option value="hardlink" ${device.deployment_mode === "hardlink" ? "selected" : ""}>Prefer hardlinks</option></select></label>
       <div class="device-summary">
         ${deviceMetric(preview.hardlinked, "hardlinked", "Individual device files that share storage with their canonical library files on the NUC.")}
