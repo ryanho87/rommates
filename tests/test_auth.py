@@ -60,6 +60,24 @@ class AuthServiceTests(unittest.TestCase):
         with self.assertRaisesRegex(LibraryError, "already exists"):
             self.auth.create_user("ryan", "Other", "another-test-password", "viewer")
 
+    def test_roles_combine_without_granting_admin(self):
+        user = self.auth.create_user(
+            "friend",
+            "Friend",
+            "a-long-test-password",
+            ["contributor", "member"],
+        )
+        self.assertEqual(user["roles"], ["contributor", "member"])
+        principal, _, _ = self.auth.authenticate(
+            "friend", "a-long-test-password", "multi-role"
+        )
+        self.assertTrue(principal.has_role("contributor"))
+        self.assertTrue(principal.has_role("member"))
+        self.assertFalse(principal.has_role("admin"))
+        self.auth.update_user(user["id"], roles=["viewer", "member"])
+        updated = next(item for item in self.auth.list_users() if item["id"] == user["id"])
+        self.assertEqual(updated["roles"], ["viewer", "member"])
+
 
 if __name__ == "__main__":
     unittest.main()

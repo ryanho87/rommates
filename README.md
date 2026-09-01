@@ -127,6 +127,10 @@ create or reset an account; the user must replace it before accessing ROMmates. 
 users can change their own password from the account controls, which invalidates their
 other sessions.
 
+Roles are independent grants and can be combined on one account. For example, give a
+friend both **Contributor** and **Member** to let them submit reviewed uploads while also
+managing only the devices assigned to them.
+
 - **Viewer:** browse the library, inspect cached artwork and rankings, and create a
   short-lived, single-use ROM download.
 - **Contributor:** Viewer access plus resumable uploads. Completed uploads remain in the

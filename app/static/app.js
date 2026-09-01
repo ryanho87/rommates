@@ -117,6 +117,7 @@ const mobileMenuButton = document.querySelector("#mobile-menu-button");
 const navBackdrop = document.querySelector("#nav-backdrop");
 const sidebarCloseButton = document.querySelector("#sidebar-close-button");
 
+function hasRole(role) { return (state.principal?.roles || [state.principal?.role]).includes(role); }
 function isAdmin() { return state.permissions.admin; }
 function canManageDevices() { return state.permissions.manageDevices; }
 function canUpload() { return state.permissions.upload; }
@@ -151,7 +152,9 @@ function applyRoleNavigation() {
   const account = document.querySelector("#account-state");
   account?.classList.remove("hidden");
   document.querySelector("#account-name").textContent = state.principal?.display_name || "ROMmates user";
-  document.querySelector("#account-role").textContent = state.principal?.bootstrap ? "Bootstrap admin" : state.principal?.role || "";
+  document.querySelector("#account-role").textContent = state.principal?.bootstrap
+    ? "Bootstrap admin"
+    : (state.principal?.roles || [state.principal?.role]).filter(Boolean).join(" · ");
   changePasswordButton.classList.toggle("hidden", Boolean(state.principal?.bootstrap));
 }
 
@@ -478,9 +481,9 @@ async function refreshStatus() {
   state.status = await api("/api/status");
   state.principal = state.status.user;
   state.permissions = {
-    admin: state.principal?.role === "admin" && !state.principal?.must_change_password,
-    manageDevices: ["admin", "member"].includes(state.principal?.role) && !state.principal?.must_change_password,
-    upload: ["admin", "contributor"].includes(state.principal?.role) && !state.principal?.must_change_password,
+    admin: hasRole("admin") && !state.principal?.must_change_password,
+    manageDevices: (hasRole("admin") || hasRole("member")) && !state.principal?.must_change_password,
+    upload: (hasRole("admin") || hasRole("contributor")) && !state.principal?.must_change_password,
     download: !state.principal?.must_change_password,
   };
   applyRoleNavigation();
@@ -2089,7 +2092,7 @@ async function renderDevices() {
     ${createdDevicePanel()}
     <div class="device-strip">
       <label class="field"><span>Target device</span><select id="device-select">${state.devices.map((item) => `<option value="${item.id}" ${item.id === device.id ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("")}</select></label>
-      ${isAdmin() ? `<label class="field"><span>Owner</span><select id="device-owner"><option value="">Administrators only</option>${state.users.filter((user) => user.active && ["member", "admin"].includes(user.role)).map((user) => `<option value="${user.id}" ${Number(device.owner_user_id) === Number(user.id) ? "selected" : ""}>${escapeHtml(user.display_name)} (${escapeHtml(user.username)})</option>`).join("")}</select></label>` : `<div class="field device-owner-summary"><span>Owner</span><strong>${escapeHtml(device.owner_display_name || "You")}</strong></div>`}
+      ${isAdmin() ? `<label class="field"><span>Owner</span><select id="device-owner"><option value="">Administrators only</option>${state.users.filter((user) => user.active && (user.roles || [user.role]).some((role) => ["member", "admin"].includes(role))).map((user) => `<option value="${user.id}" ${Number(device.owner_user_id) === Number(user.id) ? "selected" : ""}>${escapeHtml(user.display_name)} (${escapeHtml(user.username)})</option>`).join("")}</select></label>` : `<div class="field device-owner-summary"><span>Owner</span><strong>${escapeHtml(device.owner_display_name || "You")}</strong></div>`}
       <label class="field"><span>Deployment storage</span><select id="deployment-mode"><option value="copy" ${device.deployment_mode === "copy" ? "selected" : ""}>Independent copies</option><option value="hardlink" ${device.deployment_mode === "hardlink" ? "selected" : ""}>Prefer hardlinks</option></select></label>
       <div class="device-summary">
         ${deviceMetric(preview.hardlinked, "hardlinked", "Individual device files that share storage with their canonical library files on the NUC.")}
@@ -2905,21 +2908,35 @@ async function renderUsers() {
     member: "Browse, download, and manage only their own devices",
     admin: "Full library, device, save, cleanup, and user access",
   };
-  const rows = data.items.map((user) => `<tr><td class="name-cell"><strong>${escapeHtml(user.display_name)}</strong><span class="path-line">${escapeHtml(user.username)}${state.principal?.id === user.id ? " · You" : ""}</span></td><td><select data-user-role="${user.id}" aria-label="Role for ${escapeHtml(user.username)}">${data.roles.map((role) => `<option value="${role}" ${user.role === role ? "selected" : ""}>${escapeHtml(role)}</option>`).join("")}</select><span class="path-line">${escapeHtml(roleCopy[user.role] || "")}</span></td><td><label class="device-choice compact"><input type="checkbox" data-user-active="${user.id}" ${user.active ? "checked" : ""}><span>${user.active ? "Active" : "Disabled"}</span></label>${user.must_change_password ? '<span class="path-line credential-pending">Password change required</span>' : ""}</td><td class="meta">${escapeHtml(user.last_login_at || "Never")}</td><td><form class="inline-password" data-user-password-form="${user.id}"><input class="input" name="password" type="password" required minlength="12" autocomplete="new-password" placeholder="Temporary password" aria-label="Temporary password for ${escapeHtml(user.username)}"><button class="button secondary small">Reset</button></form></td></tr>`).join("");
-  setViewHtml(`<section class="user-create"><div><h2>Add account</h2><p>Set a temporary password of at least 12 characters. The new user must replace it at first login.</p></div><form class="user-create-form" id="user-create-form"><label class="field"><span>Username</span><input class="input" name="username" required maxlength="64" autocomplete="off"></label><label class="field"><span>Display name</span><input class="input" name="display_name" maxlength="100" autocomplete="off"></label><label class="field"><span>Temporary password</span><input class="input" name="password" type="password" required minlength="12" autocomplete="new-password"></label><label class="field"><span>Role</span><select name="role">${data.roles.map((role) => `<option value="${role}">${escapeHtml(role[0].toUpperCase() + role.slice(1))}</option>`).join("")}</select></label><button class="button" type="submit">Create account</button></form></section><div class="section-heading"><div><h2>Accounts</h2><p>Members can onboard and manage only devices explicitly assigned to them. Existing unassigned devices remain administrator-only.</p></div><span class="meta">${data.items.length.toLocaleString()} total</span></div><div class="table-wrap"><table><thead><tr><th>User</th><th>Role</th><th>Status</th><th>Last login</th><th>Credentials</th></tr></thead><tbody>${rows}</tbody></table></div>`);
+  const roleChoices = (userId, assigned = []) => `<div class="role-grants">${data.roles.map((role) => `<label class="role-grant" title="${escapeHtml(roleCopy[role] || "")}"><input type="checkbox" data-user-role="${userId}" value="${role}" ${assigned.includes(role) ? "checked" : ""}><span>${escapeHtml(role[0].toUpperCase() + role.slice(1))}</span></label>`).join("")}</div>`;
+  const rows = data.items.map((user) => {
+    const roles = user.roles || [user.role];
+    return `<tr><td class="name-cell"><strong>${escapeHtml(user.display_name)}</strong><span class="path-line">${escapeHtml(user.username)}${state.principal?.id === user.id ? " · You" : ""}</span></td><td>${roleChoices(user.id, roles)}<span class="path-line">${roles.map((role) => roleCopy[role]).filter(Boolean).map(escapeHtml).join(" · ")}</span></td><td><label class="device-choice compact"><input type="checkbox" data-user-active="${user.id}" ${user.active ? "checked" : ""}><span>${user.active ? "Active" : "Disabled"}</span></label>${user.must_change_password ? '<span class="path-line credential-pending">Password change required</span>' : ""}</td><td class="meta">${escapeHtml(user.last_login_at || "Never")}</td><td><form class="inline-password" data-user-password-form="${user.id}"><input class="input" name="password" type="password" required minlength="12" autocomplete="new-password" placeholder="Temporary password" aria-label="Temporary password for ${escapeHtml(user.username)}"><button class="button secondary small">Reset</button></form></td></tr>`;
+  }).join("");
+  setViewHtml(`<section class="user-create"><div><h2>Add account</h2><p>Set a temporary password, then grant one or more independent capabilities.</p></div><form class="user-create-form" id="user-create-form"><label class="field"><span>Username</span><input class="input" name="username" required maxlength="64" autocomplete="off"></label><label class="field"><span>Display name</span><input class="input" name="display_name" maxlength="100" autocomplete="off"></label><label class="field"><span>Temporary password</span><input class="input" name="password" type="password" required minlength="12" autocomplete="new-password"></label><fieldset class="field role-field"><legend>Roles</legend>${roleChoices("new", ["viewer"])}</fieldset><button class="button" type="submit">Create account</button></form></section><div class="section-heading"><div><h2>Accounts</h2><p>Roles combine. Grant Contributor for reviewed uploads and Member for owned-device management; neither grants administrative access.</p></div><span class="meta">${data.items.length.toLocaleString()} total</span></div><div class="table-wrap"><table><thead><tr><th>User</th><th>Roles</th><th>Status</th><th>Last login</th><th>Credentials</th></tr></thead><tbody>${rows}</tbody></table></div>`);
   view.querySelector("#user-create-form")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
+    const roles = [...event.currentTarget.querySelectorAll('[data-user-role="new"]:checked')].map((input) => input.value);
+    if (!roles.length) return toast("Choose at least one role", "error");
     try {
-      await api("/api/users", { method: "POST", body: JSON.stringify(Object.fromEntries(form)) });
+      await api("/api/users", { method: "POST", body: JSON.stringify({ ...Object.fromEntries(form), roles }) });
       toast("Account created");
       await renderUsers();
     } catch (error) { toast(error.message, "error"); }
   });
-  view.querySelectorAll("[data-user-role]").forEach((select) => select.addEventListener("change", async (event) => {
+  view.querySelectorAll('[data-user-role]:not([data-user-role="new"])').forEach((input) => input.addEventListener("change", async (event) => {
+    const userId = event.currentTarget.dataset.userRole;
+    const roleInputs = [...view.querySelectorAll(`[data-user-role="${userId}"]`)];
+    const roles = roleInputs.filter((item) => item.checked).map((item) => item.value);
+    if (!roles.length) {
+      event.currentTarget.checked = true;
+      return toast("Every account needs at least one role", "error");
+    }
+    roleInputs.forEach((item) => { item.disabled = true; });
     try {
-      await api(`/api/users/${event.currentTarget.dataset.userRole}`, { method: "PATCH", body: JSON.stringify({ role: event.currentTarget.value }) });
-      toast("Role updated");
+      await api(`/api/users/${userId}`, { method: "PATCH", body: JSON.stringify({ roles }) });
+      toast("Roles updated");
       await renderUsers();
     } catch (error) { toast(error.message, "error"); await renderUsers(); }
   }));

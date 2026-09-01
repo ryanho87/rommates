@@ -779,11 +779,13 @@ class UserCreateRequest(BaseModel):
     username: str = Field(min_length=1, max_length=64)
     display_name: str = Field(default="", max_length=100)
     password: str = Field(min_length=PASSWORD_MIN_LENGTH, max_length=1024)
-    role: str = Field(pattern="^(viewer|contributor|member|admin)$")
+    roles: list[str] = Field(default_factory=list, max_length=len(ROLES))
+    role: str | None = None
 
 
 class UserUpdateRequest(BaseModel):
-    role: str | None = Field(default=None, pattern="^(viewer|contributor|member|admin)$")
+    roles: list[str] | None = Field(default=None, max_length=len(ROLES))
+    role: str | None = None
     active: bool | None = None
     password: str = Field(default="", max_length=1024)
 
@@ -800,14 +802,14 @@ def request_principal(request: Request) -> Principal:
 
 
 def can_manage_devices(principal: Principal) -> bool:
-    return principal.role in {"member", "admin"}
+    return principal.has_role("member") or principal.has_role("admin")
 
 
 def require_device_access(device_id: int, principal: Principal):
     with db.connect() as connection:
         row = connection.execute("SELECT * FROM devices WHERE id=?", (device_id,)).fetchone()
     if not row or (
-        principal.role != "admin"
+        not principal.has_role("admin")
         and (principal.id is None or row["owner_user_id"] != principal.id)
     ):
         raise HTTPException(status_code=404, detail="Device was not found")
@@ -818,15 +820,15 @@ def require_job_access(job_id: int, principal: Principal):
     with db.connect() as connection:
         row = connection.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
     if not row or (
-        principal.role != "admin"
+        not principal.has_role("admin")
         and (principal.id is None or row["requested_by"] != principal.id)
     ):
         raise HTTPException(status_code=404, detail="Job was not found")
     return row
 
 
-def role_allows(role: str, method: str, path: str) -> bool:
-    if role == "admin":
+def role_allows(principal: Principal, method: str, path: str) -> bool:
+    if principal.has_role("admin"):
         return True
     if path in {"/api/auth/me", "/api/auth/logout", "/api/auth/password"}:
         return True
@@ -837,7 +839,7 @@ def role_allows(role: str, method: str, path: str) -> bool:
         or path.startswith("/api/rankings/")
     ):
         return True
-    if role == "member":
+    if principal.has_role("member"):
         if method == "GET" and (
             path == "/api/devices"
             or path.startswith("/api/devices/")
@@ -860,7 +862,7 @@ def role_allows(role: str, method: str, path: str) -> bool:
     if method == "POST" and path.startswith("/api/games/") and path.endswith("/download-ticket"):
         return True
     if (
-        role == "contributor"
+        principal.has_role("contributor")
         and path.startswith("/api/uploads")
         and not path.endswith(("/approve", "/reject"))
     ):
@@ -909,9 +911,9 @@ async def protect_private_api(request: Request, call_next):
                     "password_change_required": True,
                 },
             )
-        if path.startswith("/mcp") and principal.role != "admin":
+        if path.startswith("/mcp") and not principal.has_role("admin"):
             return JSONResponse(status_code=403, content={"detail": "Administrator access is required"})
-        if path.startswith("/api/") and not role_allows(principal.role, request.method, path):
+        if path.startswith("/api/") and not role_allows(principal, request.method, path):
             return JSONResponse(status_code=403, content={"detail": "Your role does not allow this action"})
     return await call_next(request)
 
@@ -1020,9 +1022,11 @@ def current_user(request: Request):
         "user": principal.payload(),
         "roles": list(ROLES),
         "permissions": {
-            "admin": principal.role == "admin" and not principal.must_change_password,
+            "admin": principal.has_role("admin") and not principal.must_change_password,
             "manage_devices": can_manage_devices(principal) and not principal.must_change_password,
-            "upload": principal.role in {"admin", "contributor"} and not principal.must_change_password,
+            "upload": (
+                principal.has_role("admin") or principal.has_role("contributor")
+            ) and not principal.must_change_password,
             "download": not principal.must_change_password,
         },
     }
@@ -1035,10 +1039,11 @@ def users():
 
 @app.post("/api/users", status_code=201)
 def create_user(payload: UserCreateRequest):
+    roles = payload.roles or ([payload.role] if payload.role else [])
     user = auth.create_user(
-        payload.username, payload.display_name, payload.password, payload.role
+        payload.username, payload.display_name, payload.password, roles
     )
-    db.activity("user", f"Created {user['role']} account {user['username']}")
+    db.activity("user", f"Created account {user['username']} ({', '.join(user['roles'])})")
     return user
 
 
@@ -1048,11 +1053,12 @@ def update_user(user_id: int, payload: UserUpdateRequest, request: Request):
     user = auth.update_user(
         user_id,
         role=payload.role,
+        roles=payload.roles,
         active=payload.active,
         password=payload.password,
         actor_id=principal.id,
     )
-    db.activity("user", f"Updated account {user['username']} ({user['role']})")
+    db.activity("user", f"Updated account {user['username']} ({', '.join(user['roles'])})")
     return user
 
 
@@ -1078,12 +1084,12 @@ def status(request: Request):
         counts = connection.execute(
             "SELECT COUNT(*) AS games,COUNT(DISTINCT platform) AS platforms,COALESCE(SUM(size),0) AS bytes FROM games"
         ).fetchone()
-        if principal.role == "admin":
+        if principal.has_role("admin"):
             devices = connection.execute("SELECT COUNT(*) AS count FROM devices").fetchone()["count"]
             current_job = connection.execute(
                 "SELECT * FROM jobs ORDER BY id DESC LIMIT 1"
             ).fetchone()
-        elif principal.role == "member" and principal.id is not None:
+        elif principal.has_role("member") and principal.id is not None:
             devices = connection.execute(
                 "SELECT COUNT(*) AS count FROM devices WHERE owner_user_id=?", (principal.id,)
             ).fetchone()["count"]
@@ -1110,12 +1116,12 @@ def status(request: Request):
         "save_snapshots": save_snapshots,
         "job": job_payload(current_job) if current_job else None,
         "roots": {
-            "library": str(settings.library_root) if principal.role == "admin" else "ROM library",
-            "devices": str(settings.devices_root) if principal.role == "admin" else "Device library",
-            "trash": str(settings.trash_root) if principal.role == "admin" else "Trash",
-            "saves": str(settings.saves_root) if principal.role == "admin" else "Save vault",
-            "snapshots": str(settings.snapshots_root) if principal.role == "admin" else "Snapshots",
-            "media": str(settings.media_root) if principal.role == "admin" else "Artwork cache",
+            "library": str(settings.library_root) if principal.has_role("admin") else "ROM library",
+            "devices": str(settings.devices_root) if principal.has_role("admin") else "Device library",
+            "trash": str(settings.trash_root) if principal.has_role("admin") else "Trash",
+            "saves": str(settings.saves_root) if principal.has_role("admin") else "Save vault",
+            "snapshots": str(settings.snapshots_root) if principal.has_role("admin") else "Snapshots",
+            "media": str(settings.media_root) if principal.has_role("admin") else "Artwork cache",
         },
         "screenscraper": screenscraper.status(),
         "rawg": {"configured": ranking_service.configured},
@@ -1128,7 +1134,7 @@ def status(request: Request):
 def syncthing_status(request: Request, refresh: bool = False):
     principal = request_principal(request)
     payload = dict(syncthing.status(refresh=refresh))
-    if principal.role == "admin":
+    if principal.has_role("admin"):
         return payload
     with db.connect() as connection:
         owned_names = {
@@ -1293,9 +1299,9 @@ def games(
     if device_scope != "all" and device_id is None:
         raise HTTPException(status_code=400, detail="A device is required for this view")
     def visible_device(alias: str) -> str:
-        if principal.role == "admin":
+        if principal.has_role("admin"):
             return "1=1"
-        if principal.role == "member" and principal.id is not None:
+        if principal.has_role("member") and principal.id is not None:
             return f"{alias}.owner_user_id={int(principal.id)}"
         return "0=1"
     present_relpaths = (
@@ -1683,13 +1689,13 @@ def game_detail(game_id: int, request: Request):
     impact = {"status": "none", "groups": 0, "files": 0, "save_files": 0, "state_files": 0, "paths": [], "content_names": []}
     if can_manage_devices(principal):
         with db.connect() as connection:
-            owner_filter = "" if principal.role == "admin" else "WHERE d.owner_user_id=?"
-            owner_params = [] if principal.role == "admin" else [principal.id]
+            owner_filter = "" if principal.has_role("admin") else "WHERE d.owner_user_id=?"
+            owner_params = [] if principal.has_role("admin") else [principal.id]
             devices = [dict(row) for row in connection.execute(
                 "SELECT d.id,d.name,EXISTS(SELECT 1 FROM device_selections ds WHERE ds.device_id=d.id AND ds.game_id=?) AS selected "
                 f"FROM devices d {owner_filter} ORDER BY d.name", [game_id, *owner_params]
             )]
-    if principal.role == "admin":
+    if principal.has_role("admin"):
         impact = saves.save_impacts([game_id]).get(game_id, impact)
     return {"game": game, "files": files, "devices": devices, "artwork": screenscraper.detail(game_id), "save_impact": impact}
 
@@ -1922,8 +1928,8 @@ def delete_game(game_id: int):
 def devices(request: Request):
     principal = request_principal(request)
     with db.connect() as connection:
-        owner_filter = "" if principal.role == "admin" else "WHERE d.owner_user_id=?"
-        params = [] if principal.role == "admin" else [principal.id]
+        owner_filter = "" if principal.has_role("admin") else "WHERE d.owner_user_id=?"
+        params = [] if principal.has_role("admin") else [principal.id]
         rows = connection.execute(
             "SELECT d.*,u.username AS owner_username,u.display_name AS owner_display_name,"
             "COUNT(DISTINCT ds.game_id) AS selected_games,COUNT(DISTINCT dp.game_id) AS deployed_games "
@@ -1939,7 +1945,11 @@ def devices(request: Request):
 @app.post("/api/devices", status_code=201)
 def create_device(payload: DeviceCreateRequest, request: Request):
     principal = request_principal(request)
-    owner_user_id = principal.id if principal.role == "member" else None
+    owner_user_id = (
+        principal.id
+        if principal.has_role("member") and not principal.has_role("admin")
+        else None
+    )
     return library.create_device(payload.name, payload.deployment_mode, owner_user_id)
 
 
@@ -1954,7 +1964,13 @@ def update_device_owner(device_id: int, payload: DeviceOwnerRequest, request: Re
                 "SELECT id,username,display_name,role,active FROM users WHERE id=?",
                 (payload.owner_user_id,),
             ).fetchone()
-            if not owner or not owner["active"] or owner["role"] not in {"member", "admin"}:
+            owner_roles = {
+                row["role"]
+                for row in connection.execute(
+                    "SELECT role FROM user_roles WHERE user_id=?", (payload.owner_user_id,)
+                )
+            } if owner else set()
+            if not owner or not owner["active"] or not owner_roles.intersection({"member", "admin"}):
                 raise HTTPException(
                     status_code=400,
                     detail="Choose an active member or administrator",
@@ -2073,7 +2089,7 @@ def bulk_purge(payload: BulkPurgeRequest):
 @app.get("/api/uploads")
 def upload_sessions(request: Request):
     principal = request_principal(request)
-    return transfers.list_sessions(principal.id, principal.role == "admin")
+    return transfers.list_sessions(principal.id, principal.has_role("admin"))
 
 
 @app.post("/api/uploads", status_code=201)
@@ -2124,14 +2140,14 @@ async def upload_chunk(session_id: str, file_index: int, request: Request):
         offset,
         request.stream(),
         principal.id,
-        principal.role == "admin",
+        principal.has_role("admin"),
     )
 
 
 @app.post("/api/uploads/{session_id}/finalize")
 def finalize_upload(session_id: str, request: Request):
     principal = request_principal(request)
-    if principal.role == "contributor":
+    if principal.has_role("contributor") and not principal.has_role("admin"):
         upload = transfers.submit(session_id, principal.id)
         safe_notify(
             "upload",
@@ -2178,7 +2194,7 @@ def reject_upload(session_id: str, payload: UploadReviewRequest, request: Reques
 @app.delete("/api/uploads/{session_id}")
 def cancel_upload(session_id: str, request: Request):
     principal = request_principal(request)
-    return transfers.cancel(session_id, principal.id, principal.role == "admin")
+    return transfers.cancel(session_id, principal.id, principal.has_role("admin"))
 
 
 @app.post("/api/games/{game_id}/download-ticket")

@@ -13,6 +13,7 @@ from .library import LibraryError
 
 
 ROLES = ("viewer", "contributor", "member", "admin")
+ROLE_PRIORITY = {role: index for index, role in enumerate(ROLES)}
 SESSION_SECONDS = 30 * 24 * 60 * 60
 PASSWORD_MIN_LENGTH = 12
 
@@ -25,6 +26,10 @@ class Principal:
     role: str
     bootstrap: bool = False
     must_change_password: bool = False
+    roles: tuple[str, ...] = ()
+
+    def has_role(self, role: str) -> bool:
+        return role in (self.roles or (self.role,))
 
     def payload(self) -> dict[str, object]:
         return {
@@ -32,6 +37,7 @@ class Principal:
             "username": self.username,
             "display_name": self.display_name,
             "role": self.role,
+            "roles": list(self.roles or (self.role,)),
             "bootstrap": self.bootstrap,
             "must_change_password": self.must_change_password,
         }
@@ -142,35 +148,53 @@ class AuthService:
                 "SELECT id,username,display_name,role,active,must_change_password,created_at,last_login_at "
                 "FROM users ORDER BY active DESC,username COLLATE NOCASE"
             ).fetchall()
-        return [
-            {
-                **dict(row),
-                "active": bool(row["active"]),
-                "must_change_password": bool(row["must_change_password"]),
-            }
-            for row in rows
-        ]
+            roles_by_user: dict[int, list[str]] = {int(row["id"]): [] for row in rows}
+            for role_row in connection.execute(
+                "SELECT user_id,role FROM user_roles ORDER BY user_id,role"
+            ):
+                roles_by_user.setdefault(int(role_row["user_id"]), []).append(role_row["role"])
+        result = []
+        for row in rows:
+            item = dict(row)
+            roles = self._normalize_roles(roles_by_user.get(int(row["id"])) or [row["role"]])
+            item.update(
+                roles=roles,
+                active=bool(row["active"]),
+                must_change_password=bool(row["must_change_password"]),
+            )
+            result.append(item)
+        return result
 
-    def create_user(self, username: str, display_name: str, password: str, role: str) -> dict[str, object]:
+    def create_user(
+        self,
+        username: str,
+        display_name: str,
+        password: str,
+        roles: str | list[str],
+    ) -> dict[str, object]:
         username = username.strip()
         normalized = username.casefold()
         if not username or len(username) > 64 or any(char.isspace() for char in username):
             raise LibraryError("Username must be 1 to 64 characters without spaces")
-        if role not in ROLES:
-            raise LibraryError("Choose a valid role")
+        normalized_roles = self._normalize_roles([roles] if isinstance(roles, str) else roles)
+        primary_role = max(normalized_roles, key=ROLE_PRIORITY.__getitem__)
         password_hash = hash_password(password)
         with self.db.write() as connection:
             try:
                 connection.execute(
                     "INSERT INTO users(username,username_normalized,display_name,password_hash,role,must_change_password) "
                     "VALUES(?,?,?,?,?,1)",
-                    (username, normalized, display_name.strip()[:100] or username, password_hash, role),
+                    (username, normalized, display_name.strip()[:100] or username, password_hash, primary_role),
                 )
             except Exception as exc:
                 if "UNIQUE" in str(exc).upper():
                     raise LibraryError("That username already exists") from exc
                 raise
             user_id = connection.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
+            connection.executemany(
+                "INSERT INTO user_roles(user_id,role) VALUES(?,?)",
+                ((user_id, role) for role in normalized_roles),
+            )
         return next(item for item in self.list_users() if item["id"] == user_id)
 
     def update_user(
@@ -178,23 +202,37 @@ class AuthService:
         user_id: int,
         *,
         role: str | None = None,
+        roles: list[str] | None = None,
         active: bool | None = None,
         password: str = "",
         actor_id: int | None = None,
     ) -> dict[str, object]:
-        if role is not None and role not in ROLES:
-            raise LibraryError("Choose a valid role")
+        if role is not None and roles is not None:
+            raise LibraryError("Choose roles once")
+        requested_roles = roles if roles is not None else ([role] if role is not None else None)
+        normalized_roles = self._normalize_roles(requested_roles) if requested_roles is not None else None
         with self.db.write() as connection:
             current = connection.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
             if not current:
                 raise LibraryError("User was not found")
-            next_role = role or current["role"]
+            current_roles = {
+                row["role"]
+                for row in connection.execute(
+                    "SELECT role FROM user_roles WHERE user_id=?", (user_id,)
+                )
+            } or {str(current["role"])}
+            next_roles = set(normalized_roles) if normalized_roles is not None else current_roles
+            next_role = max(next_roles, key=ROLE_PRIORITY.__getitem__)
             next_active = bool(current["active"]) if active is None else active
-            if actor_id == user_id and (not next_active or next_role != "admin"):
+            if actor_id == user_id and (not next_active or "admin" not in next_roles):
                 raise LibraryError("You cannot remove your own administrator access")
-            if current["role"] == "admin" and current["active"] and (not next_active or next_role != "admin"):
+            if "admin" in current_roles and current["active"] and (
+                not next_active or "admin" not in next_roles
+            ):
                 remaining = connection.execute(
-                    "SELECT COUNT(*) AS count FROM users WHERE role='admin' AND active=1 AND id<>?",
+                    "SELECT COUNT(DISTINCT u.id) AS count FROM users u "
+                    "JOIN user_roles ur ON ur.user_id=u.id "
+                    "WHERE ur.role='admin' AND u.active=1 AND u.id<>?",
                     (user_id,),
                 ).fetchone()["count"]
                 if not remaining and actor_id is not None:
@@ -207,6 +245,12 @@ class AuthService:
                 updates.append("must_change_password=1")
             values.append(user_id)
             connection.execute(f"UPDATE users SET {','.join(updates)} WHERE id=?", values)
+            if normalized_roles is not None:
+                connection.execute("DELETE FROM user_roles WHERE user_id=?", (user_id,))
+                connection.executemany(
+                    "INSERT INTO user_roles(user_id,role) VALUES(?,?)",
+                    ((user_id, assigned_role) for assigned_role in normalized_roles),
+                )
             if not next_active or password:
                 connection.execute("DELETE FROM auth_sessions WHERE user_id=?", (user_id,))
         return next(item for item in self.list_users() if item["id"] == user_id)
@@ -242,11 +286,27 @@ class AuthService:
         return self._principal(updated)
 
     @staticmethod
-    def _principal(row) -> Principal:
+    def _normalize_roles(roles) -> list[str]:
+        unique = {str(role) for role in roles} if roles else set()
+        if not unique or any(role not in ROLES for role in unique):
+            raise LibraryError("Choose at least one valid role")
+        return sorted(unique, key=ROLE_PRIORITY.__getitem__)
+
+    def _principal(self, row) -> Principal:
+        with self.db.connect() as connection:
+            roles = [
+                role_row["role"]
+                for role_row in connection.execute(
+                    "SELECT role FROM user_roles WHERE user_id=?", (row["id"],)
+                )
+            ]
+        normalized_roles = self._normalize_roles(roles or [row["role"]])
+        primary_role = max(normalized_roles, key=ROLE_PRIORITY.__getitem__)
         return Principal(
             id=int(row["id"]),
             username=str(row["username"]),
             display_name=str(row["display_name"]),
-            role=str(row["role"]),
+            role=primary_role,
             must_change_password=bool(row["must_change_password"]),
+            roles=tuple(normalized_roles),
         )

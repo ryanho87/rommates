@@ -347,6 +347,13 @@ CREATE TABLE IF NOT EXISTS users (
     last_login_at TEXT
 );
 
+CREATE TABLE IF NOT EXISTS user_roles (
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    role TEXT NOT NULL CHECK(role IN ('viewer','contributor','member','admin')),
+    PRIMARY KEY(user_id,role)
+);
+CREATE INDEX IF NOT EXISTS idx_user_roles_role ON user_roles(role,user_id);
+
 CREATE TABLE IF NOT EXISTS auth_sessions (
     token_hash TEXT PRIMARY KEY,
     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -587,6 +594,22 @@ class Database:
                     "ALTER TABLE jobs ADD COLUMN requested_by INTEGER REFERENCES users(id) ON DELETE SET NULL"
                 )
             connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(20)")
+
+            # Roles are composable from version 21 onward. Keep users.role as a
+            # compatibility summary while user_roles is the authorization source.
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS user_roles ("
+                "user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,"
+                "role TEXT NOT NULL CHECK(role IN ('viewer','contributor','member','admin')),"
+                "PRIMARY KEY(user_id,role))"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_user_roles_role ON user_roles(role,user_id)"
+            )
+            connection.execute(
+                "INSERT OR IGNORE INTO user_roles(user_id,role) SELECT id,role FROM users"
+            )
+            connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(21)")
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:

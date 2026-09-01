@@ -265,11 +265,12 @@ class ApiIntegrationTests(unittest.TestCase):
                 "username": "member-test",
                 "display_name": "Member Test",
                 "password": "member-test-password",
-                "role": "member",
+                "roles": ["contributor", "member"],
             },
         )
         self.assertEqual(created_user.status_code, 201, created_user.text)
         member_id = created_user.json()["id"]
+        self.assertEqual(created_user.json()["roles"], ["contributor", "member"])
         admin_device = self.client.post(
             "/api/devices",
             headers=self.headers,
@@ -289,6 +290,7 @@ class ApiIntegrationTests(unittest.TestCase):
             },
         )
         self.assertEqual(changed.status_code, 200, changed.text)
+        self.assertEqual(self.client.get("/api/uploads").status_code, 200)
         self.assertEqual(self.client.get("/api/devices").json(), [])
 
         created_device = self.client.post(

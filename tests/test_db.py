@@ -61,7 +61,7 @@ class DatabaseMigrationTests(unittest.TestCase):
                 versions = {row["version"] for row in upgraded.execute("SELECT version FROM schema_migrations")}
             self.assertIn("result_json", columns)
             self.assertIn("progress_json", columns)
-            self.assertEqual(versions, set(range(1, 21)))
+            self.assertEqual(versions, set(range(1, 22)))
             with db.connect() as upgraded:
                 tables = {
                     row["name"]
@@ -127,6 +127,12 @@ class DatabaseMigrationTests(unittest.TestCase):
                 session = upgraded.execute(
                     "SELECT user_id FROM auth_sessions WHERE token_hash='token'"
                 ).fetchone()
+                migrated_roles = [
+                    row["role"]
+                    for row in upgraded.execute(
+                        "SELECT role FROM user_roles WHERE user_id=7 ORDER BY role"
+                    )
+                ]
                 device = upgraded.execute(
                     "SELECT owner_user_id FROM devices WHERE id=3"
                 ).fetchone()
@@ -137,6 +143,7 @@ class DatabaseMigrationTests(unittest.TestCase):
                 foreign_key_issues = upgraded.execute("PRAGMA foreign_key_check").fetchall()
             self.assertEqual((account["id"], account["role"]), (7, "admin"))
             self.assertEqual(session["user_id"], 7)
+            self.assertEqual(migrated_roles, ["admin"])
             self.assertIsNone(device["owner_user_id"])
             self.assertEqual(foreign_key_issues, [])
 
