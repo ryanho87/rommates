@@ -144,6 +144,9 @@ const inboxCount = document.querySelector("#inbox-count");
 const inboxList = document.querySelector("#inbox-list");
 const sidebarCloseButton = document.querySelector("#sidebar-close-button");
 const guidedTourButton = document.querySelector("#guided-tour-button");
+const headerTourButton = document.querySelector("#header-tour-button");
+const headerAccount = document.querySelector("#header-account");
+const mobileSessionLink = document.querySelector("#mobile-session-link");
 const tourLayer = document.querySelector("#tour-layer");
 const tourCard = document.querySelector("#tour-card");
 const tourLauncher = document.querySelector("#tour-launcher");
@@ -327,10 +330,21 @@ function applyRoleNavigation() {
   document.querySelector(".root-state")?.classList.toggle("hidden", !isAdmin());
   const account = document.querySelector("#account-state");
   account?.classList.remove("hidden");
-  document.querySelector("#account-name").textContent = state.principal?.display_name || "ROMmates user";
-  document.querySelector("#account-role").textContent = state.principal?.bootstrap
+  const displayName = state.principal?.display_name || state.principal?.username || "ROMmates user";
+  const roleLabel = state.principal?.bootstrap
     ? "Bootstrap admin"
     : (state.principal?.roles || [state.principal?.role]).filter(Boolean).join(" · ");
+  const initial = displayName.trim().charAt(0).toLocaleUpperCase() || "R";
+  document.querySelector("#account-name").textContent = displayName;
+  document.querySelector("#account-role").textContent = roleLabel;
+  document.querySelector("#header-account-name").textContent = displayName;
+  document.querySelector("#header-account-role").textContent = roleLabel;
+  document.querySelector("#header-account-avatar").textContent = initial;
+  document.querySelector("#mobile-session-name").textContent = displayName;
+  headerAccount.setAttribute("aria-label", `Open ${displayName}'s account`);
+  headerAccount.classList.remove("hidden");
+  headerTourButton.classList.remove("hidden");
+  mobileSessionLink.classList.remove("hidden");
 }
 
 // Views re-render by replacing their whole subtree, which destroys the element the
@@ -4301,10 +4315,16 @@ logoutButton.addEventListener("click", async () => {
   state.inbox = { items: [], unread: 0 };
   renderInbox();
   document.querySelector("#account-state")?.classList.add("hidden");
+  headerAccount.classList.add("hidden");
+  headerTourButton.classList.add("hidden");
+  mobileSessionLink.classList.add("hidden");
   renderAuthentication();
 });
 
 guidedTourButton.addEventListener("click", startTour);
+headerTourButton.addEventListener("click", startTour);
+headerAccount.addEventListener("click", () => navigateTo("account"));
+mobileSessionLink.addEventListener("click", () => navigateTo("account"));
 tourLauncher.addEventListener("click", startTour);
 document.querySelector("#tour-close-button").addEventListener("click", () => closeTour(true));
 document.querySelector("#tour-backdrop").addEventListener("click", () => closeTour(true));
