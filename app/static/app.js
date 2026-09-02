@@ -129,6 +129,7 @@ const dialogTitle = document.querySelector("#dialog-title");
 const dialogContent = document.querySelector("#dialog-content");
 const dialogConfirm = document.querySelector("#dialog-confirm");
 const dialogCancel = document.querySelector("#dialog-cancel");
+const dialogAlternate = document.querySelector("#dialog-alternate");
 const logoutButton = document.querySelector("#logout-button");
 const gameDetailDialog = document.querySelector("#game-detail-dialog");
 const gameDetailTitle = document.querySelector("#game-detail-title");
@@ -2605,7 +2606,6 @@ function deviceWorkspaceControls(device, target, preview, isGroup = false) {
   const ready = Boolean(device.syncthing_ready_at);
   const gameCount = Number(preview.games || 0);
   const pending = Number(preview.additions || 0) + Number(preview.removals || 0) + Number(preview.conversions || 0);
-  const discardable = Number(preview.additions || 0) + Number(preview.removals || 0);
   const homeScope = isGroup ? "selected" : "on_device";
   const delivery = isGroup
     ? `${target.members.length.toLocaleString()} ${target.members.length === 1 ? "device" : "devices"}`
@@ -2624,7 +2624,7 @@ function deviceWorkspaceControls(device, target, preview, isGroup = false) {
       <button class="text-button" type="button" data-new-device>Create new device</button>
       <button class="text-button" type="button" data-new-device-group>Create device group</button>
       <button class="text-button" type="button" data-device-export ${gameCount ? "" : "disabled"}>Download ROMs</button>
-      ${pending ? `<div class="device-change-actions">${discardable ? '<button class="button secondary small" id="clear-device-changes" type="button">Clear changes</button>' : ""}<button class="button small device-apply-action" id="apply-device" type="button">Review ${pending.toLocaleString()} ${pending === 1 ? "change" : "changes"}</button></div>` : ""}
+      ${pending ? `<button class="button small device-apply-action" id="apply-device" type="button">Review ${pending.toLocaleString()} ${pending === 1 ? "change" : "changes"}</button>` : ""}
     </div>
   </section>`;
 }
@@ -3054,60 +3054,39 @@ async function renderDevices() {
       await renderDevices();
     } catch (error) { checkbox.checked = !checkbox.checked; checkbox.disabled = false; toast(error.message, "error"); }
   });
-  view.querySelector("#clear-device-changes")?.addEventListener("click", async (event) => {
-    const button = event.currentTarget;
-    const plans = isGroup ? memberPreviews : [memberPreviews[0]];
-    const discardPlans = plans.map((item, index) => ({
-      label: isGroup ? target.members[index].name : device.name,
-      plan: {
-        ...item,
-        conversions: 0,
-        changes: { ...(item.changes || {}), conversions: [] },
-      },
-    })).filter(({ plan }) => Number(plan.additions || 0) || Number(plan.removals || 0));
-    const discardCount = discardPlans.reduce(
-      (total, { plan }) => total + Number(plan.additions || 0) + Number(plan.removals || 0),
-      0,
-    );
-    const confirmed = await confirmAction({
-      title: `Clear ${discardCount.toLocaleString()} proposed ${discardCount === 1 ? "change" : "changes"}?`,
-      content: `<p class="warning-copy">ROMmates will restore the desired roster to the ROMs currently managed on ${escapeHtml(device.name)}. No device files will be changed.${isGroup ? ` This becomes the shared roster for all ${target.members.length} group members.` : ""}</p><div class="device-plan-reviews">${discardPlans.map(({ plan, label }) => devicePlanReview(plan, label, false)).join("")}</div>`,
-      confirmLabel: "Clear changes",
-      cancelLabel: "Keep changes",
-      danger: false,
-      wide: true,
-    });
-    if (!confirmed) return;
-    button.disabled = true;
-    try {
-      const result = await api(`/api/devices/${device.id}/discard-changes`, { method: "POST" });
-      const conversions = Number(preview.conversions || 0);
-      toast(conversions
-        ? `Cleared roster changes for ${result.devices.toLocaleString()} ${result.devices === 1 ? "device" : "devices"}; ${conversions.toLocaleString()} hardlink ${conversions === 1 ? "conversion remains" : "conversions remain"}`
-        : "All proposed roster changes cleared");
-      await loadReferenceData();
-      await renderDevices();
-    } catch (error) {
-      button.disabled = false;
-      toast(error.message, "error");
-    }
-  });
   view.querySelector("#apply-device")?.addEventListener("click", async () => {
     const plans = isGroup ? memberPreviews : [memberPreviews[0]];
+    const discardable = plans.reduce(
+      (total, item) => total + Number(item.additions || 0) + Number(item.removals || 0),
+      0,
+    );
     const planReviews = plans.map((item, index) => devicePlanReview(
       item,
       isGroup ? target.members[index].name : device.name,
       plans.length === 1,
     )).join("");
-    const confirmed = await confirmAction({
+    const choice = await chooseAction({
       title: `Apply changes to ${isGroup ? deviceTargetName(target) : device.name}?`,
-      content: `<p class="warning-copy">${isGroup ? `ROMmates will reconcile all ${target.members.length} group members and request a Syncthing rescan for each one.` : "ROMmates will deploy additions as hardlinks where supported, remove deselected managed files, and request a Syncthing rescan."}</p><div class="device-plan-reviews">${planReviews}</div>`,
+      content: `<p class="warning-copy">${isGroup ? `ROMmates will reconcile all ${target.members.length} group members and request a Syncthing rescan for each one.` : "ROMmates will deploy additions as hardlinks where supported, remove deselected managed files, and request a Syncthing rescan."}${discardable ? " Clear proposed changes to return the desired roster to the files ROMmates currently manages, without changing device files." : ""}</p><div class="device-plan-reviews">${planReviews}</div>`,
       confirmLabel: isGroup ? "Apply group changes" : "Apply device changes",
-      cancelLabel: isGroup ? "Keep current files" : "Keep current device files",
+      cancelLabel: "Keep editing",
+      alternateLabel: discardable ? "Clear proposed changes" : "",
       danger: preview.removals > 0,
       wide: true,
     });
-    if (!confirmed) return;
+    if (choice === "alternate") {
+      try {
+        const result = await api(`/api/devices/${device.id}/discard-changes`, { method: "POST" });
+        const conversions = plans.reduce((total, item) => total + Number(item.conversions || 0), 0);
+        toast(conversions
+          ? `Cleared roster changes for ${result.devices.toLocaleString()} ${result.devices === 1 ? "device" : "devices"}; ${conversions.toLocaleString()} hardlink ${conversions === 1 ? "conversion remains" : "conversions remain"}`
+          : "All proposed roster changes cleared");
+        await loadReferenceData();
+        await renderDevices();
+      } catch (error) { toast(error.message, "error"); }
+      return;
+    }
+    if (choice !== "confirm") return;
     try {
       if (isGroup) {
         const queued = await api(`/api/device-groups/${target.groupId}/apply`, { method: "POST" });
@@ -3973,22 +3952,32 @@ async function cancelJob(jobId, button = stopJobButton) {
   }
 }
 
-function confirmAction({ title, content, confirmLabel, cancelLabel = "Cancel", danger, wide = false }) {
+function chooseAction({ title, content, confirmLabel, cancelLabel = "Cancel", alternateLabel = "", danger, wide = false }) {
   dialogTitle.textContent = title;
   dialogContent.innerHTML = content;
   dialogConfirm.textContent = confirmLabel;
   dialogCancel.textContent = cancelLabel;
+  dialogAlternate.textContent = alternateLabel;
+  dialogAlternate.classList.toggle("hidden", !alternateLabel);
   dialogConfirm.className = `button ${danger ? "danger" : ""}`;
   dialog.classList.toggle("wide", wide);
+  dialog.querySelector(".dialog-actions")?.classList.toggle("has-alternate", Boolean(alternateLabel));
+  dialog.returnValue = "";
   dialog.showModal();
   return new Promise((resolve) => {
     const close = () => {
       dialog.removeEventListener("close", close);
       dialog.classList.remove("wide");
-      resolve(dialog.returnValue === "confirm");
+      dialog.querySelector(".dialog-actions")?.classList.remove("has-alternate");
+      dialogAlternate.classList.add("hidden");
+      resolve(dialog.returnValue || "cancel");
     };
     dialog.addEventListener("close", close);
   });
+}
+
+async function confirmAction(options) {
+  return (await chooseAction(options)) === "confirm";
 }
 
 function renderInbox() {

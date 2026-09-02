@@ -713,7 +713,7 @@ input[type="checkbox"] { width: 15px; height: 15px; margin: 0; accent-color: var
 .device-secondary-actions { display: flex; align-items: center; gap: 8px 18px; flex-wrap: wrap; }
 .device-secondary-actions .text-button { min-height: 30px; padding: 0; color: var(--text-muted); font-weight: 650; }
 .device-secondary-actions .text-button:hover { color: var(--accent); }
-.device-change-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+.device-apply-action { margin-left: auto; }
 .device-admin-details { margin: 0 0 16px; border-bottom: 1px solid var(--border); }
 .device-admin-details > summary { width: fit-content; margin-bottom: 10px; color: var(--text-faint); font-size: 0.7rem; cursor: pointer; }
 .device-admin-details-body { display: grid; grid-template-columns: minmax(220px, .65fr) minmax(0, 1.35fr) auto; gap: 14px; align-items: end; padding: 0 0 14px; }
@@ -1160,6 +1160,7 @@ dialog form { padding: 18px; }
 .dialog-head, .dialog-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .dialog-head h2 { margin: 0; font-size: 1rem; }
 .dialog-actions { justify-content: flex-end; margin-top: 20px; }
+.dialog-actions.has-alternate #dialog-alternate { margin-right: auto; }
 .warning-copy { color: var(--text-muted); }
 .warning-copy strong { color: var(--text); }
 dialog.wide { width: min(760px, calc(100vw - 32px)); max-height: min(88dvh, 780px); overflow: hidden; }
@@ -1410,8 +1411,7 @@ html.game-detail-open body { overflow: hidden; overscroll-behavior: none; }
   .device-mode-chip { min-height: 44px; padding-inline: 8px; }
   .device-secondary-actions { gap: 4px 16px; }
   .device-secondary-actions .text-button { min-height: 42px; }
-  .device-change-actions { display: grid; grid-template-columns: minmax(0, .8fr) minmax(0, 1.2fr); width: 100%; margin-left: 0; }
-  .device-change-actions .button { width: 100%; min-height: 44px; }
+  .device-apply-action { width: 100%; min-height: 44px; margin-left: 0; }
   .device-admin-details-body { grid-template-columns: 1fr; align-items: stretch; }
   .device-admin-details-body > .button { width: 100%; }
   .device-game-heading { align-items: flex-start; flex-direction: column; gap: 8px; }
@@ -1891,6 +1891,8 @@ html.game-detail-open body { overflow: hidden; overscroll-behavior: none; }
   .account-device { align-items: flex-start; }
   .account-platform-row { grid-template-columns: minmax(66px, auto) minmax(80px, 1fr) minmax(28px, auto); gap: 8px; }
   .dialog-actions .button { flex: 1; }
+  .dialog-actions.has-alternate { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .dialog-actions.has-alternate #dialog-alternate { grid-column: 1 / -1; width: 100%; margin-right: 0; }
   .auth-panel { max-width: none; margin: 20px auto; padding: 18px 15px; }
   .toast-region { right: 10px; bottom: calc(10px + env(safe-area-inset-bottom)); left: 10px; }
   .toast { width: 100%; }

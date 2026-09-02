@@ -402,6 +402,8 @@ class ApiIntegrationTests(unittest.TestCase):
             headers=self.headers,
             json={"name": "admin-only-device", "deployment_mode": "hardlink"},
         ).json()
+        scan = self.client.post("/api/scan", headers=self.headers)
+        self.assertEqual(self.wait_for_job(scan.json()["job_id"])["status"], "complete")
 
         login = self.client.post(
             "/api/auth/login",
@@ -444,6 +446,10 @@ class ApiIntegrationTests(unittest.TestCase):
             404,
         )
         self.assertEqual(
+            self.client.post(f"/api/devices/{admin_device['id']}/discard-changes").status_code,
+            404,
+        )
+        self.assertEqual(
             self.client.post(
                 f"/api/devices/{owned['id']}/roster-link",
                 json={"target_device_ids": [admin_device["id"]]},
@@ -461,6 +467,14 @@ class ApiIntegrationTests(unittest.TestCase):
         detail = self.client.get(f"/api/games/{game_id}").json()
         self.assertEqual([item["name"] for item in detail["devices"]], ["member-handheld"])
         self.assertTrue(detail["devices"][0]["selected"])
+        discarded = self.client.post(f"/api/devices/{owned['id']}/discard-changes")
+        self.assertEqual(discarded.status_code, 200, discarded.text)
+        self.assertEqual(discarded.json()["games"], 0)
+        selected = self.client.put(
+            f"/api/devices/{owned['id']}/selection",
+            json={"game_id": game_id, "selected": True},
+        )
+        self.assertEqual(selected.status_code, 200, selected.text)
         applied = self.client.post(f"/api/devices/{owned['id']}/apply")
         self.assertEqual(applied.status_code, 202, applied.text)
         job_id = applied.json()["job_id"]

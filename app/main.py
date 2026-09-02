@@ -932,6 +932,7 @@ def role_allows(principal: Principal, method: str, path: str) -> bool:
             or path == "/api/device-groups"
             or (path.startswith("/api/device-groups/") and path.endswith("/apply"))
             or (path.startswith("/api/devices/") and path.endswith("/apply"))
+            or (path.startswith("/api/devices/") and path.endswith("/discard-changes"))
             or (path.startswith("/api/devices/") and path.endswith("/export-ticket"))
             or (path.startswith("/api/devices/") and path.endswith("/roster-clone"))
             or (path.startswith("/api/devices/") and path.endswith("/roster-link"))
