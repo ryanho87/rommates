@@ -970,21 +970,6 @@ input[type="checkbox"] { width: 15px; height: 15px; margin: 0; accent-color: var
 .account-state span { color: var(--text-muted); font-size: 0.68rem; text-transform: capitalize; }
 .account-actions { display: flex; gap: 5px; }
 .account-actions .button { padding-inline: 7px; }
-.onboarding-checklist {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 24px;
-  margin-bottom: 14px;
-  padding: 16px 18px;
-  border: 1px solid color-mix(in oklch, var(--accent) 44%, var(--border));
-  border-radius: var(--radius-md);
-  background: linear-gradient(120deg, color-mix(in oklch, var(--accent) 12%, var(--surface-raised)), var(--surface-raised));
-}
-.onboarding-checklist h2 { margin: 2px 0 3px; font-size: 1rem; }
-.onboarding-checklist p { margin: 0; color: var(--text-muted); font-size: 0.76rem; }
-.onboarding-checklist-progress { display: flex; align-items: center; gap: 12px; flex: 0 0 auto; }
-.onboarding-checklist-progress > span { color: var(--text-muted); font-size: 0.72rem; font-weight: 700; }
 .eyebrow { color: var(--accent); font-size: 0.65rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
 
 .tour-launcher {
@@ -1538,8 +1523,6 @@ html.game-detail-open body { overflow: hidden; overscroll-behavior: none; }
   .sidebar-foot { padding-top: 18px; }
   .account-state { align-items: stretch; flex-direction: column; }
   .account-actions .button { flex: 1; }
-  .onboarding-checklist { align-items: stretch; flex-direction: column; gap: 12px; padding: 14px; }
-  .onboarding-checklist-progress { justify-content: space-between; }
   .tour-launcher { right: 12px; bottom: calc(12px + env(safe-area-inset-bottom)); }
   .tour-card {
     inset: auto 8px calc(8px + env(safe-area-inset-bottom));

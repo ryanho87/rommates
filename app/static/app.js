@@ -1650,11 +1650,7 @@ async function renderOverview() {
     ? `<div class="dashboard-table recent-jobs"><table><thead><tr><th>Job</th><th>Status</th><th>Detail</th><th>Started</th></tr></thead><tbody>${data.recent_jobs.map((job) => `<tr><td><button class="text-button" data-dashboard-view="jobs" data-dashboard-job="${job.id}">${escapeHtml(job.kind)}</button></td><td>${dashboardJobBadge(job)}</td><td class="name-cell">${escapeHtml(job.detail)}</td><td class="meta">${dashboardDate(job.created_at)}</td></tr>`).join("")}</tbody></table></div>`
     : '<div class="dashboard-empty compact"><strong>No jobs yet</strong><span>Run a library scan to start collection history.</span></div>';
 
-  const tourSteps = TOUR_STEPS[onboardingAudience()];
-  const onboardingChecklist = state.onboarding && !state.onboarding.completed
-    ? `<section class="onboarding-checklist"><div><span class="eyebrow">Getting started</span><h2>Learn ROMmates in ${tourSteps.length} quick steps</h2><p>A role-aware walkthrough of the controls available to this account.</p></div><div class="onboarding-checklist-progress"><span>${state.onboarding.dismissed ? "Tour paused" : `${Math.min(state.onboarding.current_step + 1, tourSteps.length)} of ${tourSteps.length}`}</span><button class="button small" data-start-tour>${state.onboarding.dismissed ? "Restart tour" : "Continue tour"}</button></div></section>`
-    : "";
-  setViewHtml(`${onboardingChecklist}<div class="overview-strip" aria-label="Collection summary">
+  setViewHtml(`<div class="overview-strip" aria-label="Collection summary">
     <div><span>Games</span><strong>${collection.games.toLocaleString()}</strong></div>
     <div><span>Platforms</span><strong>${collection.platforms.toLocaleString()}</strong></div>
     <div><span>Library size</span><strong>${formatBytes(collection.bytes)}</strong></div>
@@ -1680,7 +1676,6 @@ async function renderOverview() {
       saveTab: button.dataset.dashboardSaveTab || null,
     });
   }));
-  view.querySelector("[data-start-tour]")?.addEventListener("click", startTour);
   view.querySelector("[data-refresh-syncthing]")?.addEventListener("click", async (event) => {
     event.currentTarget.disabled = true;
     try {
