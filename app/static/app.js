@@ -18,6 +18,7 @@ const ROUTE_VIEWS = new Map(Object.entries(VIEW_ROUTES).map(([viewName, path]) =
 const ARTWORK_MEMORY_CACHE_LIMIT = 192;
 const ARTWORK_FETCH_CONCURRENCY = 8;
 const ARTWORK_PREFETCH_MARGIN = "1500px 0px";
+const ARTWORK_THUMBNAIL_VERSION = "v1";
 
 function normalizedRoute(pathname = window.location.pathname) {
   const route = pathname.replace(/\/+$/, "");
@@ -1213,7 +1214,7 @@ function gamesTable(data, deviceMode = false) {
 function artworkThumb(game, interactive = true) {
   const hasArtwork = Number(game.artwork_count) > 0;
   const label = hasArtwork ? `View artwork for ${game.display_name}` : `Find artwork for ${game.display_name}`;
-  const content = game.cover_asset_id ? `<img data-artwork-src="${game.cover_asset_id}" data-artwork-version="${escapeHtml(game.cover_asset_version || "")}" alt="" loading="lazy"><span class="sr-only">${game.artwork_count} assets</span>` : `<span aria-hidden="true">${hasArtwork ? "●" : "＋"}</span>`;
+  const content = game.cover_asset_id ? `<img data-artwork-src="${game.cover_asset_id}" data-artwork-variant="thumbnail" data-artwork-version="${escapeHtml(`${game.cover_asset_version || "unversioned"}-${ARTWORK_THUMBNAIL_VERSION}`)}" alt="" loading="lazy"><span class="sr-only">${game.artwork_count} assets</span>` : `<span aria-hidden="true">${hasArtwork ? "●" : "＋"}</span>`;
   return interactive
     ? `<button class="artwork-button ${hasArtwork ? "has-artwork" : ""}" data-artwork-view="${game.id}" data-artwork-name="${escapeHtml(game.display_name)}" data-artwork-existing="${game.artwork_count || 0}" title="${escapeHtml(label)}" aria-label="${escapeHtml(label)}">${content}</button>`
     : `<span class="artwork-button passive ${hasArtwork ? "has-artwork" : ""}" title="${escapeHtml(hasArtwork ? `${game.artwork_count} cached assets` : "No cached artwork")}">${content}</span>`;
@@ -1234,7 +1235,7 @@ function artworkPanel(game) {
 }
 
 function artworkCacheKey(image) {
-  return `${image.dataset.artworkSrc}:${image.dataset.artworkVersion || "unversioned"}`;
+  return `${image.dataset.artworkVariant || "original"}:${image.dataset.artworkSrc}:${image.dataset.artworkVersion || "unversioned"}`;
 }
 
 function useCachedArtwork(image, key) {
@@ -1266,8 +1267,9 @@ async function fetchArtwork(image) {
   let pending = state.artworkLoads.get(key);
   if (!pending) {
     const version = encodeURIComponent(image.dataset.artworkVersion || "unversioned");
+    const collection = image.dataset.artworkVariant === "thumbnail" ? "thumbnails" : "assets";
     pending = (async () => {
-      const response = await fetch(`/api/artwork/assets/${image.dataset.artworkSrc}?v=${version}`, {
+      const response = await fetch(`/api/artwork/${collection}/${image.dataset.artworkSrc}?v=${version}`, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
         cache: "force-cache",
       });

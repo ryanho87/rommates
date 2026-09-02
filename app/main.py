@@ -16,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import BaseModel, Field, ValidationError
 
+from .artwork_cache import ArtworkThumbnailCache, THUMBNAIL_CACHE_VERSION
 from .auth import AuthService, PASSWORD_MIN_LENGTH, Principal, ROLES
 from .config import Settings
 from .db import Database
@@ -65,6 +66,7 @@ library = LibraryService(settings, db)
 saves = SaveSnapshotService(settings, db)
 naming = NamingService(db, settings.library_root, library, saves)
 screenscraper = ScreenScraperService(settings, db)
+artwork_thumbnails = ArtworkThumbnailCache(settings, db)
 ranking_service = RankingService(settings, db)
 transfers = TransferService(settings, db, library)
 syncthing = SyncthingService(settings)
@@ -594,6 +596,7 @@ async def lifespan(_: FastAPI):
     scheduler_stop = threading.Event()
     scheduler_thread = threading.Thread(target=save_scheduler, args=(scheduler_stop,), daemon=True)
     scheduler_thread.start()
+    artwork_thumbnails.start()
     if screenscraper.configured:
         for run_id in screenscraper.resumable_bulk_runs():
             job_id = enqueue_job(
@@ -611,6 +614,7 @@ async def lifespan(_: FastAPI):
     finally:
         scheduler_stop.set()
         scheduler_thread.join(timeout=2)
+        artwork_thumbnails.close()
         notifications.close()
 
 
@@ -888,7 +892,9 @@ def role_allows(principal: Principal, method: str, path: str) -> bool:
     if method == "GET" and (
         path in {"/api/status", "/api/platforms"}
         or path.startswith("/api/games")
+        or path == "/api/artwork/manifest"
         or path.startswith("/api/artwork/assets/")
+        or path.startswith("/api/artwork/thumbnails/")
         or path.startswith("/api/rankings/")
     ):
         return True
@@ -993,7 +999,9 @@ async def add_security_headers(request: Request, call_next):
     response.headers["Referrer-Policy"] = "no-referrer"
     response.headers["X-Content-Type-Options"] = "nosniff"
     if (
-        request.url.path.startswith("/api/artwork/assets/")
+        request.url.path.startswith(
+            ("/api/artwork/assets/", "/api/artwork/thumbnails/")
+        )
         and response.status_code == 200
     ):
         # Artwork is immutable at a versioned client URL and safe to retain in a
@@ -1868,7 +1876,22 @@ def game_detail(game_id: int, request: Request):
 
 @app.get("/api/artwork/status")
 def artwork_status():
-    return screenscraper.status()
+    return {**screenscraper.status(), "thumbnail_cache": artwork_thumbnails.status()}
+
+
+@app.get("/api/artwork/manifest")
+def artwork_manifest():
+    with db.connect() as connection:
+        summary = connection.execute(
+            "SELECT COUNT(*) AS count,COALESCE(SUM(size),0) AS bytes FROM game_assets "
+            "WHERE kind='cover'"
+        ).fetchone()
+    return {
+        "covers": summary["count"],
+        "original_bytes": summary["bytes"],
+        "thumbnail_version": THUMBNAIL_CACHE_VERSION,
+        "thumbnail_cache": artwork_thumbnails.status(),
+    }
 
 
 @app.get("/api/artwork/bulk")
@@ -1944,6 +1967,19 @@ def game_artwork(game_id: int):
 @app.get("/api/artwork/assets/{asset_id}")
 def artwork_asset(asset_id: int):
     path, content_type = screenscraper.asset_path(asset_id)
+    return FileResponse(
+        path,
+        media_type=content_type,
+        headers={
+            "Cache-Control": "private, max-age=31536000, immutable",
+            "Vary": "Authorization, Cookie",
+        },
+    )
+
+
+@app.get("/api/artwork/thumbnails/{asset_id}")
+def artwork_thumbnail(asset_id: int):
+    path, content_type = artwork_thumbnails.ensure(asset_id)
     return FileResponse(
         path,
         media_type=content_type,

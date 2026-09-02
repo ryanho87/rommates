@@ -13,6 +13,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
+from PIL import Image
 
 
 class ApiIntegrationTests(unittest.TestCase):
@@ -879,7 +880,9 @@ class ApiIntegrationTests(unittest.TestCase):
         scan = self.client.post("/api/scan", headers=self.headers)
         self.assertEqual(self.wait_for_job(scan.json()["job_id"])["status"], "complete")
         game = self.client.get("/api/games", headers=self.headers).json()["items"][0]
-        payload = b"cached-cover"
+        cover = io.BytesIO()
+        Image.new("RGB", (1200, 1800), "purple").save(cover, format="JPEG", quality=90)
+        payload = cover.getvalue()
         digest = hashlib.sha256(payload).hexdigest()
         asset_path = self.main.settings.media_root / str(game["id"]) / "cover.jpg"
         asset_path.parent.mkdir(parents=True, exist_ok=True)
@@ -914,6 +917,25 @@ class ApiIntegrationTests(unittest.TestCase):
         )
         self.assertIn("Authorization", response.headers["vary"])
         self.assertIn("Cookie", response.headers["vary"])
+
+        thumbnail = self.client.get(
+            f"/api/artwork/thumbnails/{asset_id}?v={digest[:16]}-v1",
+            headers=self.headers,
+        )
+        self.assertEqual(thumbnail.status_code, 200)
+        self.assertEqual(thumbnail.headers["content-type"], "image/webp")
+        self.assertEqual(
+            thumbnail.headers["cache-control"], "private, max-age=31536000, immutable"
+        )
+        with Image.open(io.BytesIO(thumbnail.content)) as image:
+            self.assertLessEqual(image.width, 160)
+            self.assertLessEqual(image.height, 160)
+
+        manifest = self.client.get("/api/artwork/manifest", headers=self.headers)
+        self.assertEqual(manifest.status_code, 200)
+        self.assertGreaterEqual(manifest.json()["covers"], 1)
+        self.assertEqual(manifest.json()["thumbnail_version"], "v1")
+        self.assertIn("thumbnail_cache", manifest.json())
 
     def test_dashboard_summarizes_collection_work_queues(self):
         scan = self.client.post("/api/scan", headers=self.headers)
