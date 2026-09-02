@@ -1162,6 +1162,32 @@ dialog form { padding: 18px; }
 .dialog-actions { justify-content: flex-end; margin-top: 20px; }
 .warning-copy { color: var(--text-muted); }
 .warning-copy strong { color: var(--text); }
+dialog.wide { width: min(760px, calc(100vw - 32px)); max-height: min(88dvh, 780px); overflow: hidden; }
+dialog.wide form { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; max-height: min(88dvh, 780px); }
+dialog.wide #dialog-content { min-height: 0; padding-right: 4px; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
+.device-plan-reviews { display: grid; gap: 10px; margin-top: 12px; }
+.device-plan-review { overflow: hidden; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface); }
+.device-plan-review > summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 46px; padding: 10px 12px; cursor: pointer; list-style: none; }
+.device-plan-review > summary::-webkit-details-marker { display: none; }
+.device-plan-review > summary::after { flex: 0 0 auto; color: var(--text-faint); content: "▾"; transition: transform 150ms ease; }
+.device-plan-review:not([open]) > summary::after { transform: rotate(-90deg); }
+.device-plan-review > summary span { min-width: 0; overflow-wrap: anywhere; color: var(--text); font-weight: 700; }
+.device-plan-review > summary small { margin-left: auto; color: var(--text-muted); font-size: 0.72rem; text-align: right; }
+.device-plan-review[open] > summary { border-bottom: 1px solid var(--border); background: var(--surface-raised); }
+.device-change-group + .device-change-group { border-top: 1px solid var(--border); }
+.device-change-group-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 12px; background: color-mix(in oklch, var(--surface-raised) 72%, transparent); }
+.device-change-group-head h4 { margin: 0; color: var(--text); font-size: 0.75rem; }
+.device-change-group-head span { padding: 2px 7px; border-radius: 999px; color: var(--text-muted); background: var(--surface-raised); font-size: 0.66rem; font-weight: 700; }
+.device-change-group.add .device-change-group-head h4 { color: var(--success); }
+.device-change-group.convert .device-change-group-head h4 { color: var(--accent); }
+.device-change-group.remove .device-change-group-head h4 { color: var(--danger); }
+.device-change-group ul { margin: 0; padding: 0; list-style: none; }
+.device-change-group li { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 9px 12px; border-bottom: 1px solid var(--border); }
+.device-change-group li:last-child { border-bottom: 0; }
+.device-change-name { min-width: 0; overflow-wrap: anywhere; color: var(--text); font-size: 0.78rem; }
+.device-change-name small { display: block; margin-top: 2px; color: var(--text-faint); font-size: 0.64rem; font-weight: 750; letter-spacing: .05em; text-transform: uppercase; }
+.device-change-files { color: var(--text-faint); font-size: 0.68rem; white-space: nowrap; }
+.device-change-empty { margin: 0; padding: 12px; color: var(--text-muted); font-size: 0.78rem; }
 .device-flow-dialog { width: min(860px, calc(100vw - 32px)); max-height: min(88dvh, 780px); overflow: hidden; }
 .device-flow-shell { display: grid; max-height: min(88dvh, 780px); }
 .device-flow-head { padding: 17px 18px 14px; border-bottom: 1px solid var(--border); }
@@ -1845,6 +1871,10 @@ html.game-detail-open body { overflow: hidden; overscroll-behavior: none; }
     overflow-y: auto;
     border-radius: var(--radius-md) var(--radius-md) 0 0;
   }
+  dialog.wide { width: 100%; max-height: 90dvh; }
+  dialog.wide form { max-height: 90dvh; }
+  .device-plan-review > summary { align-items: flex-start; }
+  .device-plan-review > summary small { max-width: 46%; }
   .device-flow-dialog { width: 100%; max-width: none; max-height: 90dvh; }
   dialog form { padding: 16px 14px calc(16px + env(safe-area-inset-bottom)); }
   .game-detail-dialog { max-height: 88dvh; overflow: hidden; }

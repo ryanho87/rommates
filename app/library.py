@@ -2057,8 +2057,8 @@ class LibraryService:
                 (device_id, game_id, relpath),
             )
 
-    def device_storage_summary(self, device_id: int) -> dict[str, int]:
-        """Inspect deployed files and report their current on-disk storage relationship."""
+    def device_storage_inspection(self, device_id: int) -> dict[str, object]:
+        """Inspect deployed files and identify copies that can become hardlinks."""
         with self.db.connect() as connection:
             device = connection.execute(
                 "SELECT path FROM devices WHERE id=?", (device_id,)
@@ -2067,10 +2067,12 @@ class LibraryService:
                 raise LibraryError("Device was not found")
             rows = connection.execute(
                 "SELECT dp.game_id,dp.relpath,gf.relpath AS source_relpath,"
+                "g.display_name,g.platform,"
                 "EXISTS(SELECT 1 FROM device_selections ds WHERE ds.device_id=dp.device_id "
                 "AND ds.game_id=dp.game_id) AS selected "
                 "FROM deployments dp LEFT JOIN game_files gf ON gf.game_id=dp.game_id "
-                "AND gf.device_relpath=dp.relpath WHERE dp.device_id=?",
+                "AND gf.device_relpath=dp.relpath LEFT JOIN games g ON g.id=dp.game_id "
+                "WHERE dp.device_id=?",
                 (device_id,),
             ).fetchall()
         source_root = self.settings.library_root.resolve()
@@ -2079,6 +2081,7 @@ class LibraryService:
             self.settings.devices_root / device["path"] / "roms",
         )
         summary = {"hardlinked": 0, "copied": 0, "missing": 0, "unknown": 0, "conversions": 0}
+        conversion_games: dict[int, dict[str, object]] = {}
         for row in rows:
             if not row["source_relpath"]:
                 summary["unknown"] += 1
@@ -2094,9 +2097,29 @@ class LibraryService:
                     summary["copied"] += 1
                     if row["selected"]:
                         summary["conversions"] += 1
+                        game = conversion_games.setdefault(
+                            row["game_id"],
+                            {
+                                "id": row["game_id"],
+                                "display_name": row["display_name"] or "Unknown ROM",
+                                "platform": row["platform"] or "unknown",
+                                "files": 0,
+                            },
+                        )
+                        game["files"] = int(game["files"]) + 1
             except OSError:
                 summary["unknown"] += 1
-        return summary
+        return {
+            "summary": summary,
+            "conversions": sorted(
+                conversion_games.values(),
+                key=lambda item: (str(item["display_name"]).casefold(), int(item["id"])),
+            ),
+        }
+
+    def device_storage_summary(self, device_id: int) -> dict[str, int]:
+        """Inspect deployed files and report their current on-disk storage relationship."""
+        return self.device_storage_inspection(device_id)["summary"]  # type: ignore[return-value]
 
     def _forget_deployment(self, device_id: int, game_id: int, relpath: str) -> None:
         with self.db.write() as connection:

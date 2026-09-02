@@ -767,6 +767,17 @@ class LibraryServiceTests(unittest.TestCase):
         self.assertEqual(summary["hardlinked"], 0)
         self.assertEqual(summary["copied"], 1)
         self.assertEqual(summary["conversions"], 1)
+        inspection = self.service.device_storage_inspection(device_id)
+        self.assertEqual(inspection["summary"], summary)
+        self.assertEqual(
+            inspection["conversions"],
+            [{
+                "id": game_id,
+                "display_name": "Filesystem Truth",
+                "platform": "gba",
+                "files": 1,
+            }],
+        )
 
     def test_hardlink_mode_atomically_converts_existing_copy(self):
         source = self.write("gba/Convert Me.gba", b"convert-rom")

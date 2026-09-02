@@ -2296,22 +2296,15 @@ async function reviewAndApplyDeviceChanges(deviceIds, contextLabel) {
     toast("Those games are already applied to the selected devices");
     return true;
   }
-  const rows = actionable.map((plan) => {
-    const changes = [
-      Number(plan.additions) ? `${Number(plan.additions).toLocaleString()} ${Number(plan.additions) === 1 ? "file" : "files"} to add or update` : "",
-      Number(plan.conversions) ? `${Number(plan.conversions).toLocaleString()} ${Number(plan.conversions) === 1 ? "copy" : "copies"} to convert` : "",
-      Number(plan.removals) ? `${Number(plan.removals).toLocaleString()} ${Number(plan.removals) === 1 ? "file" : "files"} to remove` : "",
-    ].filter(Boolean).join(", ");
-    return `<li><strong>${escapeHtml(plan.device.name)}</strong><span>${escapeHtml(changes)}</span></li>`;
-  }).join("");
   const removals = actionable.reduce((total, plan) => total + Number(plan.removals || 0), 0);
   view.querySelector(".device-assignment-layer")?.classList.add("hidden");
   const confirmed = await confirmAction({
     title: `Apply changes to ${actionable.length} ${actionable.length === 1 ? "device" : "devices"}?`,
-    content: `<p class="warning-copy">${escapeHtml(contextLabel)} will be included with every other pending change already staged for these devices.</p><ul class="confirm-list device-plan-list">${rows}</ul>`,
+    content: `<p class="warning-copy">${escapeHtml(contextLabel)} will be included with every other pending change already staged for these devices.</p><div class="device-plan-reviews">${actionable.map((plan) => devicePlanReview(plan, plan.device.name, actionable.length === 1)).join("")}</div>`,
     confirmLabel: `Apply to ${actionable.length} ${actionable.length === 1 ? "device" : "devices"}`,
     cancelLabel: "Keep changes staged",
     danger: removals > 0,
+    wide: true,
   });
   if (!confirmed) {
     toast("Device selections saved; filesystem changes remain staged");
@@ -2330,6 +2323,38 @@ async function reviewAndApplyDeviceChanges(deviceIds, contextLabel) {
   if (completed !== actionable.length) return false;
   toast(`Applied device changes to ${completed} ${completed === 1 ? "device" : "devices"}`);
   return true;
+}
+
+function devicePlanCountText(plan) {
+  return [
+    Number(plan.additions) ? `${Number(plan.additions).toLocaleString()} add/update` : "",
+    Number(plan.conversions) ? `${Number(plan.conversions).toLocaleString()} convert` : "",
+    Number(plan.removals) ? `${Number(plan.removals).toLocaleString()} remove` : "",
+  ].filter(Boolean).join(" · ") || "No filesystem changes";
+}
+
+function deviceChangeSection(title, tone, items) {
+  if (!items?.length) return "";
+  return `<section class="device-change-group ${tone}">
+    <div class="device-change-group-head"><h4>${escapeHtml(title)}</h4><span>${items.length.toLocaleString()} ${items.length === 1 ? "ROM" : "ROMs"}</span></div>
+    <ul>${items.map((item) => `<li>
+      <span class="device-change-name">${escapeHtml(item.display_name)}<small>${escapeHtml(item.platform)}</small></span>
+      <span class="device-change-files">${Number(item.files || 0).toLocaleString()} ${Number(item.files || 0) === 1 ? "file" : "files"}</span>
+    </li>`).join("")}</ul>
+  </section>`;
+}
+
+function devicePlanReview(plan, label, open = true) {
+  const changes = plan.changes || {};
+  const scope = [
+    deviceChangeSection("Add or update", "add", changes.additions),
+    deviceChangeSection("Convert to hardlinks", "convert", changes.conversions),
+    deviceChangeSection("Remove from device", "remove", changes.removals),
+  ].filter(Boolean).join("");
+  return `<details class="device-plan-review" ${open ? "open" : ""}>
+    <summary><span>${escapeHtml(label)}</span><small>${escapeHtml(devicePlanCountText(plan))}</small></summary>
+    <div class="device-change-scope">${scope || '<p class="device-change-empty">No named ROM changes are in scope.</p>'}</div>
+  </details>`;
 }
 
 async function bulkAssignSelected() {
@@ -3029,14 +3054,19 @@ async function renderDevices() {
     } catch (error) { checkbox.checked = !checkbox.checked; checkbox.disabled = false; toast(error.message, "error"); }
   });
   view.querySelector("#apply-device")?.addEventListener("click", async () => {
+    const plans = isGroup ? memberPreviews : [memberPreviews[0]];
+    const planReviews = plans.map((item, index) => devicePlanReview(
+      item,
+      isGroup ? target.members[index].name : device.name,
+      plans.length === 1,
+    )).join("");
     const confirmed = await confirmAction({
       title: `Apply changes to ${isGroup ? deviceTargetName(target) : device.name}?`,
-      content: isGroup
-        ? `<p class="warning-copy">ROMmates will queue reconciliation for all ${target.members.length} group members: <strong>${preview.additions} files</strong> to add or update, <strong>${preview.conversions} copies</strong> to consider for hardlink conversion, and <strong>${preview.removals} managed files</strong> to remove across the group. Each device gets its own Syncthing rescan after completion.</p><ul class="confirm-list">${target.members.map((member, index) => { const item = memberPreviews[index]; return `<li><strong>${escapeHtml(member.name)}</strong>: ${Number(item.additions || 0).toLocaleString()} add/update, ${Number(item.removals || 0).toLocaleString()} remove</li>`; }).join("")}</ul>`
-        : `<p class="warning-copy"><strong>${preview.additions} ${preview.additions === 1 ? "file" : "files"}</strong> will be deployed as hardlinks where supported, <strong>${preview.conversions} existing ${preview.conversions === 1 ? "copy" : "copies"}</strong> will be considered for conversion, and <strong>${preview.removals} managed ${preview.removals === 1 ? "file" : "files"}</strong> will be removed. If mergerfs cannot place a hardlink on the ROM's underlying filesystem, ROMmates keeps or creates a normal copy. AppleDouble and .DS_Store metadata will also be cleaned.</p>`,
+      content: `<p class="warning-copy">${isGroup ? `ROMmates will reconcile all ${target.members.length} group members and request a Syncthing rescan for each one.` : "ROMmates will deploy additions as hardlinks where supported, remove deselected managed files, and request a Syncthing rescan."}</p><div class="device-plan-reviews">${planReviews}</div>`,
       confirmLabel: isGroup ? "Apply group changes" : "Apply device changes",
       cancelLabel: isGroup ? "Keep current files" : "Keep current device files",
       danger: preview.removals > 0,
+      wide: true,
     });
     if (!confirmed) return;
     try {
@@ -3904,15 +3934,20 @@ async function cancelJob(jobId, button = stopJobButton) {
   }
 }
 
-function confirmAction({ title, content, confirmLabel, cancelLabel = "Cancel", danger }) {
+function confirmAction({ title, content, confirmLabel, cancelLabel = "Cancel", danger, wide = false }) {
   dialogTitle.textContent = title;
   dialogContent.innerHTML = content;
   dialogConfirm.textContent = confirmLabel;
   dialogCancel.textContent = cancelLabel;
   dialogConfirm.className = `button ${danger ? "danger" : ""}`;
+  dialog.classList.toggle("wide", wide);
   dialog.showModal();
   return new Promise((resolve) => {
-    const close = () => { dialog.removeEventListener("close", close); resolve(dialog.returnValue === "confirm"); };
+    const close = () => {
+      dialog.removeEventListener("close", close);
+      dialog.classList.remove("wide");
+      resolve(dialog.returnValue === "confirm");
+    };
     dialog.addEventListener("close", close);
   });
 }

@@ -2519,7 +2519,24 @@ def device_preview(device_id: int, request: Request):
             "AND NOT EXISTS(SELECT 1 FROM device_selections ds WHERE ds.device_id=dp.device_id AND ds.game_id=dp.game_id)",
             (device_id,),
         ).fetchone()["count"]
-    storage = library.device_storage_summary(device_id)
+        addition_games = connection.execute(
+            "SELECT g.id,g.display_name,g.platform,COUNT(*) AS files FROM device_selections ds "
+            "JOIN games g ON g.id=ds.game_id JOIN game_files gf ON gf.game_id=ds.game_id "
+            "WHERE ds.device_id=? AND NOT EXISTS(SELECT 1 FROM deployments dp WHERE dp.device_id=ds.device_id "
+            "AND dp.game_id=ds.game_id AND dp.relpath=gf.device_relpath) "
+            "GROUP BY g.id,g.display_name,g.platform ORDER BY g.display_name COLLATE NOCASE",
+            (device_id,),
+        ).fetchall()
+        removal_games = connection.execute(
+            "SELECT g.id,g.display_name,g.platform,COUNT(*) AS files FROM deployments dp "
+            "JOIN games g ON g.id=dp.game_id WHERE dp.device_id=? "
+            "AND NOT EXISTS(SELECT 1 FROM device_selections ds WHERE ds.device_id=dp.device_id "
+            "AND ds.game_id=dp.game_id) GROUP BY g.id,g.display_name,g.platform "
+            "ORDER BY g.display_name COLLATE NOCASE",
+            (device_id,),
+        ).fetchall()
+    inspection = library.device_storage_inspection(device_id)
+    storage = inspection["summary"]
     return {
         "device": dict(device),
         "games": desired["games"],
@@ -2531,6 +2548,11 @@ def device_preview(device_id: int, request: Request):
         "copied": storage["copied"],
         "missing": storage["missing"],
         "unknown": storage["unknown"],
+        "changes": {
+            "additions": [dict(row) for row in addition_games],
+            "conversions": inspection["conversions"],
+            "removals": [dict(row) for row in removal_games],
+        },
     }
 
 

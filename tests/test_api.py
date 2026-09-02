@@ -1311,6 +1311,46 @@ class ApiIntegrationTests(unittest.TestCase):
         self.assertIn("conversions", preview.json())
         self.assertIn("hardlinked", preview.json())
         self.assertIn("copied", preview.json())
+        self.assertEqual(
+            set(preview.json()["changes"]),
+            {"additions", "conversions", "removals"},
+        )
+
+    def test_device_preview_lists_affected_roms(self):
+        scan = self.client.post("/api/scan", headers=self.headers)
+        self.assertEqual(self.wait_for_job(scan.json()["job_id"])["status"], "complete")
+        game = next(
+            item for item in self.client.get(
+                "/api/games?limit=1000", headers=self.headers
+            ).json()["items"]
+            if item["display_name"] == "Test Game"
+        )
+        device = self.client.get("/api/devices", headers=self.headers).json()[0]
+        self.client.put(
+            f"/api/devices/{device['id']}/selection",
+            headers=self.headers,
+            json={"game_id": game["id"], "selected": True},
+        )
+        try:
+            preview = self.client.get(
+                f"/api/devices/{device['id']}/preview", headers=self.headers
+            ).json()
+            self.assertEqual(preview["additions"], 1)
+            self.assertEqual(
+                preview["changes"]["additions"],
+                [{
+                    "id": game["id"],
+                    "display_name": "Test Game",
+                    "platform": "gba",
+                    "files": 1,
+                }],
+            )
+        finally:
+            self.client.put(
+                f"/api/devices/{device['id']}/selection",
+                headers=self.headers,
+                json={"game_id": game["id"], "selected": False},
+            )
 
     def test_running_scan_can_be_cancelled(self):
         started = threading.Event()
