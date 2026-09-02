@@ -61,6 +61,7 @@ const state = {
   deviceScope: "on_device",
   deviceOnboarding: false,
   deviceGroupCreating: false,
+  syncTargetMembers: [],
   createdDevice: null,
   refreshTimer: null,
   gamesController: null,
@@ -166,7 +167,7 @@ const TOUR_STEPS = {
     { view: "library", selector: "#search-input", title: "Find and manage games", description: "Filter a large library by platform, rating, or name. Use each game's actions to download, rename, or assign devices." },
     { view: "devices", selector: ".device-target-picker", title: "Choose a device or group", description: "This large selector controls which handheld or device group you are managing." },
     { view: "devices", selector: ".device-mode-toggle", title: "Add ROMs or inspect the device", description: "Switch between the full library and ROMs currently present on the selected device." },
-    { view: "devices", selector: ".device-secondary-actions", title: "Device setup and downloads", description: "Create devices and groups, or download the selected ROM package, without leaving this page." },
+    { view: "devices", selector: ".device-overflow-menu", title: "Device setup and downloads", description: "Create devices and groups, connect Syncthing, or download the selected ROM package, without leaving this page." },
     { view: "overview", selector: ".syncthing-panel", title: "Check device connectivity", description: "ROMmates reads Syncthing status so you can see whether managed devices are online before expecting transfers." },
     { view: "users", selector: "#page-title", title: "Invite people safely", description: "Combine roles to grant only the abilities each person needs, then assign ownership of their devices." },
   ],
@@ -174,7 +175,7 @@ const TOUR_STEPS = {
     { view: "library", selector: "#search-input", title: "Choose games", description: "Search and filter the catalog, then use the game menu or multi-select to include titles on your devices." },
     { view: "devices", selector: ".device-target-picker", title: "Choose your device or group", description: "The selected target stays prominent while you add ROMs, inspect its current files, or prepare a download." },
     { view: "devices", selector: ".device-mode-toggle", title: "Switch ROM views", description: "Add ROMs opens the full catalog. On Device shows the ROMs currently present for this target." },
-    { view: "devices", selector: ".device-secondary-actions", title: "Set up or download", description: "Create another device, build a group, or download all selected ROMs as one package." },
+    { view: "devices", selector: ".device-overflow-menu", title: "Set up or download", description: "Create another device, build a group, connect Syncthing, or download all selected ROMs as one package." },
   ],
   contributor: [
     { view: "library", selector: "#search-input", title: "Browse the collection", description: "Search by title and narrow the catalog to one platform before downloading." },
@@ -401,12 +402,36 @@ function prepareResponsiveTables(root) {
   });
 }
 
+function enhanceSearchFields(root) {
+  root.querySelectorAll(".search-field input[type='search']").forEach((input) => {
+    if (input.parentElement.querySelector(":scope > .search-clear")) return;
+    const button = document.createElement("button");
+    button.className = "search-clear";
+    button.type = "button";
+    button.setAttribute("aria-label", `Clear ${input.placeholder || "search"}`);
+    button.innerHTML = '<span aria-hidden="true">×</span>';
+    const update = () => button.classList.toggle("hidden", !input.value);
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      input.value = "";
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      input.focus();
+      update();
+    });
+    input.addEventListener("input", update);
+    input.parentElement.append(button);
+    update();
+  });
+}
+
 function setViewHtml(html) {
   clearTimeout(state.navigationLoadingTimer);
   state.infiniteObserver?.disconnect();
   const snapshot = captureFocus();
   view.innerHTML = html;
   prepareResponsiveTables(view);
+  enhanceSearchFields(view);
   restoreFocus(snapshot);
 }
 
@@ -2403,7 +2428,16 @@ function closeDeviceFlowDialog() {
   deviceFlowContent.innerHTML = "";
 }
 
-function openDeviceFlowDialog(kind) {
+function openDeviceFlowDialog(kind, members = []) {
+  if (kind === "syncthing") {
+    state.syncTargetMembers = members;
+    deviceFlowTitle.textContent = "Sync with Syncthing";
+    deviceFlowContent.innerHTML = syncthingSharePanel(members);
+    if (!deviceFlowDialog.open) deviceFlowDialog.showModal();
+    bindSyncthingShare(deviceFlowDialog);
+    requestAnimationFrame(() => deviceFlowContent.querySelector("input, select, button")?.focus());
+    return;
+  }
   const creatingGroup = kind === "group";
   deviceFlowTitle.textContent = creatingGroup ? "Create a device group" : "Create a new device";
   deviceFlowContent.innerHTML = creatingGroup ? deviceGroupCreationPanel(true) : deviceOnboardingPanel(true);
@@ -2411,6 +2445,47 @@ function openDeviceFlowDialog(kind) {
   if (creatingGroup) bindDeviceGroupCreation(deviceFlowDialog, true);
   else bindDeviceOnboarding(deviceFlowDialog, true);
   requestAnimationFrame(() => deviceFlowContent.querySelector("input, select, button")?.focus());
+}
+
+function syncthingSharePanel(members) {
+  const options = members.map((member) => `<option value="${member.id}">${escapeHtml(member.name)}</option>`).join("");
+  return `<section class="syncthing-share-panel">
+    <p>Enter the handheld's Syncthing device ID. ROMmates will add it to Syncthing, create or reuse this ROM folder, share it, and request a scan.</p>
+    <form class="syncthing-share-form" data-syncthing-share-form>
+      ${members.length > 1 ? `<label class="field"><span>Device in this group</span><select name="rommates_device_id" required>${options}</select></label>` : `<input type="hidden" name="rommates_device_id" value="${members[0]?.id || ""}">`}
+      <label class="field"><span>Syncthing device ID</span><input class="input syncthing-device-id-input" name="syncthing_device_id" maxlength="80" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="XXXXXXX-XXXXXXX-…" required><small>On the handheld, open Syncthing and copy its Device ID from Actions → Show ID.</small></label>
+      <div class="device-onboarding-actions"><button class="button secondary" type="button" data-cancel-syncthing-share>Cancel</button><button class="button" type="submit">Create share</button></div>
+    </form>
+  </section>`;
+}
+
+function bindSyncthingShare(root) {
+  root.querySelector("[data-cancel-syncthing-share]")?.addEventListener("click", closeDeviceFlowDialog);
+  root.querySelector("[data-syncthing-share-form]")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const submit = form.querySelector("button[type='submit']");
+    const deviceId = Number(form.elements.rommates_device_id.value);
+    const syncthingDeviceId = form.elements.syncthing_device_id.value.trim();
+    if (!deviceId || !syncthingDeviceId) return;
+    submit.disabled = true;
+    submit.textContent = "Creating share…";
+    try {
+      const result = await api(`/api/devices/${deviceId}/syncthing-share`, {
+        method: "POST",
+        body: JSON.stringify({ device_id: syncthingDeviceId }),
+      });
+      closeDeviceFlowDialog();
+      toast(`Syncthing share ready for ${state.devices.find((item) => item.id === deviceId)?.name || "device"}`);
+      await loadReferenceData();
+      await renderDevices();
+      if (result.created) toast(`Created Syncthing folder ${result.folder_id}`);
+    } catch (error) {
+      submit.disabled = false;
+      submit.textContent = "Create share";
+      toast(error.message, "error");
+    }
+  });
 }
 
 function deviceOnboardingPanel(force = false) {
@@ -2455,7 +2530,11 @@ function createdDevicePanel() {
 }
 
 function bindDeviceOnboarding(root = view, inDialog = false) {
-  root.querySelectorAll("[data-new-device]").forEach((button) => button.addEventListener("click", () => openDeviceFlowDialog("device")));
+  root.querySelectorAll("[data-new-device]").forEach((button) => button.addEventListener("click", () => {
+    const menu = button.closest("details");
+    if (menu) menu.open = false;
+    openDeviceFlowDialog("device");
+  }));
   root.querySelector("[data-cancel-device-onboarding]")?.addEventListener("click", () => {
     if (inDialog) return closeDeviceFlowDialog();
     state.deviceOnboarding = false;
@@ -2602,7 +2681,26 @@ function deviceGroupPanel(target, previews) {
   </details>`;
 }
 
-function deviceWorkspaceControls(device, target, preview, isGroup = false) {
+function deviceSyncSummary(statuses) {
+  const usable = statuses.filter(Boolean);
+  if (!usable.length) return { label: "Checking…", tone: "muted", lastSync: "Not available" };
+  if (usable.every((item) => !item.configured)) return { label: "Syncthing not configured", tone: "warning", lastSync: "Not available" };
+  if (usable.some((item) => !item.linked)) return { label: "Setup needed", tone: "warning", lastSync: "Never" };
+  const connected = usable.filter((item) => item.connected).length;
+  const complete = usable.filter((item) => Number(item.completion || 0) >= 99.999).length;
+  const label = complete === usable.length
+    ? "Up to date"
+    : connected ? `${connected} online · ${complete}/${usable.length} up to date` : "Offline";
+  const timestamps = usable.map((item) => item.last_sync).filter(Boolean).sort();
+  const latest = timestamps.at(-1);
+  return {
+    label,
+    tone: complete === usable.length ? "success" : connected ? "active" : "muted",
+    lastSync: latest ? new Date(latest).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : "Not yet recorded",
+  };
+}
+
+function deviceWorkspaceControls(device, target, preview, inventory, syncStatuses, isGroup = false) {
   const ready = Boolean(device.syncthing_ready_at);
   const gameCount = Number(preview.games || 0);
   const pending = Number(preview.additions || 0) + Number(preview.removals || 0) + Number(preview.conversions || 0);
@@ -2610,22 +2708,42 @@ function deviceWorkspaceControls(device, target, preview, isGroup = false) {
   const delivery = isGroup
     ? `${target.members.length.toLocaleString()} ${target.members.length === 1 ? "device" : "devices"}`
     : device.delivery_mode === "download" ? "Manual downloads" : ready ? "Syncthing ready" : "Syncthing setup pending";
+  const platforms = isGroup ? inventory.selected_platforms || [] : inventory.present_platforms || [];
+  const platformSummary = platforms.length
+    ? platforms.map((item) => `<span class="device-platform-stat"><strong>${escapeHtml(item.platform.toLocaleUpperCase())}</strong><span>${Number(item.count).toLocaleString()} ROMs · ${formatBytes(Number(item.bytes || 0))}</span></span>`).join("")
+    : '<span class="device-platform-empty">No ROMs currently matched</span>';
+  const sync = deviceSyncSummary(syncStatuses);
+  const syncEligible = target.members.some((member) => member.delivery_mode !== "download");
   return `<section class="device-workspace" aria-label="Device workspace">
     <label class="device-target-picker" for="device-select">
       <span>Device or group</span>
       <select id="device-select">${devicePickerOptions(device.id)}</select>
       <small>${gameCount.toLocaleString()} selected ${gameCount === 1 ? "ROM" : "ROMs"} · ${escapeHtml(delivery)}</small>
     </label>
-    <div class="device-mode-toggle" role="group" aria-label="ROM list">
-      <button type="button" class="device-mode-chip ${state.deviceScope === "all" ? "active" : ""}" data-device-scope="all" aria-pressed="${state.deviceScope === "all"}">Add ROMs</button>
-      <button type="button" class="device-mode-chip ${state.deviceScope === homeScope ? "active" : ""}" data-device-scope="${homeScope}" aria-pressed="${state.deviceScope === homeScope}">On Device</button>
+    <section class="device-at-a-glance" aria-label="Device storage and sync status">
+      <div class="device-platform-summary"><span class="device-fact-label">${isGroup ? "Shared roster by platform" : "On-device storage by platform"}</span><div>${platformSummary}</div></div>
+      <div class="device-sync-summary">
+        <span class="device-fact-label">Sync status</span>
+        <strong class="sync-tone-${sync.tone}">${escapeHtml(sync.label)}</strong>
+        <span>Last sync · ${escapeHtml(sync.lastSync)}</span>
+      </div>
+    </section>
+    <div class="device-mode-row">
+      <div class="device-mode-toggle" role="group" aria-label="ROM list">
+        <button type="button" class="device-mode-chip ${state.deviceScope === "all" ? "active" : ""}" data-device-scope="all" aria-pressed="${state.deviceScope === "all"}">Add ROMs</button>
+        <button type="button" class="device-mode-chip ${state.deviceScope === homeScope ? "active" : ""}" data-device-scope="${homeScope}" aria-pressed="${state.deviceScope === homeScope}">On Device</button>
+      </div>
+      <details class="device-overflow-menu">
+        <summary aria-label="More device actions" title="More device actions">•••</summary>
+        <div class="device-overflow-popover" role="menu">
+          <button type="button" data-new-device role="menuitem">Create new device</button>
+          <button type="button" data-new-device-group role="menuitem">Create device group</button>
+          <button type="button" data-device-export role="menuitem" ${gameCount ? "" : "disabled"}>Download ROMs</button>
+          ${syncEligible ? '<button type="button" data-syncthing-share role="menuitem">Sync with Syncthing</button>' : ""}
+        </div>
+      </details>
     </div>
-    <div class="device-secondary-actions" aria-label="Device actions">
-      <button class="text-button" type="button" data-new-device>Create new device</button>
-      <button class="text-button" type="button" data-new-device-group>Create device group</button>
-      <button class="text-button" type="button" data-device-export ${gameCount ? "" : "disabled"}>Download ROMs</button>
-      ${pending ? `<button class="button small device-apply-action" id="apply-device" type="button">Review ${pending.toLocaleString()} ${pending === 1 ? "change" : "changes"}</button>` : ""}
-    </div>
+    ${pending ? `<button class="button small device-apply-action" id="apply-device" type="button">Review ${pending.toLocaleString()} ${pending === 1 ? "change" : "changes"}</button>` : ""}
   </section>`;
 }
 
@@ -2663,7 +2781,11 @@ function deviceGroupCreationPanel(force = false) {
 }
 
 function bindDeviceGroupCreation(root = view, inDialog = false) {
-  root.querySelectorAll("[data-new-device-group]").forEach((button) => button.addEventListener("click", () => openDeviceFlowDialog("group")));
+  root.querySelectorAll("[data-new-device-group]").forEach((button) => button.addEventListener("click", () => {
+    const menu = button.closest("details");
+    if (menu) menu.open = false;
+    openDeviceFlowDialog("group");
+  }));
   const form = root.querySelector("[data-create-device-group]");
   const source = form?.elements.source_device_id;
   const name = form?.elements.name;
@@ -2770,9 +2892,10 @@ async function renderDevices() {
   state.deviceId = device.id;
   const homeScope = isGroup ? "selected" : "on_device";
   if (![homeScope, "all"].includes(state.deviceScope)) state.deviceScope = homeScope;
-  const [response, ...memberPreviews] = await Promise.all([
+  const [response, memberPreviews, syncStatuses] = await Promise.all([
     getGames(device.id, state.deviceScope),
-    ...target.members.map((member) => navigationApi(`/api/devices/${member.id}/preview`)),
+    Promise.all(target.members.map((member) => navigationApi(`/api/devices/${member.id}/preview`))),
+    Promise.all(target.members.map((member) => navigationApi(`/api/devices/${member.id}/sync-status`))),
   ]);
   const preview = isGroup ? {
     games: Number(memberPreviews[0]?.games || 0),
@@ -2806,7 +2929,7 @@ async function renderDevices() {
   }
   setViewHtml(`
     ${createdDevicePanel()}
-    ${deviceWorkspaceControls(device, target, preview, isGroup)}
+    ${deviceWorkspaceControls(device, target, preview, inventory, syncStatuses, isGroup)}
     <section class="device-game-section" aria-labelledby="device-game-list-title">
       <h2 class="sr-only" id="device-game-list-title">${state.deviceScope === "all" ? "ROMs available to add" : isGroup ? "ROMs selected for this group" : "ROMs on this device"}</h2>
       ${isAdmin() && !isGroup && inventory.unmatched_files ? `<p class="device-inventory-note">${deviceMetric(inventory.unmatched_files, inventory.unmatched_files === 1 ? "unmatched file" : "unmatched files", "Physical files that ROMmates cannot associate with the current library index.")}</p>` : ""}
@@ -2817,6 +2940,12 @@ async function renderDevices() {
   bindFilters(renderDevices);
   bindDeviceOnboarding();
   bindDeviceGroupCreation();
+  view.querySelector("[data-syncthing-share]")?.addEventListener("click", (event) => {
+    const menu = event.currentTarget.closest("details");
+    if (menu) menu.open = false;
+    const members = target.members.filter((member) => member.delivery_mode !== "download");
+    openDeviceFlowDialog("syncthing", members);
+  });
   document.querySelector("#device-select").addEventListener("change", (event) => {
     state.deviceId = Number(event.target.value);
     const selected = state.devices.find((item) => item.id === state.deviceId);
@@ -2996,6 +3125,8 @@ async function renderDevices() {
   });
   view.querySelector("[data-device-export]")?.addEventListener("click", async (event) => {
     const button = event.currentTarget;
+    const menu = button.closest("details");
+    if (menu) menu.open = false;
     const games = Number(preview.games || 0);
     const confirmed = await confirmAction({
       title: `Download ${device.name}'s selected ROMs?`,
@@ -4374,6 +4505,9 @@ document.addEventListener("click", (event) => {
   document.querySelectorAll("[data-device-action][open]").forEach((menu) => {
     if (!menu.contains(event.target)) menu.open = false;
   });
+  document.querySelectorAll(".device-overflow-menu[open]").forEach((menu) => {
+    if (!menu.contains(event.target)) menu.open = false;
+  });
   document.querySelectorAll(".mobile-actions-menu[open]").forEach((menu) => {
     if (!menu.contains(event.target)) menu.open = false;
   });
@@ -4406,7 +4540,7 @@ document.addEventListener("keydown", (event) => {
       closeTour(true);
       return;
     }
-    const openMenu = document.querySelector(".mobile-actions-menu[open]");
+    const openMenu = document.querySelector(".mobile-actions-menu[open], .device-overflow-menu[open]");
     if (openMenu) {
       openMenu.open = false;
       openMenu.querySelector("summary")?.focus();

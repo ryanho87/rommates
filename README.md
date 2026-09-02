@@ -217,8 +217,10 @@ Syncthing instance. Status is cached, and the API key is never exposed to the br
 After a successful device apply, ROMmates also asks Syncthing to rescan the matching device
 folder. It recognizes a dedicated device ROM folder or a parent `Emulation`/`devices` share;
 if no folder matches or Syncthing is unavailable, the completed deployment remains successful
-and the job result explains why the rescan was skipped. ROMmates does not change Syncthing's
-folder or device configuration.
+and the job result explains why the rescan was skipped. Device owners can also enter their
+handheld's Syncthing device ID from the Devices page. ROMmates then adds the remote device,
+creates or reuses the device ROM folder, shares it, and requests a scan. Folder paths are derived
+from the owned ROMmates device; browser clients cannot provide arbitrary server paths.
 
 Create or copy an API key from **Syncthing > Actions > Settings > General > API Key**, then
 set these values in ROMmates' `.env`:
@@ -226,6 +228,8 @@ set these values in ROMmates' `.env`:
 ```dotenv
 ROMMATES_SYNCTHING_URL=http://syncthing:8384
 ROMMATES_SYNCTHING_API_KEY=replace-with-your-syncthing-api-key
+# Optional when Syncthing uses a different container mount than ROMmates:
+ROMMATES_SYNCTHING_DEVICES_ROOT=/media/Emulation/devices
 ```
 
 The URL is resolved inside the ROMmates container. If Syncthing is defined in a different
@@ -552,7 +556,8 @@ Duplicate and ROM trash confirmations list matching save filenames that would be
 | `ROMMATES_HASH_MAX_BYTES` | `536870912` (512 MiB) | Largest new or changed file SHA-256 hashes during a normal scan. Larger files use a structural fingerprint; `0` hashes every file |
 | `ROMMATES_RAWG_API_KEY` / `RAWG_API_KEY` | empty | Optional RAWG key for cached per-platform Top 100 Metacritic coverage; the prefixed name takes precedence |
 | `ROMMATES_SYNCTHING_URL` | empty | Optional base URL for the NUC Syncthing API as reached from the ROMmates container |
-| `ROMMATES_SYNCTHING_API_KEY` | empty | Syncthing API key used only by the ROMmates backend for read-only status requests |
+| `ROMMATES_SYNCTHING_API_KEY` | empty | Syncthing API key used by the backend for status, device/folder share setup, and rescans; never exposed to browsers |
+| `ROMMATES_SYNCTHING_DEVICES_ROOT` | inferred | Optional device root in Syncthing's filesystem namespace, such as `/media/Emulation/devices`, when its container mount differs from ROMmates |
 | `ROMMATES_SYNCTHING_TIMEOUT_SECONDS` | `2` | Maximum wait for a Syncthing status request, from 0.25 to 10 seconds |
 | `ROMMATES_SYNCTHING_CACHE_SECONDS` | `10` | How long ROMmates reuses device presence results before querying Syncthing again |
 | `ROMMATES_DISCORD_WEBHOOK_URL` | empty | Optional Discord channel webhook used for outbound notifications; treat it as a secret |

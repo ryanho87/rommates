@@ -39,6 +39,22 @@ class SyncthingService:
         with urlopen(request, timeout=self.settings.syncthing_timeout_seconds) as response:
             return json.load(response)
 
+    def _send_json(self, path: str, payload: dict[str, Any], method: str = "POST") -> Any:
+        request = Request(
+            f"{self.settings.syncthing_url}{path}",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+                "X-API-Key": self.settings.syncthing_api_key,
+                "User-Agent": "ROMmates/0.1",
+            },
+            method=method,
+        )
+        with urlopen(request, timeout=self.settings.syncthing_timeout_seconds) as response:
+            body = response.read()
+        return json.loads(body) if body else None
+
     def _post(self, path: str) -> None:
         request = Request(
             f"{self.settings.syncthing_url}{path}",
@@ -137,6 +153,201 @@ class SyncthingService:
         except (OSError, ValueError, json.JSONDecodeError):
             error = "Syncthing returned an unreadable folder configuration"
         return {"requested": False, "folders": [], "error": error}
+
+    def _syncthing_device_path(
+        self, device_name: str, configured_folders: list[dict[str, Any]]
+    ) -> str:
+        """Resolve the device path in Syncthing's filesystem namespace."""
+        if self.settings.syncthing_devices_root is not None:
+            return str(self.settings.syncthing_devices_root / device_name / "roms")
+        for folder in configured_folders:
+            raw_path = str(folder.get("path") or "").replace("\\", "/").rstrip("/")
+            folded = raw_path.casefold()
+            marker = "/devices/"
+            marker_index = folded.rfind(marker)
+            if marker_index >= 0 and folded.endswith("/roms"):
+                return f"{raw_path[:marker_index]}/devices/{device_name}/roms"
+            if folded.endswith("/devices"):
+                return f"{raw_path}/{device_name}/roms"
+            if folded.endswith("/emulation"):
+                return f"{raw_path}/devices/{device_name}/roms"
+        return str(self.settings.devices_root / device_name / "roms")
+
+    @staticmethod
+    def _folder_remote_ids(folder: dict[str, Any], local_device_id: str) -> list[str]:
+        result = []
+        for item in folder.get("devices", []):
+            if not isinstance(item, dict):
+                continue
+            device_id = str(item.get("deviceID") or "").strip()
+            if device_id and device_id != local_device_id:
+                result.append(device_id)
+        return result
+
+    def share_device_folder(
+        self,
+        device_name: str,
+        remote_device_id: str,
+        *,
+        folder_id: str,
+    ) -> dict[str, object]:
+        """Create (or update) a Syncthing folder and share it with one device."""
+        if not self.configured:
+            raise ValueError("Syncthing API is not configured")
+        candidate = remote_device_id.strip()
+        if not candidate:
+            raise ValueError("Enter a Syncthing device ID")
+        try:
+            validated = self._get(f"/rest/svc/deviceid?{urlencode({'id': candidate})}")
+            normalized_id = str(validated.get("id") or "") if isinstance(validated, dict) else ""
+            if not normalized_id:
+                raise ValueError("Syncthing did not recognize that device ID")
+            with ThreadPoolExecutor(max_workers=3, thread_name_prefix="syncthing-share") as executor:
+                folders_future = executor.submit(self._get, "/rest/config/folders")
+                devices_future = executor.submit(self._get, "/rest/config/devices")
+                status_future = executor.submit(self._get, "/rest/system/status")
+                configured_folders = folders_future.result()
+                configured_devices = devices_future.result()
+                local_status = status_future.result()
+            if not isinstance(configured_folders, list) or not isinstance(configured_devices, list):
+                raise ValueError("Syncthing returned an invalid configuration")
+            configured_folders = [item for item in configured_folders if isinstance(item, dict)]
+            configured_devices = [item for item in configured_devices if isinstance(item, dict)]
+            local_device_id = str(local_status.get("myID") or "") if isinstance(local_status, dict) else ""
+            if normalized_id == local_device_id:
+                raise ValueError("Use the handheld's Syncthing device ID, not this server's ID")
+
+            if not any(str(item.get("deviceID") or "") == normalized_id for item in configured_devices):
+                template = self._get("/rest/config/defaults/device")
+                if not isinstance(template, dict):
+                    raise ValueError("Syncthing returned an invalid device template")
+                template.update({"deviceID": normalized_id, "name": device_name})
+                self._send_json("/rest/config/devices", template)
+
+            folder = next(
+                (
+                    item
+                    for item in configured_folders
+                    if self._folder_scan_target(item, device_name) is not None
+                    or str(item.get("id") or "") == folder_id
+                ),
+                None,
+            )
+            created = folder is None
+            if folder is None:
+                template = self._get("/rest/config/defaults/folder")
+                if not isinstance(template, dict):
+                    raise ValueError("Syncthing returned an invalid folder template")
+                folder = template
+                folder.update(
+                    {
+                        "id": folder_id,
+                        "label": f"{device_name} ROMs",
+                        "path": self._syncthing_device_path(device_name, configured_folders),
+                    }
+                )
+            folder_devices = [item for item in folder.get("devices", []) if isinstance(item, dict)]
+            if local_device_id and not any(
+                str(item.get("deviceID") or "") == local_device_id for item in folder_devices
+            ):
+                folder_devices.append({"deviceID": local_device_id})
+            if not any(str(item.get("deviceID") or "") == normalized_id for item in folder_devices):
+                folder_devices.append({"deviceID": normalized_id})
+            folder["devices"] = folder_devices
+            self._send_json("/rest/config/folders", folder)
+            self._post(f"/rest/db/scan?{urlencode({'folder': str(folder['id'])})}")
+            with self._lock:
+                self._cached = None
+                self._cached_at = 0.0
+            return {
+                "device_id": normalized_id,
+                "folder_id": str(folder["id"]),
+                "folder_path": str(folder.get("path") or ""),
+                "created": created,
+            }
+        except HTTPError as exc:
+            if exc.code in {401, 403}:
+                raise ValueError("Syncthing rejected the configured API key") from exc
+            raise ValueError(f"Syncthing API returned HTTP {exc.code}") from exc
+        except (URLError, TimeoutError) as exc:
+            raise ValueError("Syncthing could not be reached") from exc
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError("Syncthing returned an unreadable response") from exc
+
+    def device_sync_status(
+        self,
+        device_name: str,
+        *,
+        remote_device_id: str = "",
+        folder_id: str = "",
+    ) -> dict[str, object]:
+        """Return connection, completion, and last completed activity for one device."""
+        if not self.configured:
+            return {"configured": False, "linked": False, "status": "Not configured", "last_sync": None}
+        try:
+            folders = self._get("/rest/config/folders")
+            if not isinstance(folders, list):
+                raise ValueError("Invalid folder list")
+            folder = next(
+                (
+                    item for item in folders if isinstance(item, dict) and (
+                        (folder_id and str(item.get("id") or "") == folder_id)
+                        or self._folder_scan_target(item, device_name) is not None
+                    )
+                ),
+                None,
+            )
+            if not folder:
+                return {"configured": True, "linked": False, "status": "Setup needed", "last_sync": None}
+            service_status = self.status()
+            local_device_id = str(service_status.get("local_device_id") or "")
+            candidate_ids = self._folder_remote_ids(folder, local_device_id)
+            resolved_id = remote_device_id if remote_device_id in candidate_ids else ""
+            if not resolved_id and len(candidate_ids) == 1:
+                resolved_id = candidate_ids[0]
+            if not resolved_id:
+                return {
+                    "configured": True,
+                    "linked": False,
+                    "folder_id": str(folder.get("id") or ""),
+                    "status": "Choose Syncthing device",
+                    "last_sync": None,
+                }
+            devices = {
+                str(item.get("device_id") or ""): item
+                for item in service_status.get("devices", [])
+                if isinstance(item, dict)
+            }
+            remote = devices.get(resolved_id, {})
+            parameters = urlencode({"folder": str(folder.get("id") or ""), "device": resolved_id})
+            with ThreadPoolExecutor(max_workers=2, thread_name_prefix="syncthing-device") as executor:
+                completion_future = executor.submit(self._get, f"/rest/db/completion?{parameters}")
+                folder_status_future = executor.submit(
+                    self._get, f"/rest/db/status?{urlencode({'folder': str(folder.get('id') or '')})}"
+                )
+                completion = completion_future.result()
+                folder_status = folder_status_future.result()
+            percentage = float(completion.get("completion") or 0) if isinstance(completion, dict) else 0.0
+            connected = bool(remote.get("connected"))
+            synced = percentage >= 99.999
+            status_label = "Up to date" if synced else f"Syncing · {percentage:.0f}%" if connected else "Offline"
+            last_sync = None
+            if synced and isinstance(folder_status, dict):
+                last_sync = folder_status.get("stateChanged")
+            return {
+                "configured": True,
+                "linked": True,
+                "device_id": resolved_id,
+                "folder_id": str(folder.get("id") or ""),
+                "connected": connected,
+                "completion": percentage,
+                "need_bytes": int(completion.get("needBytes") or 0) if isinstance(completion, dict) else 0,
+                "need_items": int(completion.get("needItems") or 0) if isinstance(completion, dict) else 0,
+                "status": status_label,
+                "last_sync": last_sync,
+            }
+        except (HTTPError, URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError):
+            return {"configured": True, "linked": False, "status": "Status unavailable", "last_sync": None}
 
     @staticmethod
     def _connection_type(connection: dict[str, Any]) -> str:

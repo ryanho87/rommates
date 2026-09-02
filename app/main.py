@@ -683,6 +683,10 @@ class DeviceSyncthingReadyRequest(BaseModel):
     ready: bool = True
 
 
+class DeviceSyncthingShareRequest(BaseModel):
+    device_id: str = Field(min_length=7, max_length=80)
+
+
 class DeviceRosterLinkRequest(BaseModel):
     target_device_ids: list[int] = Field(min_length=1, max_length=20)
 
@@ -936,6 +940,7 @@ def role_allows(principal: Principal, method: str, path: str) -> bool:
             or (path.startswith("/api/devices/") and path.endswith("/export-ticket"))
             or (path.startswith("/api/devices/") and path.endswith("/roster-clone"))
             or (path.startswith("/api/devices/") and path.endswith("/roster-link"))
+            or (path.startswith("/api/devices/") and path.endswith("/syncthing-share"))
             or (path.startswith("/api/jobs/") and path.endswith("/cancel"))
         ):
             return True
@@ -1753,6 +1758,22 @@ def games(
                         "ORDER BY g.platform COLLATE NOCASE"
                     )
                 ],
+                "present_platforms": [
+                    dict(row)
+                    for row in connection.execute(
+                        f"SELECT g.platform,COUNT(*) AS count,COALESCE(SUM(g.size),0) AS bytes "
+                        f"FROM games g WHERE {present_expr} GROUP BY g.platform "
+                        "ORDER BY g.platform COLLATE NOCASE"
+                    )
+                ],
+                "selected_platforms": [
+                    dict(row)
+                    for row in connection.execute(
+                        f"SELECT g.platform,COUNT(*) AS count,COALESCE(SUM(g.size),0) AS bytes "
+                        f"FROM games g WHERE {selected_expr} GROUP BY g.platform "
+                        "ORDER BY g.platform COLLATE NOCASE"
+                    )
+                ],
             }
     if items and device_id is None and present_device_states:
         items_by_id = {int(item["id"]): item for item in items}
@@ -2430,6 +2451,52 @@ def update_device_syncthing_ready(
         f"Marked {device['name']} Syncthing {'ready' if payload.ready else 'pending'}",
     )
     return {"device_id": device_id, "ready": payload.ready}
+
+
+@app.get("/api/devices/{device_id}/sync-status")
+def device_syncthing_status(device_id: int, request: Request):
+    device = require_device_access(device_id, request_principal(request))
+    if device["delivery_mode"] != "syncthing":
+        return {
+            "configured": syncthing.configured,
+            "linked": False,
+            "status": "Manual download",
+            "last_sync": None,
+        }
+    return syncthing.device_sync_status(
+        str(device["name"]),
+        remote_device_id=str(device["syncthing_device_id"] or ""),
+        folder_id=str(device["syncthing_folder_id"] or ""),
+    )
+
+
+@app.post("/api/devices/{device_id}/syncthing-share")
+def share_device_with_syncthing(
+    device_id: int, payload: DeviceSyncthingShareRequest, request: Request
+):
+    principal = request_principal(request)
+    device = require_device_access(device_id, principal)
+    if device["delivery_mode"] != "syncthing":
+        raise HTTPException(status_code=400, detail="This device uses manual downloads")
+    try:
+        result = syncthing.share_device_folder(
+            str(device["name"]),
+            payload.device_id,
+            folder_id=f"rommates-device-{device_id}",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    with db.write() as connection:
+        connection.execute(
+            "UPDATE devices SET syncthing_device_id=?,syncthing_folder_id=?,"
+            "syncthing_ready_at=CURRENT_TIMESTAMP,syncthing_ready_by=? WHERE id=?",
+            (result["device_id"], result["folder_id"], principal.id, device_id),
+        )
+    db.activity(
+        "device",
+        f"Shared {device['name']} with Syncthing device {str(result['device_id'])[:7]}",
+    )
+    return result
 
 
 @app.put("/api/devices/{device_id}/owner")

@@ -197,6 +197,8 @@ CREATE TABLE IF NOT EXISTS devices (
     owner_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
     syncthing_ready_at TEXT,
     syncthing_ready_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    syncthing_device_id TEXT NOT NULL DEFAULT '',
+    syncthing_folder_id TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -681,6 +683,14 @@ class Database:
                 connection.execute(
                     "ALTER TABLE devices ADD COLUMN syncthing_ready_by INTEGER REFERENCES users(id) ON DELETE SET NULL"
                 )
+            if "syncthing_device_id" not in device_columns:
+                connection.execute(
+                    "ALTER TABLE devices ADD COLUMN syncthing_device_id TEXT NOT NULL DEFAULT ''"
+                )
+            if "syncthing_folder_id" not in device_columns:
+                connection.execute(
+                    "ALTER TABLE devices ADD COLUMN syncthing_folder_id TEXT NOT NULL DEFAULT ''"
+                )
             connection.execute(
                 "CREATE TABLE IF NOT EXISTS user_notifications ("
                 "id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,"
@@ -790,6 +800,7 @@ class Database:
                 "ON platform_rankings(matched_game_id) WHERE matched_game_id IS NOT NULL"
             )
             connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(29)")
+            connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(30)")
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:

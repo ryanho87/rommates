@@ -144,6 +144,117 @@ class SyncthingServiceTests(unittest.TestCase):
         self.assertFalse(result["requested"])
         self.assertIn("No Syncthing folder matched", result["error"])
 
+    def test_share_device_folder_adds_remote_to_existing_folder(self):
+        remote_id = "AAAAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH"
+        writes = []
+
+        def fake_urlopen(request, timeout):
+            path = request.full_url.removeprefix("http://syncthing:8384")
+            if request.get_method() == "GET":
+                payload = {
+                    f"/rest/svc/deviceid?id={remote_id}": {"id": remote_id},
+                    "/rest/config/folders": [
+                        {
+                            "id": "retroid-roms",
+                            "label": "Retroid Pocket 5 ROMs",
+                            "path": "/media/Emulation/devices/retroid-pocket-5/roms",
+                            "devices": [{"deviceID": "NUC-ID"}],
+                        }
+                    ],
+                    "/rest/config/devices": [{"deviceID": remote_id, "name": "Retroid"}],
+                    "/rest/system/status": {"myID": "NUC-ID"},
+                }[path]
+                return FakeResponse(json.dumps(payload).encode())
+            writes.append((request.get_method(), path, json.loads(request.data) if request.data else None))
+            return FakeResponse(b"")
+
+        service = SyncthingService(self.settings(devices_root=Path("/emulation/devices")))
+        with patch("app.syncthing.urlopen", side_effect=fake_urlopen):
+            result = service.share_device_folder(
+                "retroid-pocket-5", remote_id, folder_id="rommates-device-5"
+            )
+
+        self.assertFalse(result["created"])
+        self.assertEqual(result["folder_id"], "retroid-roms")
+        folder_write = next(item for item in writes if item[1] == "/rest/config/folders")
+        self.assertIn({"deviceID": remote_id}, folder_write[2]["devices"])
+        self.assertTrue(any(item[1].startswith("/rest/db/scan?") for item in writes))
+
+    def test_share_device_folder_creates_folder_in_inferred_syncthing_namespace(self):
+        remote_id = "AAAAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH"
+        writes = []
+
+        def fake_urlopen(request, timeout):
+            path = request.full_url.removeprefix("http://syncthing:8384")
+            if request.get_method() == "GET":
+                payloads = {
+                    f"/rest/svc/deviceid?id={remote_id}": {"id": remote_id},
+                    "/rest/config/folders": [
+                        {
+                            "id": "rotate-roms",
+                            "path": "/media/Emulation/devices/rg-rotate/roms",
+                        }
+                    ],
+                    "/rest/config/devices": [],
+                    "/rest/system/status": {"myID": "NUC-ID"},
+                    "/rest/config/defaults/device": {"addresses": ["dynamic"]},
+                    "/rest/config/defaults/folder": {"type": "sendreceive", "devices": []},
+                }
+                return FakeResponse(json.dumps(payloads[path]).encode())
+            writes.append((path, json.loads(request.data) if request.data else None))
+            return FakeResponse(b"")
+
+        service = SyncthingService(self.settings(devices_root=Path("/emulation/devices")))
+        with patch("app.syncthing.urlopen", side_effect=fake_urlopen):
+            result = service.share_device_folder(
+                "new-handheld", remote_id, folder_id="rommates-device-12"
+            )
+
+        self.assertTrue(result["created"])
+        self.assertEqual(result["folder_path"], "/media/Emulation/devices/new-handheld/roms")
+        folder_write = next(payload for path, payload in writes if path == "/rest/config/folders")
+        self.assertEqual(folder_write["id"], "rommates-device-12")
+        self.assertIn({"deviceID": remote_id}, folder_write["devices"])
+
+    def test_device_sync_status_reports_completion_and_last_sync(self):
+        remote_id = "REMOTE-ID"
+        service = SyncthingService(self.settings())
+        payloads = {
+            "/rest/config/folders": [
+                {
+                    "id": "odin-roms",
+                    "path": "/devices/odin/roms",
+                    "devices": [{"deviceID": "NUC-ID"}, {"deviceID": remote_id}],
+                }
+            ],
+            f"/rest/db/completion?folder=odin-roms&device={remote_id}": {
+                "completion": 100,
+                "needBytes": 0,
+                "needItems": 0,
+            },
+            "/rest/db/status?folder=odin-roms": {
+                "state": "idle",
+                "stateChanged": "2026-09-02T12:00:00Z",
+            },
+        }
+
+        def fake_get(path):
+            return payloads[path]
+
+        with patch.object(service, "_get", side_effect=fake_get), patch.object(
+            service,
+            "status",
+            return_value={
+                "local_device_id": "NUC-ID",
+                "devices": [{"device_id": remote_id, "connected": True}],
+            },
+        ):
+            status = service.device_sync_status("odin")
+
+        self.assertTrue(status["linked"])
+        self.assertEqual(status["status"], "Up to date")
+        self.assertEqual(status["last_sync"], "2026-09-02T12:00:00Z")
+
 
 if __name__ == "__main__":
     unittest.main()

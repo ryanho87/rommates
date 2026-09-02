@@ -99,6 +99,9 @@ class Settings:
     rawg_api_key: str = ""
     syncthing_url: str = ""
     syncthing_api_key: str = ""
+    # Device root as seen by the Syncthing process. This may differ from
+    # devices_root when ROMmates and Syncthing use different container mounts.
+    syncthing_devices_root: Path | None = None
     syncthing_timeout_seconds: float = 2.0
     syncthing_cache_seconds: int = 10
     discord_webhook_url: str = ""
@@ -192,6 +195,11 @@ class Settings:
             ).strip(),
             syncthing_url=os.getenv("ROMMATES_SYNCTHING_URL", "").strip().rstrip("/"),
             syncthing_api_key=os.getenv("ROMMATES_SYNCTHING_API_KEY", "").strip(),
+            syncthing_devices_root=(
+                Path(os.environ["ROMMATES_SYNCTHING_DEVICES_ROOT"])
+                if os.getenv("ROMMATES_SYNCTHING_DEVICES_ROOT", "").strip()
+                else None
+            ),
             syncthing_timeout_seconds=_number_env(
                 "ROMMATES_SYNCTHING_TIMEOUT_SECONDS", 2.0, 0.25, 10.0
             ),

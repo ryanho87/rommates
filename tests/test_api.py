@@ -1279,6 +1279,10 @@ class ApiIntegrationTests(unittest.TestCase):
                 data["device_inventory"]["platforms"],
                 [{"platform": "gba", "count": 1}],
             )
+            self.assertEqual(
+                data["device_inventory"]["present_platforms"],
+                [{"platform": "gba", "count": 1, "bytes": len(b"test-rom")}],
+            )
 
             selected = self.client.put(
                 f"/api/devices/{device['id']}/selection",
@@ -1308,6 +1312,46 @@ class ApiIntegrationTests(unittest.TestCase):
             )
             target.unlink(missing_ok=True)
             unknown.unlink(missing_ok=True)
+
+    def test_device_owner_can_provision_syncthing_share_without_supplying_a_path(self):
+        device = self.client.get("/api/devices", headers=self.headers).json()[0]
+        result = {
+            "device_id": "REMOTE-DEVICE-ID",
+            "folder_id": f"rommates-device-{device['id']}",
+            "folder_path": "/media/Emulation/devices/handheld/roms",
+            "created": True,
+        }
+        try:
+            with patch.object(
+                self.main.syncthing, "share_device_folder", return_value=result
+            ) as share:
+                response = self.client.post(
+                    f"/api/devices/{device['id']}/syncthing-share",
+                    headers=self.headers,
+                    json={"device_id": "REMOTE-DEVICE-ID"},
+                )
+            self.assertEqual(response.status_code, 200, response.text)
+            share.assert_called_once_with(
+                device["name"],
+                "REMOTE-DEVICE-ID",
+                folder_id=f"rommates-device-{device['id']}",
+            )
+            with self.main.db.connect() as connection:
+                stored = connection.execute(
+                    "SELECT syncthing_device_id,syncthing_folder_id,syncthing_ready_at "
+                    "FROM devices WHERE id=?",
+                    (device["id"],),
+                ).fetchone()
+            self.assertEqual(stored["syncthing_device_id"], "REMOTE-DEVICE-ID")
+            self.assertEqual(stored["syncthing_folder_id"], result["folder_id"])
+            self.assertIsNotNone(stored["syncthing_ready_at"])
+        finally:
+            with self.main.db.write() as connection:
+                connection.execute(
+                    "UPDATE devices SET syncthing_device_id='',syncthing_folder_id='',"
+                    "syncthing_ready_at=NULL,syncthing_ready_by=NULL WHERE id=?",
+                    (device["id"],),
+                )
 
     def test_device_deployment_mode_is_always_hardlink(self):
         device = self.client.get("/api/devices", headers=self.headers).json()[0]
