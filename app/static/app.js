@@ -2728,8 +2728,8 @@ function deviceWorkspaceControls(device, target, preview, inventory, syncStatuse
     </section>
     <div class="device-mode-row">
       <div class="device-mode-toggle" role="group" aria-label="ROM list">
-        <button type="button" class="device-mode-chip ${state.deviceScope === "all" ? "active" : ""}" data-device-scope="all" aria-pressed="${state.deviceScope === "all"}">Add ROMs</button>
         <button type="button" class="device-mode-chip ${state.deviceScope === homeScope ? "active" : ""}" data-device-scope="${homeScope}" aria-pressed="${state.deviceScope === homeScope}">On Device</button>
+        <button type="button" class="device-mode-chip ${state.deviceScope === "all" ? "active" : ""}" data-device-scope="all" aria-pressed="${state.deviceScope === "all"}">Add ROMs</button>
       </div>
       <details class="device-overflow-menu">
         <summary aria-label="More device actions" title="More device actions">•••</summary>
