@@ -190,20 +190,6 @@ main { min-width: 0; }
 .topbar p { margin: 3px 0 0; color: var(--text-muted); font-size: 0.8rem; }
 .topbar-copy { min-width: 0; }
 .topbar-actions { display: flex; align-items: center; gap: 8px; }
-.topbar-icon-button {
-  display: grid;
-  width: 36px;
-  height: 36px;
-  flex: 0 0 auto;
-  padding: 0;
-  place-items: center;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-pill);
-  background: var(--surface-raised);
-  color: var(--text-muted);
-  cursor: pointer;
-}
-.topbar-icon-button:hover { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
 .header-account {
   display: flex;
   align-items: center;
@@ -1621,7 +1607,6 @@ html.game-detail-open body { overflow: hidden; overscroll-behavior: none; }
   .topbar-actions { gap: 5px; }
   .topbar-actions .job-pill { max-width: 112px; overflow: hidden; text-overflow: ellipsis; }
   .header-account { display: none; }
-  .topbar-icon-button { width: 44px; height: 44px; border-radius: var(--radius-sm); }
   #refresh-button { position: relative; width: 44px; padding: 0; overflow: hidden; color: transparent; }
   #refresh-button::after { position: absolute; color: var(--text); content: "↻"; font-size: 1.15rem; }
 

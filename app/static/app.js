@@ -150,7 +150,6 @@ const inboxCount = document.querySelector("#inbox-count");
 const inboxList = document.querySelector("#inbox-list");
 const sidebarCloseButton = document.querySelector("#sidebar-close-button");
 const guidedTourButton = document.querySelector("#guided-tour-button");
-const headerTourButton = document.querySelector("#header-tour-button");
 const headerAccount = document.querySelector("#header-account");
 const mobileSessionLink = document.querySelector("#mobile-session-link");
 const tourLayer = document.querySelector("#tour-layer");
@@ -352,7 +351,6 @@ function applyRoleNavigation() {
   document.querySelector("#mobile-session-name").textContent = displayName;
   headerAccount.setAttribute("aria-label", `Open ${displayName}'s account`);
   headerAccount.classList.remove("hidden");
-  headerTourButton.classList.remove("hidden");
   mobileSessionLink.classList.remove("hidden");
 }
 
@@ -4610,13 +4608,11 @@ logoutButton.addEventListener("click", async () => {
   renderInbox();
   document.querySelector("#account-state")?.classList.add("hidden");
   headerAccount.classList.add("hidden");
-  headerTourButton.classList.add("hidden");
   mobileSessionLink.classList.add("hidden");
   renderAuthentication();
 });
 
 guidedTourButton.addEventListener("click", startTour);
-headerTourButton.addEventListener("click", startTour);
 headerAccount.addEventListener("click", () => navigateTo("account"));
 mobileSessionLink.addEventListener("click", () => navigateTo("account"));
 tourLauncher.addEventListener("click", startTour);
