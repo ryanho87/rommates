@@ -35,6 +35,7 @@
           </a>
           <a class="nav-item" href="/jobs" data-view="jobs"><span>Jobs</span></a>
           <a class="nav-item" href="/notifications" data-view="notifications"><span>Notifications</span></a>
+          <a class="nav-item" href="/account" data-view="account"><span>Account</span></a>
           <a class="nav-item" href="/users" data-view="users"><span>Users</span></a>
           <a class="nav-item" href="/trash" data-view="trash">
             <span>Trash</span><span class="nav-count" id="nav-trash">0</span>
@@ -45,7 +46,6 @@
             <div class="account-identity"><strong id="account-name"></strong><span id="account-role"></span></div>
             <div class="account-actions">
               <button class="button secondary small" id="guided-tour-button">Tour</button>
-              <button class="button secondary small" id="change-password-button">Password</button>
               <button class="button secondary small" id="logout-button">Sign out</button>
             </div>
           </div>
@@ -97,6 +97,19 @@
           <button class="button danger" id="dialog-confirm" value="confirm">Move to trash</button>
         </div>
       </form>
+    </dialog>
+
+    <dialog class="game-detail-dialog" id="game-detail-dialog" aria-labelledby="game-detail-title">
+      <div class="game-detail-shell">
+        <div class="dialog-head game-detail-head">
+          <div>
+            <span class="eyebrow" id="game-detail-platform">ROM details</span>
+            <h2 id="game-detail-title">Game details</h2>
+          </div>
+          <button class="icon-button" id="game-detail-close" type="button" aria-label="Close game details">×</button>
+        </div>
+        <div class="game-detail-content" id="game-detail-content"></div>
+      </div>
     </dialog>
 
     <div class="tour-layer hidden" id="tour-layer" aria-hidden="true">

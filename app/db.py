@@ -189,7 +189,7 @@ CREATE TABLE IF NOT EXISTS devices (
     id INTEGER PRIMARY KEY,
     name TEXT NOT NULL UNIQUE,
     path TEXT NOT NULL UNIQUE,
-    deployment_mode TEXT NOT NULL DEFAULT 'copy' CHECK(deployment_mode IN ('copy','hardlink')),
+    deployment_mode TEXT NOT NULL DEFAULT 'hardlink' CHECK(deployment_mode IN ('copy','hardlink')),
     delivery_mode TEXT NOT NULL DEFAULT 'syncthing' CHECK(delivery_mode IN ('syncthing','download')),
     roster_group_id INTEGER REFERENCES device_roster_groups(id) ON DELETE SET NULL,
     owner_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
@@ -536,7 +536,7 @@ class Database:
             }
             if "deployment_mode" not in device_columns:
                 connection.execute(
-                    "ALTER TABLE devices ADD COLUMN deployment_mode TEXT NOT NULL DEFAULT 'copy'"
+                    "ALTER TABLE devices ADD COLUMN deployment_mode TEXT NOT NULL DEFAULT 'hardlink'"
                 )
             connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(11)")
             connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(12)")
@@ -764,6 +764,13 @@ class Database:
                 "ON device_roster_groups(owner_user_id,name)"
             )
             connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(27)")
+            if not connection.execute(
+                "SELECT 1 FROM schema_migrations WHERE version=28"
+            ).fetchone():
+                connection.execute(
+                    "UPDATE devices SET deployment_mode='hardlink' WHERE deployment_mode<>'hardlink'"
+                )
+                connection.execute("INSERT INTO schema_migrations(version) VALUES(28)")
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:

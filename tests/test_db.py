@@ -61,7 +61,7 @@ class DatabaseMigrationTests(unittest.TestCase):
                 versions = {row["version"] for row in upgraded.execute("SELECT version FROM schema_migrations")}
             self.assertIn("result_json", columns)
             self.assertIn("progress_json", columns)
-            self.assertEqual(versions, set(range(1, 28)))
+            self.assertEqual(versions, set(range(1, 29)))
             with db.connect() as upgraded:
                 tables = {
                     row["name"]
@@ -144,7 +144,7 @@ class DatabaseMigrationTests(unittest.TestCase):
                     )
                 ]
                 device = upgraded.execute(
-                    "SELECT owner_user_id FROM devices WHERE id=3"
+                    "SELECT owner_user_id,deployment_mode FROM devices WHERE id=3"
                 ).fetchone()
                 upgraded.execute(
                     "INSERT INTO users(username,username_normalized,display_name,password_hash,role) "
@@ -155,6 +155,7 @@ class DatabaseMigrationTests(unittest.TestCase):
             self.assertEqual(session["user_id"], 7)
             self.assertEqual(migrated_roles, ["admin"])
             self.assertIsNone(device["owner_user_id"])
+            self.assertEqual(device["deployment_mode"], "hardlink")
             self.assertEqual(foreign_key_issues, [])
 
     def test_screenscraper_ratings_are_backfilled_from_cached_metadata(self):

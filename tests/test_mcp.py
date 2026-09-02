@@ -72,7 +72,7 @@ class MCPServiceTests(unittest.TestCase):
         self.assertEqual(preview["selected_games"], 1)
         self.assertEqual(preview["additions"][0]["id"], self.game_id)
 
-        self.library.set_device_deployment_mode(self.device_id, "hardlink")
+        self.library.set_selection(self.device_id, self.game_id, False)
         with self.assertRaisesRegex(LibraryError, "changed after it was reviewed"):
             self.service.apply_device_changes(self.device_id, preview["preview_token"])
 
@@ -81,7 +81,7 @@ class MCPServiceTests(unittest.TestCase):
         self.assertEqual(queued["job_id"], 92)
         self.assertEqual(self.apply_requests, [self.device_id])
 
-        self.library.set_selection(self.device_id, self.game_id, False)
+        self.library.set_selection(self.device_id, self.game_id, True)
         with self.assertRaisesRegex(LibraryError, "changed while the job was queued"):
             self.service.execute_reviewed_device_apply(
                 self.device_id, current["preview_token"]

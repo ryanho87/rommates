@@ -915,8 +915,8 @@ class LibraryService:
             )
         if device_name in {".", ".."}:
             raise LibraryError("Choose a different device name")
-        if deployment_mode not in {"copy", "hardlink"}:
-            raise LibraryError("Deployment mode must be copy or hardlink")
+        if deployment_mode != "hardlink":
+            raise LibraryError("ROMmates always deploys device ROMs as hardlinks where supported")
         if delivery_mode not in {"syncthing", "download"}:
             raise LibraryError("Delivery mode must be syncthing or download")
 
@@ -946,7 +946,7 @@ class LibraryService:
         with self.db.write() as connection:
             connection.execute(
                 "INSERT INTO devices(name,path,deployment_mode,owner_user_id,delivery_mode) VALUES(?,?,?,?,?)",
-                (device_name, device_name, deployment_mode, owner_user_id, delivery_mode),
+                (device_name, device_name, "hardlink", owner_user_id, delivery_mode),
             )
             row = connection.execute(
                 "SELECT * FROM devices WHERE id=last_insert_rowid()"
@@ -2041,8 +2041,8 @@ class LibraryService:
         return {"unlinked": True}
 
     def set_device_deployment_mode(self, device_id: int, mode: str) -> None:
-        if mode not in {"copy", "hardlink"}:
-            raise LibraryError("Deployment mode must be copy or hardlink")
+        if mode != "hardlink":
+            raise LibraryError("ROMmates always deploys device ROMs as hardlinks where supported")
         with self.db.write() as connection:
             updated = connection.execute(
                 "UPDATE devices SET deployment_mode=? WHERE id=?", (mode, device_id)
@@ -2132,7 +2132,10 @@ class LibraryService:
                 for row in selected
             }
             existing = {(row["game_id"], row["relpath"]) for row in deployed}
-            mode = device["deployment_mode"] if "deployment_mode" in device.keys() else "copy"
+            # Device storage is derived from the filesystem, not a user preference.
+            # Always attempt a hardlink first and retain the existing safe copy
+            # fallback for cross-filesystem or unsupported targets.
+            mode = "hardlink"
             copied = linked = converted = link_fallbacks = skipped = removed = metadata_removed = 0
             source_root = self.settings.library_root.resolve()
             deploy_plan: list[tuple[int, str, Path, Path, bool]] = []

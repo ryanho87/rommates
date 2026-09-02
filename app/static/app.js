@@ -9,6 +9,7 @@ const VIEW_ROUTES = Object.freeze({
   saves: "/saves",
   jobs: "/jobs",
   notifications: "/notifications",
+  account: "/account",
   users: "/users",
   trash: "/trash",
 });
@@ -114,6 +115,7 @@ const state = {
   tourActive: false,
   tourTarget: null,
   inbox: { items: [], unread: 0 },
+  gameDetailId: null,
 };
 
 const view = document.querySelector("#view");
@@ -128,7 +130,11 @@ const dialogContent = document.querySelector("#dialog-content");
 const dialogConfirm = document.querySelector("#dialog-confirm");
 const dialogCancel = document.querySelector("#dialog-cancel");
 const logoutButton = document.querySelector("#logout-button");
-const changePasswordButton = document.querySelector("#change-password-button");
+const gameDetailDialog = document.querySelector("#game-detail-dialog");
+const gameDetailTitle = document.querySelector("#game-detail-title");
+const gameDetailPlatform = document.querySelector("#game-detail-platform");
+const gameDetailContent = document.querySelector("#game-detail-content");
+const gameDetailClose = document.querySelector("#game-detail-close");
 const mobileMenuButton = document.querySelector("#mobile-menu-button");
 const navBackdrop = document.querySelector("#nav-backdrop");
 const inboxShell = document.querySelector("#inbox-shell");
@@ -150,7 +156,7 @@ const TOUR_STEPS = {
   admin: [
     { view: "overview", selector: ".overview-strip", title: "Your collection at a glance", description: "Start here to spot scan health, missing artwork, device changes, and save conflicts." },
     { view: "library", selector: "#search-input", title: "Find and manage games", description: "Filter a large library by platform, rating, or name. Use each game's actions to download, rename, or assign devices." },
-    { view: "devices", selector: "#page-title", title: "Manage device libraries", description: "Claim existing devices, onboard new ones, choose hardlinks or copies, and apply the desired game set." },
+    { view: "devices", selector: "#page-title", title: "Manage device libraries", description: "Claim existing devices, onboard new ones, and apply the desired game set." },
     { view: "overview", selector: ".syncthing-panel", title: "Check device connectivity", description: "ROMmates reads Syncthing status so you can see whether managed devices are online before expecting transfers." },
     { view: "users", selector: "#page-title", title: "Invite people safely", description: "Combine roles to grant only the abilities each person needs, then assign ownership of their devices." },
   ],
@@ -296,6 +302,7 @@ function allowedViews() {
   if (isAdmin()) return new Set(Object.keys(VIEW_ROUTES));
   return new Set([
     "library",
+    "account",
     ...(canManageDevices() ? ["devices"] : []),
     ...(canUpload() ? ["transfers"] : []),
   ]);
@@ -324,7 +331,6 @@ function applyRoleNavigation() {
   document.querySelector("#account-role").textContent = state.principal?.bootstrap
     ? "Bootstrap admin"
     : (state.principal?.roles || [state.principal?.role]).filter(Boolean).join(" · ");
-  changePasswordButton.classList.toggle("hidden", Boolean(state.principal?.bootstrap));
 }
 
 // Views re-render by replacing their whole subtree, which destroys the element the
@@ -1138,7 +1144,7 @@ function gameRows(items, deviceMode = false) {
       </tr>` : "";
     const artwork = !deviceMode && state.artworkId === game.id ? artworkPanel(game) : "";
     return `
-      <tr class="game-row ${canManageDevices() ? "" : "read-only-row"}">
+      <tr class="game-row ${deviceMode ? "device-game-row" : ""} ${canManageDevices() ? "" : "read-only-row"}" data-game-detail="${game.id}" tabindex="0" aria-label="View details for ${escapeHtml(game.display_name)}">
         <td class="checkbox-cell">${canManageDevices() ? `<input type="checkbox" aria-label="Select ${escapeHtml(game.display_name)}" data-${deviceMode ? "device" : "row"}-select="${game.id}" ${checked ? "checked" : ""}>` : ""}</td>
         <td class="artwork-cell">${artworkThumb(game, !deviceMode && (isAdmin() || Number(game.artwork_count) > 0))}</td>
         <td class="name-cell" title="${escapeHtml(game.primary_relpath)}"><strong>${escapeHtml(game.display_name)}</strong><span class="path-line">${escapeHtml(game.primary_relpath)}</span>${mobileGameMeta(game)}</td>
@@ -1322,6 +1328,73 @@ async function loadArtworkImages() {
   images.forEach((image) => {
     if (!useCachedArtwork(image, artworkCacheKey(image))) state.artworkObserver.observe(image);
   });
+}
+
+function gameDetailFact(label, value) {
+  if (value === null || value === undefined || value === "") return "";
+  return `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(String(value))}</dd></div>`;
+}
+
+function closeGameDetail() {
+  state.gameDetailId = null;
+  if (gameDetailDialog.open) gameDetailDialog.close();
+}
+
+function renderGameDetail(detail) {
+  const game = detail.game;
+  const metadata = detail.artwork?.metadata;
+  const assets = detail.artwork?.assets || [];
+  const cover = assets.find((asset) => asset.kind === "cover") || assets[0];
+  const selectedDevices = (detail.devices || []).filter((device) => device.selected);
+  const facts = [
+    gameDetailFact("Platform", game.platform),
+    gameDetailFact("Release date", metadata?.release_date),
+    gameDetailFact("Developer", metadata?.developer),
+    gameDetailFact("Publisher", metadata?.publisher),
+    gameDetailFact("Players", metadata?.players),
+    gameDetailFact("Rating", metadata?.rating === null || metadata?.rating === undefined ? null : `${Number(metadata.rating).toLocaleString(undefined, { maximumFractionDigits: 1 })}/20`),
+    gameDetailFact("Size", formatBytes(game.size)),
+    gameDetailFact("Bundle", `${detail.files.length.toLocaleString()} ${detail.files.length === 1 ? "file" : "files"}`),
+  ].join("");
+  const fileList = detail.files.map((file) => `<li><code>${escapeHtml(file.relpath)}</code><span>${formatBytes(file.size)}</span></li>`).join("");
+  gameDetailPlatform.textContent = game.platform;
+  gameDetailTitle.textContent = metadata?.title || game.display_name;
+  gameDetailContent.innerHTML = `
+    <div class="game-detail-hero">
+      <div class="game-detail-cover ${cover ? "has-cover" : ""}">
+        ${cover ? `<img data-artwork-src="${cover.id}" data-artwork-variant="thumbnail" data-artwork-version="${escapeHtml(`${String(cover.sha256 || "").slice(0, 16)}-${ARTWORK_THUMBNAIL_VERSION}`)}" alt="Cover art for ${escapeHtml(metadata?.title || game.display_name)}">` : '<span aria-hidden="true">ROM</span>'}
+      </div>
+      <div class="game-detail-summary">
+        ${metadata?.description ? `<p>${escapeHtml(metadata.description)}</p>` : `<p class="meta">No ScreenScraper description has been collected for this ROM yet.</p>`}
+        ${facts ? `<dl class="game-detail-facts">${facts}</dl>` : ""}
+      </div>
+    </div>
+    <section class="game-detail-section">
+      <div class="section-heading"><div><h3>Devices</h3><p>${selectedDevices.length ? "This game is selected for the following devices." : "This game is not selected for a device."}</p></div></div>
+      ${selectedDevices.length ? `<div class="game-detail-devices">${selectedDevices.map((device) => `<span class="device-tag">${escapeHtml(device.name)}</span>`).join("")}</div>` : ""}
+    </section>
+    <details class="game-detail-files"><summary>Bundle files</summary><ul>${fileList}</ul></details>
+    <div class="game-detail-actions"><button class="button secondary" type="button" data-detail-download="${game.id}" data-name="${escapeHtml(game.display_name)}">Download ROM</button></div>`;
+  gameDetailContent.querySelectorAll("[data-artwork-src]").forEach(queueArtwork);
+  gameDetailContent.querySelector("[data-detail-download]")?.addEventListener("click", (event) => downloadGame(Number(event.currentTarget.dataset.detailDownload), event.currentTarget.dataset.name, event.currentTarget));
+}
+
+async function openGameDetail(gameId) {
+  state.gameDetailId = gameId;
+  gameDetailPlatform.textContent = "ROM details";
+  gameDetailTitle.textContent = "Loading game details";
+  gameDetailContent.innerHTML = '<div class="game-detail-loading"><span class="loading-spinner" aria-hidden="true"></span><p>Loading ScreenScraper metadata and bundle details…</p></div>';
+  if (!gameDetailDialog.open) gameDetailDialog.showModal();
+  try {
+    const detail = await api(`/api/games/${gameId}`);
+    if (state.gameDetailId !== gameId) return;
+    renderGameDetail(detail);
+  } catch (error) {
+    if (state.gameDetailId !== gameId) return;
+    gameDetailTitle.textContent = "Game details unavailable";
+    gameDetailContent.innerHTML = `<div class="empty-state compact"><div><p>${escapeHtml(error.message)}</p><button class="button secondary" type="button" data-detail-retry>Try again</button></div></div>`;
+    gameDetailContent.querySelector("[data-detail-retry]")?.addEventListener("click", () => openGameDetail(gameId));
+  }
 }
 
 function bulkBarHtml() {
@@ -1865,8 +1938,36 @@ async function cleanDuplicateBatch() {
   await renderDuplicates();
 }
 
+async function downloadGame(gameId, displayName, button) {
+  if (button) button.disabled = true;
+  try {
+    const ticket = await api(`/api/games/${gameId}/download-ticket`, { method: "POST" });
+    const anchor = document.createElement("a");
+    anchor.href = ticket.url;
+    anchor.download = ticket.filename;
+    document.body.append(anchor);
+    anchor.click();
+    anchor.remove();
+    toast(ticket.files > 1 ? `Streaming ${ticket.files} files as ${ticket.filename}` : `Downloading ${ticket.filename || displayName}`);
+  } catch (error) {
+    toast(error.message, "error");
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
 function bindGameEvents(data, deviceMode) {
   const byId = new Map(data.items.map((game) => [game.id, game]));
+  view.querySelectorAll("[data-game-detail]").forEach((row) => {
+    const activate = (event) => {
+      if (event.type === "keydown" && !["Enter", " "].includes(event.key)) return;
+      if (event.target.closest("button, input, select, textarea, a, details, summary, form, label")) return;
+      event.preventDefault();
+      openGameDetail(Number(row.dataset.gameDetail));
+    };
+    row.addEventListener("click", activate);
+    row.addEventListener("keydown", activate);
+  });
   const mobileMenus = [...view.querySelectorAll(".mobile-actions-menu")];
   mobileMenus.forEach((menu) => menu.addEventListener("toggle", () => {
     if (!menu.open) return;
@@ -1940,20 +2041,7 @@ function bindGameEvents(data, deviceMode) {
     } catch (error) { toast(error.message, "error"); }
   }));
   view.querySelectorAll("[data-delete]").forEach((button) => button.addEventListener("click", () => deleteOne(Number(button.dataset.delete), button.dataset.name)));
-  view.querySelectorAll("[data-download]").forEach((button) => button.addEventListener("click", async () => {
-    button.disabled = true;
-    try {
-      const ticket = await api(`/api/games/${button.dataset.download}/download-ticket`, { method: "POST" });
-      const anchor = document.createElement("a");
-      anchor.href = ticket.url;
-      anchor.download = ticket.filename;
-      document.body.append(anchor);
-      anchor.click();
-      anchor.remove();
-      toast(ticket.files > 1 ? `Streaming ${ticket.files} files as ${ticket.filename}` : `Downloading ${ticket.filename}`);
-    } catch (error) { toast(error.message, "error"); }
-    finally { button.disabled = false; }
-  }));
+  view.querySelectorAll("[data-download]").forEach((button) => button.addEventListener("click", () => downloadGame(Number(button.dataset.download), button.dataset.name, button)));
   view.querySelectorAll("[data-artwork-view]").forEach((button) => button.addEventListener("click", async () => {
     const gameId = Number(button.dataset.artworkView);
     if (Number(button.dataset.artworkExisting) === 0) {
@@ -2236,7 +2324,6 @@ function deviceOnboardingPanel() {
     <form class="device-onboarding-form" data-device-onboarding-form>
       <label class="field"><span>Device folder name</span><input class="input" name="name" placeholder="retroid-pocket-6" autocomplete="off" autocapitalize="none" maxlength="64" required><small>Letters, numbers, dots, dashes, and underscores.</small></label>
       <label class="field"><span>Get ROMs onto the device</span><select name="delivery_mode"><option value="syncthing">Sync automatically with Syncthing</option><option value="download">Download a ZIP manually</option></select></label>
-      <label class="field"><span>Deployment storage</span><select name="deployment_mode"><option value="hardlink">Prefer hardlinks</option><option value="copy">Independent copies</option></select></label>
       <div class="device-clone-options">
         <label class="field"><span>Start with games from</span><select name="clone_device_id"><option value="">Start with an empty roster</option>${state.devices.map((device) => `<option value="${device.id}">${escapeHtml(device.name)} (${Number(device.selected_games || 0).toLocaleString()} selected)</option>`).join("")}</select></label>
         <label class="device-choice compact hidden" data-clone-sync-row><input type="checkbox" name="keep_in_sync"><span><strong>Keep these device rosters in sync</strong><small>Future game selections on either device will update both desired rosters.</small></span></label>
@@ -2303,7 +2390,7 @@ function bindDeviceOnboarding() {
         method: "POST",
         body: JSON.stringify({
           name: slug,
-          deployment_mode: form.elements.deployment_mode.value,
+          deployment_mode: "hardlink",
           delivery_mode: form.elements.delivery_mode.value,
           clone_device_id: form.elements.clone_device_id.value ? Number(form.elements.clone_device_id.value) : null,
           keep_in_sync: form.elements.keep_in_sync.checked,
@@ -2399,7 +2486,7 @@ function deviceGroupPanel(target, previews) {
     const delivery = member.delivery_mode === "download"
       ? "Manual package"
       : member.syncthing_ready_at ? "Syncthing ready" : "Syncthing setup pending";
-    return `<li><div><strong>${escapeHtml(member.name)}</strong><span>${escapeHtml(delivery)} · ${escapeHtml(member.deployment_mode === "hardlink" ? "Hardlinks" : "Copies")}</span></div><span class="device-group-pending ${pending ? "has-changes" : ""}">${pending ? `${pending.toLocaleString()} pending` : "Up to date"}</span><button class="text-button danger-text" type="button" data-remove-group-member="${member.id}">Remove</button></li>`;
+    return `<li><div><strong>${escapeHtml(member.name)}</strong><span>${escapeHtml(delivery)}</span></div><span class="device-group-pending ${pending ? "has-changes" : ""}">${pending ? `${pending.toLocaleString()} pending` : "Up to date"}</span><button class="text-button danger-text" type="button" data-remove-group-member="${member.id}">Remove</button></li>`;
   }).join("");
   const independent = state.devices.filter(
     (item) => !item.roster_group_id
@@ -2408,7 +2495,7 @@ function deviceGroupPanel(target, previews) {
   const choices = independent.map((item) => `<label class="device-choice compact"><input type="checkbox" data-roster-target="${item.id}"><span><strong>${escapeHtml(item.name)}</strong><small>${Number(item.selected_games || 0).toLocaleString()} selected games</small></span></label>`).join("");
   return `<section class="device-group-panel">
     <div class="device-group-heading">
-      <div><span class="eyebrow">Device group · ${escapeHtml(groupOwner)}</span><h2>${escapeHtml(deviceTargetName(target))}</h2><p>One desired game roster, delivered independently to ${target.members.length} devices.</p></div>
+      <div><span class="eyebrow">Device group · ${escapeHtml(groupOwner)}</span><p>One desired game list, delivered independently to ${target.members.length} devices.</p></div>
       <div class="device-group-actions">
         <details data-group-settings><summary>Group settings</summary><div class="device-roster-controls"><label class="field"><span>Group name</span><input type="text" maxlength="64" value="${escapeHtml(deviceTargetName(target))}" data-group-name></label><button class="button secondary small" type="button" data-save-group-name>Save name</button><button class="text-button danger-text" type="button" data-delete-device-group>Delete group</button></div></details>
         <details data-roster-manager><summary>Add devices</summary><div class="device-roster-controls">${choices ? `<div class="device-roster-choices">${choices}</div><button class="button secondary small" type="button" data-link-rosters disabled>Add selected devices</button>` : "<p>No independent devices are available.</p>"}</div></details>
@@ -2429,18 +2516,30 @@ function deviceOwnershipOverview(currentDevice) {
   return `<div class="device-ownership-overview"><span class="ownership-badge ${current.tone}">${escapeHtml(current.label)}</span><span>${counts.mine.toLocaleString()} mine</span><span>${counts.other.toLocaleString()} owned by other people</span><span>${counts.unassigned.toLocaleString()} unassigned</span></div>`;
 }
 
-function deviceSyncthingStatus(device) {
+function deviceQuickActions(device, isGroup = false) {
   const ready = Boolean(device.syncthing_ready_at);
   const gameCount = Number(device.selected_games || 0);
-  const exportButton = `<button class="button secondary small" type="button" data-device-export ${gameCount ? "" : "disabled"}>Download ROM package</button>`;
-  if (device.delivery_mode === "download") {
-    return `<div class="device-sync-status"><span class="syncthing-state ready">Manual download</span><span>Download the ${gameCount.toLocaleString()} selected ${gameCount === 1 ? "game" : "games"} as one ZIP with ES-DE folders.</span>${exportButton}</div>`;
+  const exportButton = `<button class="button secondary" type="button" data-device-export ${gameCount ? "" : "disabled"}>Download all games</button>`;
+  if (isGroup) {
+    return `<section class="device-quick-actions" aria-label="Group actions"><div class="device-quick-status"><span class="syncthing-state ready">${gameCount.toLocaleString()} selected games</span><span>Download the shared roster as one ES-DE-ready ZIP.</span></div><div class="device-quick-buttons">${exportButton}</div></section>`;
   }
-  const badge = `<span class="syncthing-state ${ready ? "ready" : "pending"}">${ready ? "Syncthing ready" : "Waiting for Syncthing setup"}</span>`;
-  if (!isAdmin()) return `<div class="device-sync-status">${badge}<span>Prefer a manual transfer? Download the ${gameCount.toLocaleString()} selected ${gameCount === 1 ? "game" : "games"} as one ZIP.</span>${exportButton}</div>`;
-  const disabled = !device.owner_user_id ? "disabled" : "";
-  const help = !device.owner_user_id ? "Assign an owner before marking this device ready." : ready ? "The owner has been notified." : "Mark ready after adding and sharing the folder in Syncthing.";
-  return `<div class="device-sync-status">${badge}<span>${escapeHtml(help)}</span><div class="device-sync-actions">${exportButton}<button class="button secondary small" type="button" data-device-sync-ready ${disabled}>${ready ? "Mark setup pending" : "Mark Syncthing ready"}</button></div></div>`;
+  const groupId = Number(device.roster_group_id || 0);
+  const peers = groupId ? state.devices.filter((item) => Number(item.roster_group_id || 0) === groupId && item.id !== device.id) : [];
+  const candidates = state.devices.filter((item) => item.id !== device.id && Number(item.owner_user_id || 0) === Number(device.owner_user_id || 0) && !peers.some((peer) => peer.id === item.id));
+  const cloneSources = state.devices.filter((item) => item.id !== device.id);
+  const cloneOptions = cloneSources.map((item) => `<option value="${item.id}">${escapeHtml(item.name)} (${Number(item.selected_games || 0).toLocaleString()} games)</option>`).join("");
+  const choices = candidates.map((item) => `<label class="device-choice compact"><input type="checkbox" data-roster-target="${item.id}" ${item.roster_group_id ? "disabled" : ""}><span><strong>${escapeHtml(item.name)}</strong><small>${Number(item.selected_games || 0).toLocaleString()} selected games${item.roster_group_id ? " · already in a group" : ""}</small></span></label>`).join("");
+  const status = device.delivery_mode === "download" ? "Manual download" : ready ? "Syncthing ready" : "Syncthing setup pending";
+  const adminReady = isAdmin() && device.delivery_mode !== "download"
+    ? `<button class="button secondary" type="button" data-device-sync-ready ${!device.owner_user_id ? "disabled" : ""}>${ready ? "Mark setup pending" : "Mark Syncthing ready"}</button>` : "";
+  return `<section class="device-quick-actions" aria-label="Device actions">
+    <div class="device-quick-status"><span class="syncthing-state ${ready || device.delivery_mode === "download" ? "ready" : "pending"}">${escapeHtml(status)}</span><span>${gameCount.toLocaleString()} selected ${gameCount === 1 ? "game" : "games"}</span></div>
+    <div class="device-quick-buttons">
+      ${groupId ? "" : `<details class="device-action-menu" data-device-action><summary>Copy games</summary><div class="device-roster-controls">${cloneOptions ? `<label class="field"><span>Copy from</span><select data-clone-source><option value="">Choose a device</option>${cloneOptions}</select></label><p>Replace this desired game list once. The devices stay independent.</p><button class="button small" type="button" data-clone-roster disabled>Copy game list</button>` : "<p>No other accessible devices are available.</p>"}</div></details>`}
+      <details class="device-action-menu" data-device-action><summary>${peers.length ? "Manage device group" : "Keep devices together"}</summary><div class="device-roster-controls">${choices ? `<div class="device-roster-choices">${choices}</div><button class="button small" type="button" data-link-rosters disabled>${peers.length ? "Add devices" : "Create device group"}</button>` : "<p>No other accessible devices are available.</p>"}${peers.length ? '<button class="text-button danger-text" type="button" data-unlink-roster>Remove this device from group</button>' : ""}</div></details>
+      ${exportButton}${adminReady}
+    </div>
+  </section>`;
 }
 
 function deviceGroupCreationPanel() {
@@ -2560,6 +2659,7 @@ async function renderDevices() {
   const target = deviceTargets().find((item) => item.members.some((member) => member.id === selectedDevice.id)) || deviceTargets()[0];
   const device = target.device;
   const isGroup = Boolean(target.groupId);
+  setHeading(deviceTargetName(target), isGroup ? `${target.members.length} devices share one game list.` : "Choose games and keep this device up to date.");
   state.deviceId = device.id;
   if (isGroup && state.deviceScope === "on_device") state.deviceScope = "selected";
   if (!isGroup && state.deviceScope === "selected") state.deviceScope = "on_device";
@@ -2611,21 +2711,20 @@ async function renderDevices() {
     ${deviceGroupCreationPanel()}
     ${createdDevicePanel()}
     ${deviceOwnershipOverview(device)}
-    ${isGroup ? deviceGroupPanel(target, memberPreviews) : deviceRosterPanel(device)}
-    ${isGroup ? "" : deviceSyncthingStatus(device)}
+    ${isGroup ? deviceGroupPanel(target, memberPreviews) : ""}
+    ${deviceQuickActions(device, isGroup)}
     <div class="device-strip">
-      <label class="field"><span>Target ${isGroup ? "group" : "device"}</span><select id="device-select">${devicePickerOptions(device.id)}</select></label>
+      <label class="field"><span>Switch ${isGroup ? "group" : "device"}</span><select id="device-select">${devicePickerOptions(device.id)}</select></label>
       ${isGroup ? "" : isAdmin() ? `<label class="field"><span>Owner</span><select id="device-owner"><option value="">Unassigned · administrators can manage</option>${state.users.filter((user) => user.active && (user.roles || [user.role]).some((role) => ["member", "admin"].includes(role))).map((user) => `<option value="${user.id}" ${Number(device.owner_user_id) === Number(user.id) ? "selected" : ""}>${escapeHtml(user.display_name)} (${escapeHtml(user.username)})${Number(user.id) === Number(state.principal?.id) ? " · You" : ""}</option>`).join("")}</select>${!device.owner_user_id ? "<small>Select your account to mark this device as yours.</small>" : ""}</label>` : `<div class="field device-owner-summary"><span>Owner</span><strong>${escapeHtml(device.owner_display_name || "You")}</strong></div>`}
-      ${isGroup ? "" : `<label class="field"><span>Deployment storage</span><select id="deployment-mode"><option value="copy" ${device.deployment_mode === "copy" ? "selected" : ""}>Independent copies</option><option value="hardlink" ${device.deployment_mode === "hardlink" ? "selected" : ""}>Prefer hardlinks</option></select></label>`}
       <div class="device-summary">
-        ${deviceMetric(preview.hardlinked, isGroup ? "hardlinked across group" : "hardlinked", "Individual device files that share storage with their canonical library files on the NUC.")}
-        ${deviceMetric(preview.copied, isGroup ? "copied across group" : "copied", "Individual managed device files stored as independent copies on the NUC.")}
-        ${preview.missing ? deviceMetric(preview.missing, "managed files missing", "Files recorded as deployed by ROMmates that are no longer present in the device directory.") : ""}
-        ${preview.unknown ? deviceMetric(preview.unknown, "storage states unknown", "Managed files whose source or device storage identity could not be inspected.") : ""}
+        ${isAdmin() ? deviceMetric(preview.hardlinked, isGroup ? "hardlinked across group" : "hardlinked", "Individual device files that share storage with their canonical library files on the NUC.") : ""}
+        ${isAdmin() ? deviceMetric(preview.copied, isGroup ? "copied across group" : "copied", "Individual managed device files stored as independent copies on the NUC.") : ""}
+        ${isAdmin() && preview.missing ? deviceMetric(preview.missing, "managed files missing", "Files recorded as deployed by ROMmates that are no longer present in the device directory.") : ""}
+        ${isAdmin() && preview.unknown ? deviceMetric(preview.unknown, "storage states unknown", "Managed files whose source or device storage identity could not be inspected.") : ""}
         ${isGroup ? "" : deviceMetric(inventory.present_games, "currently on device", "Library game bundles matched to files currently present in this device directory. Unmatched files are counted separately below.")}
         ${deviceMetric(preview.games, isGroup ? "desired for group" : "desired", "Game bundles currently selected in ROMmates for this target.")}
         ${deviceMetric(preview.additions, isGroup ? "files to add/update across group" : "files to add/update", "Individual files ROMmates will create or replace the next time changes are applied.")}
-        ${preview.conversions ? deviceMetric(preview.conversions, "copies to convert", "Existing managed copies eligible to be replaced with space-saving hardlinks.") : ""}
+        ${isAdmin() && preview.conversions ? deviceMetric(preview.conversions, "copies to convert", "Existing managed copies eligible to be replaced with space-saving hardlinks.") : ""}
         ${deviceMetric(preview.removals, "files to remove", "Managed files ROMmates will remove because their games are no longer selected.")}
         <button class="button" id="apply-device" ${preview.additions === 0 && preview.removals === 0 && preview.conversions === 0 ? "disabled" : ""}>${isGroup ? "Review and apply group" : "Review and apply"}</button>
       </div>
@@ -2650,19 +2749,6 @@ async function renderDevices() {
     state.deviceScope = selected?.roster_group_id ? "selected" : "on_device";
     state.offset = 0;
     renderDevices();
-  });
-  document.querySelector("#deployment-mode")?.addEventListener("change", async (event) => {
-    const select = event.target;
-    select.disabled = true;
-    try {
-      await api(`/api/devices/${device.id}/deployment-mode`, {
-        method: "PUT",
-        body: JSON.stringify({ mode: select.value }),
-      });
-      toast(select.value === "hardlink" ? "Hardlinks preferred. Apply to convert eligible copies." : "New deployments will use independent copies.");
-      await loadReferenceData();
-      await renderDevices();
-    } catch (error) { select.value = device.deployment_mode; select.disabled = false; toast(error.message, "error"); }
   });
   document.querySelector("#device-owner")?.addEventListener("change", async (event) => {
     const select = event.currentTarget;
@@ -2899,7 +2985,7 @@ async function renderDevices() {
       title: `Apply changes to ${isGroup ? deviceTargetName(target) : device.name}?`,
       content: isGroup
         ? `<p class="warning-copy">ROMmates will queue reconciliation for all ${target.members.length} group members: <strong>${preview.additions} files</strong> to add or update, <strong>${preview.conversions} copies</strong> to consider for hardlink conversion, and <strong>${preview.removals} managed files</strong> to remove across the group. Each device gets its own Syncthing rescan after completion.</p><ul class="confirm-list">${target.members.map((member, index) => { const item = memberPreviews[index]; return `<li><strong>${escapeHtml(member.name)}</strong>: ${Number(item.additions || 0).toLocaleString()} add/update, ${Number(item.removals || 0).toLocaleString()} remove</li>`; }).join("")}</ul>`
-        : `<p class="warning-copy"><strong>${preview.additions} ${preview.additions === 1 ? "file" : "files"}</strong> will be deployed${device.deployment_mode === "hardlink" ? " as hardlinks where supported" : " as independent copies"}, <strong>${preview.conversions} existing ${preview.conversions === 1 ? "copy" : "copies"}</strong> will be considered for conversion, and <strong>${preview.removals} managed ${preview.removals === 1 ? "file" : "files"}</strong> will be removed. If mergerfs cannot place a hardlink on the ROM's underlying filesystem, ROMmates keeps or creates a normal copy. AppleDouble and .DS_Store metadata will also be cleaned.</p>`,
+        : `<p class="warning-copy"><strong>${preview.additions} ${preview.additions === 1 ? "file" : "files"}</strong> will be deployed as hardlinks where supported, <strong>${preview.conversions} existing ${preview.conversions === 1 ? "copy" : "copies"}</strong> will be considered for conversion, and <strong>${preview.removals} managed ${preview.removals === 1 ? "file" : "files"}</strong> will be removed. If mergerfs cannot place a hardlink on the ROM's underlying filesystem, ROMmates keeps or creates a normal copy. AppleDouble and .DS_Store metadata will also be cleaned.</p>`,
       confirmLabel: isGroup ? "Apply group changes" : "Apply device changes",
       cancelLabel: isGroup ? "Keep current files" : "Keep current device files",
       danger: preview.removals > 0,
@@ -3912,7 +3998,7 @@ async function renderCurrentView() {
   const requestedView = state.view;
   let renderVersion = state.renderVersion;
   try {
-    const renderers = { overview: renderOverview, library: renderLibrary, artwork: renderArtwork, transfers: renderTransfers, duplicates: renderDuplicates, naming: renderNaming, devices: renderDevices, saves: renderSaves, jobs: renderJobs, notifications: renderNotifications, users: renderUsers, trash: renderTrash };
+    const renderers = { overview: renderOverview, library: renderLibrary, artwork: renderArtwork, transfers: renderTransfers, duplicates: renderDuplicates, naming: renderNaming, devices: renderDevices, saves: renderSaves, jobs: renderJobs, notifications: renderNotifications, account: renderAccount, users: renderUsers, trash: renderTrash };
     const renderPromise = renderers[requestedView]();
     renderVersion = state.renderVersion;
     await renderPromise;
@@ -3972,17 +4058,12 @@ function renderAuthentication() {
   document.querySelector("#login-username").focus();
 }
 
-function renderPasswordChange(required = false) {
-  setHeading(required ? "Choose your password" : "Change password", required
-    ? "Replace the temporary password before using ROMmates."
-    : "Update your account credentials.");
-  setViewHtml(`<div class="auth-panel password-panel"><h2>${required ? "Temporary password" : "Account password"}</h2><p>${required ? "Your administrator can reset access, but only you should know the password you choose here." : "Changing your password signs out your other ROMmates sessions."}</p><form class="auth-form" id="password-change-form"><label class="field"><span>Current password</span><input class="input" name="current_password" type="password" autocomplete="current-password" required></label><label class="field"><span>New password</span><input class="input" name="new_password" type="password" autocomplete="new-password" minlength="12" required aria-describedby="password-requirement"></label><small class="field-help" id="password-requirement">At least 12 characters</small><label class="field"><span>Confirm new password</span><input class="input" name="confirm_password" type="password" autocomplete="new-password" minlength="12" required></label><div class="password-actions">${required ? "" : '<button class="button secondary" type="button" data-cancel-password>Cancel</button>'}<button class="button" type="submit">Change password</button></div></form></div>`);
-  view.querySelector("[data-cancel-password]")?.addEventListener("click", renderCurrentView);
-  view.querySelector("#password-change-form").addEventListener("submit", async (event) => {
+function bindAccountPasswordForm(form, required = false) {
+  form?.addEventListener("submit", async (event) => {
     event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    const newPassword = String(form.get("new_password") || "");
-    if (newPassword !== form.get("confirm_password")) {
+    const values = new FormData(event.currentTarget);
+    const newPassword = String(values.get("new_password") || "");
+    if (newPassword !== values.get("confirm_password")) {
       toast("New passwords do not match", "error");
       return;
     }
@@ -3991,7 +4072,7 @@ function renderPasswordChange(required = false) {
     try {
       const result = await api("/api/auth/password", {
         method: "POST",
-        body: JSON.stringify({ current_password: form.get("current_password"), new_password: newPassword }),
+        body: JSON.stringify({ current_password: values.get("current_password"), new_password: newPassword }),
       });
       state.principal = result.user;
       await refreshStatus();
@@ -3999,12 +4080,46 @@ function renderPasswordChange(required = false) {
       await loadInbox();
       await loadOnboarding();
       toast("Password changed");
-      navigateTo(isAdmin() ? "overview" : "library", {}, "replace");
+      if (required) navigateTo(isAdmin() ? "overview" : "library", {}, "replace");
+      else renderAccount();
     } catch (error) {
       submit.disabled = false;
       toast(error.message, "error");
     }
   });
+}
+
+function passwordFormMarkup() {
+  return `<form class="auth-form account-password-form" id="password-change-form">
+    <label class="field"><span>Current password</span><input class="input" name="current_password" type="password" autocomplete="current-password" required></label>
+    <label class="field"><span>New password</span><input class="input" name="new_password" type="password" autocomplete="new-password" minlength="12" required aria-describedby="password-requirement"></label>
+    <small class="field-help" id="password-requirement">Use at least 12 characters.</small>
+    <label class="field"><span>Confirm new password</span><input class="input" name="confirm_password" type="password" autocomplete="new-password" minlength="12" required></label>
+    <div class="password-actions"><button class="button" type="submit">Change password</button></div>
+  </form>`;
+}
+
+function renderAccount() {
+  beginPageRender();
+  setHeading("Account", "Manage your profile and sign-in security.");
+  const roles = (state.principal?.roles || [state.principal?.role]).filter(Boolean);
+  const identity = state.principal?.bootstrap
+    ? `<div class="account-profile"><span class="eyebrow">Bootstrap access</span><h2>Bootstrap administrator</h2><p>This emergency administrator uses the server access token. Create a named administrator account to manage a personal password.</p></div>`
+    : `<div class="account-profile"><span class="eyebrow">Signed in as</span><h2>${escapeHtml(state.principal?.display_name || state.principal?.username || "ROMmates user")}</h2><p>@${escapeHtml(state.principal?.username || "user")}</p><div class="account-role-list">${roles.map((role) => `<span class="badge unique">${escapeHtml(role)}</span>`).join("")}</div></div>`;
+  const security = state.principal?.bootstrap
+    ? `<section class="account-security"><div class="section-heading"><div><h2>Password security</h2><p>Bootstrap access is configured with <code>ROMMATES_ACCESS_TOKEN</code> on the server.</p></div></div></section>`
+    : `<section class="account-security"><div class="section-heading"><div><h2>Change password</h2><p>Changing your password signs out your other ROMmates sessions.</p></div></div>${passwordFormMarkup()}</section>`;
+  setViewHtml(`<div class="account-page">${identity}${security}</div>`);
+  bindAccountPasswordForm(view.querySelector("#password-change-form"));
+}
+
+function renderPasswordChange(required = false) {
+  setHeading(required ? "Choose your password" : "Change password", required
+    ? "Replace the temporary password before using ROMmates."
+    : "Update your account credentials.");
+  setViewHtml(`<div class="auth-panel password-panel"><h2>${required ? "Temporary password" : "Account password"}</h2><p>${required ? "Your administrator can reset access, but only you should know the password you choose here." : "Changing your password signs out your other ROMmates sessions."}</p><form class="auth-form" id="password-change-form"><label class="field"><span>Current password</span><input class="input" name="current_password" type="password" autocomplete="current-password" required></label><label class="field"><span>New password</span><input class="input" name="new_password" type="password" autocomplete="new-password" minlength="12" required aria-describedby="password-requirement"></label><small class="field-help" id="password-requirement">At least 12 characters</small><label class="field"><span>Confirm new password</span><input class="input" name="confirm_password" type="password" autocomplete="new-password" minlength="12" required></label><div class="password-actions">${required ? "" : '<button class="button secondary" type="button" data-cancel-password>Cancel</button>'}<button class="button" type="submit">Change password</button></div></form></div>`);
+  view.querySelector("[data-cancel-password]")?.addEventListener("click", renderCurrentView);
+  bindAccountPasswordForm(view.querySelector("#password-change-form"), required);
   view.querySelector("input[name='current_password']")?.focus();
 }
 
@@ -4030,6 +4145,7 @@ function updateBrowserRoute(viewName, historyMode) {
 
 function navigateTo(viewName, options = {}, historyMode = "push") {
   setMobileNavigation(false);
+  closeGameDetail();
   if (!VIEW_ROUTES[viewName]) viewName = "overview";
   if (state.principal && !allowedViews().has(viewName)) viewName = "library";
   updateBrowserRoute(viewName, historyMode);
@@ -4089,10 +4205,19 @@ document.addEventListener("click", (event) => {
   document.querySelectorAll("[data-roster-manager][open]").forEach((manager) => {
     if (!manager.contains(event.target)) manager.open = false;
   });
+  document.querySelectorAll("[data-device-action][open]").forEach((menu) => {
+    if (!menu.contains(event.target)) menu.open = false;
+  });
   document.querySelectorAll(".mobile-actions-menu[open]").forEach((menu) => {
     if (!menu.contains(event.target)) menu.open = false;
   });
 });
+
+gameDetailClose.addEventListener("click", closeGameDetail);
+gameDetailDialog.addEventListener("click", (event) => {
+  if (event.target === gameDetailDialog) closeGameDetail();
+});
+gameDetailDialog.addEventListener("close", () => { state.gameDetailId = null; });
 
 scanButton.addEventListener("click", () => startScan());
 stopJobButton.addEventListener("click", () => cancelJob(Number(stopJobButton.dataset.jobId), stopJobButton));
@@ -4179,7 +4304,6 @@ logoutButton.addEventListener("click", async () => {
   renderAuthentication();
 });
 
-changePasswordButton.addEventListener("click", () => renderPasswordChange(false));
 guidedTourButton.addEventListener("click", startTour);
 tourLauncher.addEventListener("click", startTour);
 document.querySelector("#tour-close-button").addEventListener("click", () => closeTour(true));

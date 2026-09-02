@@ -703,7 +703,7 @@ class LibraryServiceTests(unittest.TestCase):
         self.assertTrue((self.roms / "psx/Restore Me.cue").exists())
         self.assertTrue((self.roms / "psx/Restore Me.bin").exists())
 
-    def test_device_apply_copies_unselects_and_cleans_appledouble(self):
+    def test_device_apply_links_unselects_and_cleans_appledouble(self):
         self.write("gba/Metroid.gba", b"rom-data")
         device_roms = self.devices / "retroid" / "roms"
         device_roms.mkdir(parents=True)
@@ -714,7 +714,7 @@ class LibraryServiceTests(unittest.TestCase):
             device_id = connection.execute("SELECT id FROM devices WHERE name='retroid'").fetchone()["id"]
         self.service.set_selection(device_id, game_id, True)
         applied = self.service.apply_device(device_id)
-        self.assertEqual(applied["copied"], 1)
+        self.assertEqual(applied["linked"], 1)
         self.assertEqual(applied["metadata_removed"], 1)
         self.assertTrue((device_roms / "gba/Metroid.gba").exists())
         self.service.set_selection(device_id, game_id, False)
@@ -777,11 +777,12 @@ class LibraryServiceTests(unittest.TestCase):
         with self.db.connect() as connection:
             device_id = connection.execute("SELECT id FROM devices").fetchone()["id"]
         self.service.set_selection(device_id, game_id, True)
-        self.assertEqual(self.service.apply_device(device_id)["copied"], 1)
         target = device_roms / "gba/Convert Me.gba"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+        self.service._record_deployment(device_id, game_id, "gba/Convert Me.gba")
         self.assertFalse(source.samefile(target))
 
-        self.service.set_device_deployment_mode(device_id, "hardlink")
         result = self.service.apply_device(device_id)
 
         self.assertEqual(result["converted"], 1)
@@ -839,7 +840,7 @@ class LibraryServiceTests(unittest.TestCase):
 
         result = self.service.apply_device(device_id)
 
-        self.assertEqual(result["copied"], 1)
+        self.assertEqual(result["linked"], 1)
         self.assertTrue((device_roms / "gb/Tetris.gb").is_file())
         self.assertFalse((device_roms / "Nintendo Game Boy").exists())
         with self.db.connect() as connection:
@@ -903,7 +904,7 @@ class LibraryServiceTests(unittest.TestCase):
             self.assertTrue(release.wait(timeout=2))
             return original_copy(source, target)
 
-        with patch("app.library.shutil.copy2", side_effect=blocking_copy):
+        with patch("app.library.os.link", side_effect=OSError(errno.EXDEV, "cross-device")), patch("app.library.shutil.copy2", side_effect=blocking_copy):
             apply_thread = threading.Thread(target=self.service.apply_device, args=(device_id,))
             apply_thread.start()
             self.assertTrue(entered.wait(timeout=2))
@@ -993,7 +994,7 @@ class LibraryServiceTests(unittest.TestCase):
                 raise OSError("simulated I/O failure")
             return original_copy(source, target, *args, **kwargs)
 
-        with patch("app.library.shutil.copy2", side_effect=failing_copy):
+        with patch("app.library.os.link", side_effect=OSError(errno.EXDEV, "cross-device")), patch("app.library.shutil.copy2", side_effect=failing_copy):
             with self.assertRaises(OSError):
                 self.service.apply_device(device_id)
 
@@ -1032,8 +1033,9 @@ class LibraryServiceTests(unittest.TestCase):
             if list(device_roms.rglob(f"*{COPY_SUFFIX}")):
                 raise JobCancelled("Stopped by user")
 
-        with self.assertRaises(JobCancelled):
-            self.service.apply_device(device_id, cancel_check=cancel_during_copy)
+        with patch("app.library.os.link", side_effect=OSError(errno.EXDEV, "cross-device")):
+            with self.assertRaises(JobCancelled):
+                self.service.apply_device(device_id, cancel_check=cancel_during_copy)
 
         self.assertFalse((device_roms / "gba/Large.gba").exists())
         self.assertEqual(list(device_roms.rglob("*rommates-copy")), [])

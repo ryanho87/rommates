@@ -656,12 +656,12 @@ class BulkSelectionRequest(BaseModel):
 
 
 class DeviceDeploymentModeRequest(BaseModel):
-    mode: str = Field(pattern="^(copy|hardlink)$")
+    mode: str = Field(pattern="^hardlink$")
 
 
 class DeviceCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=64)
-    deployment_mode: str = Field(default="hardlink", pattern="^(copy|hardlink)$")
+    deployment_mode: str = Field(default="hardlink", pattern="^hardlink$")
     delivery_mode: str = Field(default="syncthing", pattern="^(syncthing|download)$")
     clone_device_id: int | None = Field(default=None, ge=1)
     keep_in_sync: bool = False
@@ -1039,6 +1039,7 @@ async def transfer_error_handler(_: Request, exc: TransferError):
 @app.get("/jobs", include_in_schema=False)
 @app.get("/trash", include_in_schema=False)
 @app.get("/notifications", include_in_schema=False)
+@app.get("/account", include_in_schema=False)
 @app.get("/users", include_in_schema=False)
 def index():
     return HTMLResponse(INDEX_HTML, headers={"Cache-Control": "no-store"})
@@ -2207,7 +2208,7 @@ def create_device(payload: DeviceCreateRequest, request: Request):
         else source_device["owner_user_id"] if source_device is not None else None
     )
     device = library.create_device(
-        payload.name, payload.deployment_mode, owner_user_id, payload.delivery_mode
+        payload.name, "hardlink", owner_user_id, payload.delivery_mode
     )
     owner_label = principal.display_name or principal.username or "An administrator"
     if payload.delivery_mode == "syncthing":
@@ -2429,7 +2430,7 @@ def device_preview(device_id: int, request: Request):
         "files": desired["files"],
         "additions": additions,
         "removals": removals,
-        "conversions": storage["conversions"] if device["deployment_mode"] == "hardlink" else 0,
+        "conversions": storage["conversions"],
         "hardlinked": storage["hardlinked"],
         "copied": storage["copied"],
         "missing": storage["missing"],
