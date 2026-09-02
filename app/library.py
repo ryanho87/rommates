@@ -1813,6 +1813,46 @@ class LibraryService:
                 )
         return len(valid_ids)
 
+    def discard_device_changes(self, device_id: int) -> dict[str, object]:
+        """Restore desired selections to the initiating device's managed deployments."""
+        with self.db.write() as connection:
+            device = connection.execute(
+                "SELECT id,name,roster_group_id FROM devices WHERE id=?", (device_id,)
+            ).fetchone()
+            if not device:
+                raise LibraryError("Device was not found")
+            device_ids = self._roster_device_ids(connection, device_id)
+            deployed_game_ids = [
+                row["game_id"]
+                for row in connection.execute(
+                    "SELECT DISTINCT game_id FROM deployments WHERE device_id=? ORDER BY game_id",
+                    (device_id,),
+                )
+            ]
+            connection.executemany(
+                "DELETE FROM device_selections WHERE device_id=?",
+                ((member_id,) for member_id in device_ids),
+            )
+            if deployed_game_ids:
+                connection.executemany(
+                    "INSERT INTO device_selections(device_id,game_id) VALUES(?,?)",
+                    (
+                        (member_id, game_id)
+                        for member_id in device_ids
+                        for game_id in deployed_game_ids
+                    ),
+                )
+        self.db.activity(
+            "device",
+            f"Cleared proposed changes for {device['name']}",
+        )
+        return {
+            "device_ids": device_ids,
+            "devices": len(device_ids),
+            "games": len(deployed_game_ids),
+            "group": bool(device["roster_group_id"]),
+        }
+
     def clone_device_roster(
         self, source_device_id: int, target_device_id: int, keep_in_sync: bool = False
     ) -> dict[str, object]:

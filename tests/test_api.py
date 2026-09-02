@@ -1352,6 +1352,38 @@ class ApiIntegrationTests(unittest.TestCase):
                 json={"game_id": game["id"], "selected": False},
             )
 
+    def test_device_changes_can_be_discarded_without_touching_files(self):
+        scan = self.client.post("/api/scan", headers=self.headers)
+        self.assertEqual(self.wait_for_job(scan.json()["job_id"])["status"], "complete")
+        game = next(
+            item for item in self.client.get(
+                "/api/games?limit=1000", headers=self.headers
+            ).json()["items"]
+            if item["display_name"] == "Test Game"
+        )
+        device = self.client.get("/api/devices", headers=self.headers).json()[0]
+        self.client.put(
+            f"/api/devices/{device['id']}/selection",
+            headers=self.headers,
+            json={"game_id": game["id"], "selected": True},
+        )
+
+        response = self.client.post(
+            f"/api/devices/{device['id']}/discard-changes", headers=self.headers
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["devices"], 1)
+        self.assertEqual(response.json()["games"], 0)
+        preview = self.client.get(
+            f"/api/devices/{device['id']}/preview", headers=self.headers
+        ).json()
+        self.assertEqual(preview["additions"], 0)
+        self.assertEqual(preview["removals"], 0)
+        self.assertFalse(
+            (self.root / "devices" / device["path"] / "roms" / game["primary_relpath"]).exists()
+        )
+
     def test_running_scan_can_be_cancelled(self):
         started = threading.Event()
 

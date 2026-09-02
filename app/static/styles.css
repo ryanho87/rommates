@@ -713,7 +713,7 @@ input[type="checkbox"] { width: 15px; height: 15px; margin: 0; accent-color: var
 .device-secondary-actions { display: flex; align-items: center; gap: 8px 18px; flex-wrap: wrap; }
 .device-secondary-actions .text-button { min-height: 30px; padding: 0; color: var(--text-muted); font-weight: 650; }
 .device-secondary-actions .text-button:hover { color: var(--accent); }
-.device-secondary-actions .device-apply-action { margin-left: auto; }
+.device-change-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
 .device-admin-details { margin: 0 0 16px; border-bottom: 1px solid var(--border); }
 .device-admin-details > summary { width: fit-content; margin-bottom: 10px; color: var(--text-faint); font-size: 0.7rem; cursor: pointer; }
 .device-admin-details-body { display: grid; grid-template-columns: minmax(220px, .65fr) minmax(0, 1.35fr) auto; gap: 14px; align-items: end; padding: 0 0 14px; }
@@ -1410,7 +1410,8 @@ html.game-detail-open body { overflow: hidden; overscroll-behavior: none; }
   .device-mode-chip { min-height: 44px; padding-inline: 8px; }
   .device-secondary-actions { gap: 4px 16px; }
   .device-secondary-actions .text-button { min-height: 42px; }
-  .device-secondary-actions .device-apply-action { width: 100%; min-height: 44px; margin-left: 0; }
+  .device-change-actions { display: grid; grid-template-columns: minmax(0, .8fr) minmax(0, 1.2fr); width: 100%; margin-left: 0; }
+  .device-change-actions .button { width: 100%; min-height: 44px; }
   .device-admin-details-body { grid-template-columns: 1fr; align-items: stretch; }
   .device-admin-details-body > .button { width: 100%; }
   .device-game-heading { align-items: flex-start; flex-direction: column; gap: 8px; }

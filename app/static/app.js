@@ -2605,6 +2605,7 @@ function deviceWorkspaceControls(device, target, preview, isGroup = false) {
   const ready = Boolean(device.syncthing_ready_at);
   const gameCount = Number(preview.games || 0);
   const pending = Number(preview.additions || 0) + Number(preview.removals || 0) + Number(preview.conversions || 0);
+  const discardable = Number(preview.additions || 0) + Number(preview.removals || 0);
   const homeScope = isGroup ? "selected" : "on_device";
   const delivery = isGroup
     ? `${target.members.length.toLocaleString()} ${target.members.length === 1 ? "device" : "devices"}`
@@ -2623,7 +2624,7 @@ function deviceWorkspaceControls(device, target, preview, isGroup = false) {
       <button class="text-button" type="button" data-new-device>Create new device</button>
       <button class="text-button" type="button" data-new-device-group>Create device group</button>
       <button class="text-button" type="button" data-device-export ${gameCount ? "" : "disabled"}>Download ROMs</button>
-      ${pending ? `<button class="button secondary small device-apply-action" id="apply-device">Review ${pending.toLocaleString()} ${pending === 1 ? "change" : "changes"}</button>` : ""}
+      ${pending ? `<div class="device-change-actions">${discardable ? '<button class="button secondary small" id="clear-device-changes" type="button">Clear changes</button>' : ""}<button class="button small device-apply-action" id="apply-device" type="button">Review ${pending.toLocaleString()} ${pending === 1 ? "change" : "changes"}</button></div>` : ""}
     </div>
   </section>`;
 }
@@ -3052,6 +3053,44 @@ async function renderDevices() {
       toast(`${checkbox.checked ? "Selected" : "Unselected"} ${data.items.length} visible games`);
       await renderDevices();
     } catch (error) { checkbox.checked = !checkbox.checked; checkbox.disabled = false; toast(error.message, "error"); }
+  });
+  view.querySelector("#clear-device-changes")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    const plans = isGroup ? memberPreviews : [memberPreviews[0]];
+    const discardPlans = plans.map((item, index) => ({
+      label: isGroup ? target.members[index].name : device.name,
+      plan: {
+        ...item,
+        conversions: 0,
+        changes: { ...(item.changes || {}), conversions: [] },
+      },
+    })).filter(({ plan }) => Number(plan.additions || 0) || Number(plan.removals || 0));
+    const discardCount = discardPlans.reduce(
+      (total, { plan }) => total + Number(plan.additions || 0) + Number(plan.removals || 0),
+      0,
+    );
+    const confirmed = await confirmAction({
+      title: `Clear ${discardCount.toLocaleString()} proposed ${discardCount === 1 ? "change" : "changes"}?`,
+      content: `<p class="warning-copy">ROMmates will restore the desired roster to the ROMs currently managed on ${escapeHtml(device.name)}. No device files will be changed.${isGroup ? ` This becomes the shared roster for all ${target.members.length} group members.` : ""}</p><div class="device-plan-reviews">${discardPlans.map(({ plan, label }) => devicePlanReview(plan, label, false)).join("")}</div>`,
+      confirmLabel: "Clear changes",
+      cancelLabel: "Keep changes",
+      danger: false,
+      wide: true,
+    });
+    if (!confirmed) return;
+    button.disabled = true;
+    try {
+      const result = await api(`/api/devices/${device.id}/discard-changes`, { method: "POST" });
+      const conversions = Number(preview.conversions || 0);
+      toast(conversions
+        ? `Cleared roster changes for ${result.devices.toLocaleString()} ${result.devices === 1 ? "device" : "devices"}; ${conversions.toLocaleString()} hardlink ${conversions === 1 ? "conversion remains" : "conversions remain"}`
+        : "All proposed roster changes cleared");
+      await loadReferenceData();
+      await renderDevices();
+    } catch (error) {
+      button.disabled = false;
+      toast(error.message, "error");
+    }
   });
   view.querySelector("#apply-device")?.addEventListener("click", async () => {
     const plans = isGroup ? memberPreviews : [memberPreviews[0]];

@@ -2488,6 +2488,12 @@ def update_selections(device_id: int, payload: BulkSelectionRequest, request: Re
     return {"selected": payload.selected, "updated": updated}
 
 
+@app.post("/api/devices/{device_id}/discard-changes")
+def discard_device_changes(device_id: int, request: Request):
+    require_device_access(device_id, request_principal(request))
+    return library.discard_device_changes(device_id)
+
+
 @app.put("/api/devices/{device_id}/deployment-mode")
 def update_device_deployment_mode(
     device_id: int, payload: DeviceDeploymentModeRequest, request: Request

@@ -722,6 +722,33 @@ class LibraryServiceTests(unittest.TestCase):
         self.assertEqual(removed["removed"], 1)
         self.assertFalse((device_roms / "gba/Metroid.gba").exists())
 
+    def test_discard_device_changes_restores_the_managed_roster(self):
+        self.write("gba/Keep Deployed.gba", b"keep")
+        self.write("gba/Discard Addition.gba", b"discard")
+        self.service.scan()
+        keep_id = self.game_id("Keep Deployed")
+        discard_id = self.game_id("Discard Addition")
+        device_id = self.service.create_device("handheld")["id"]
+        self.service.set_selection(device_id, keep_id, True)
+        self.service.apply_device(device_id)
+        self.service.set_selection(device_id, keep_id, False)
+        self.service.set_selection(device_id, discard_id, True)
+
+        result = self.service.discard_device_changes(device_id)
+
+        self.assertEqual(result["devices"], 1)
+        self.assertEqual(result["games"], 1)
+        with self.db.connect() as connection:
+            selections = {
+                row["game_id"]
+                for row in connection.execute(
+                    "SELECT game_id FROM device_selections WHERE device_id=?", (device_id,)
+                )
+            }
+        self.assertEqual(selections, {keep_id})
+        self.assertTrue((self.devices / "handheld/roms/gba/Keep Deployed.gba").exists())
+        self.assertFalse((self.devices / "handheld/roms/gba/Discard Addition.gba").exists())
+
     def test_hardlink_device_deploys_without_duplicate_storage(self):
         source = self.write("gba/Zero Copy.gba", b"linked-rom")
         device_roms = self.devices / "handheld" / "roms"
