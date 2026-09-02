@@ -338,6 +338,13 @@ def run_job(
                 )
             else:
                 result = operation(*args)
+            if kind == "scan":
+                try:
+                    ranking_service.reconcile_all()
+                except Exception as exc:
+                    # A healthy library scan must not fail because optional ranking
+                    # metadata could not be reconciled. The next ranking request can retry.
+                    db.activity("ranking", f"Ranking matches could not be refreshed: {exc}")
             if kind in {"artwork_scrape", "artwork_bulk"} and isinstance(result, dict):
                 job_issues.extend(str(issue) for issue in result.get("issues", []))
             # Cooperative operations check cancellation before their final commit. A
@@ -589,6 +596,7 @@ async def lifespan(_: FastAPI):
             "if this instance is already protected by an authenticated reverse proxy."
         )
     library.prepare_roots()
+    ranking_service.reconcile_all()
     saves.initialize()
     transfers.initialize()
     notifications.initialize()
@@ -804,6 +812,11 @@ class PasswordChangeRequest(BaseModel):
     new_password: str = Field(min_length=PASSWORD_MIN_LENGTH, max_length=1024)
 
 
+class ProfileUpdateRequest(BaseModel):
+    username: str = Field(min_length=1, max_length=64)
+    display_name: str = Field(min_length=1, max_length=100)
+
+
 class OnboardingUpdateRequest(BaseModel):
     tour_key: str = Field(min_length=1, max_length=64, pattern="^[a-z0-9_-]+$")
     tour_version: int = Field(default=1, ge=1, le=1000)
@@ -885,7 +898,14 @@ def require_job_access(job_id: int, principal: Principal):
 def role_allows(principal: Principal, method: str, path: str) -> bool:
     if principal.has_role("admin"):
         return True
-    if path in {"/api/auth/me", "/api/auth/logout", "/api/auth/password", "/api/onboarding"}:
+    if path in {
+        "/api/auth/me",
+        "/api/auth/logout",
+        "/api/auth/password",
+        "/api/auth/profile",
+        "/api/account/summary",
+        "/api/onboarding",
+    }:
         return True
     if path.startswith("/api/inbox"):
         return method in {"GET", "POST"}
@@ -1100,6 +1120,23 @@ def change_password(payload: PasswordChangeRequest, request: Request):
     return {"user": updated.payload(), "changed": True}
 
 
+@app.patch("/api/auth/profile")
+def update_profile(payload: ProfileUpdateRequest, request: Request):
+    principal = request_principal(request)
+    if principal.id is None or principal.bootstrap:
+        raise HTTPException(
+            status_code=400,
+            detail="Bootstrap access does not have a personal profile",
+        )
+    updated = auth.update_profile(
+        principal.id,
+        payload.username,
+        payload.display_name,
+    )
+    db.activity("user", f"Updated profile for account {updated.username}")
+    return {"user": updated.payload(), "changed": True}
+
+
 @app.get("/api/auth/me")
 def current_user(request: Request):
     principal = request_principal(request)
@@ -1114,6 +1151,60 @@ def current_user(request: Request):
             ) and not principal.must_change_password,
             "download": not principal.must_change_password,
         },
+    }
+
+
+@app.get("/api/account/summary")
+def account_summary(request: Request):
+    principal = request_principal(request)
+    if principal.id is None:
+        return {
+            "user": principal.payload(),
+            "devices": [],
+            "platforms": [],
+            "total_synced_roms": 0,
+            "unique_synced_roms": 0,
+        }
+    with db.connect() as connection:
+        devices = [
+            dict(row)
+            for row in connection.execute(
+                "SELECT d.id,d.name,d.delivery_mode,d.syncthing_ready_at,"
+                "rg.id AS group_id,rg.name AS group_name,"
+                "COUNT(DISTINCT ds.game_id) AS selected_roms,"
+                "COUNT(DISTINCT dp.game_id) AS synced_roms "
+                "FROM devices d "
+                "LEFT JOIN device_roster_groups rg ON rg.id=d.roster_group_id "
+                "LEFT JOIN device_selections ds ON ds.device_id=d.id "
+                "LEFT JOIN deployments dp ON dp.device_id=d.id "
+                "WHERE d.owner_user_id=? "
+                "GROUP BY d.id,d.name,d.delivery_mode,d.syncthing_ready_at,rg.id,rg.name "
+                "ORDER BY d.name COLLATE NOCASE",
+                (principal.id,),
+            )
+        ]
+        platforms = [
+            dict(row)
+            for row in connection.execute(
+                "SELECT g.platform,COUNT(*) AS synced_roms "
+                "FROM (SELECT DISTINCT dp.device_id,dp.game_id FROM deployments dp "
+                "JOIN devices d ON d.id=dp.device_id WHERE d.owner_user_id=?) deployed "
+                "JOIN games g ON g.id=deployed.game_id "
+                "GROUP BY g.platform ORDER BY synced_roms DESC,g.platform COLLATE NOCASE",
+                (principal.id,),
+            )
+        ]
+        unique_synced_roms = connection.execute(
+            "SELECT COUNT(DISTINCT dp.game_id) AS count FROM deployments dp "
+            "JOIN devices d ON d.id=dp.device_id WHERE d.owner_user_id=?",
+            (principal.id,),
+        ).fetchone()["count"]
+    return {
+        "user": principal.payload(),
+        "devices": devices,
+        "platforms": platforms,
+        "total_synced_roms": sum(int(item["synced_roms"]) for item in platforms),
+        "unique_synced_roms": int(unique_synced_roms),
     }
 
 
@@ -1457,7 +1548,8 @@ def games(
     device_id: int | None = None,
     device_scope: str = Query("all", pattern="^(all|selected|on_device|changes)$"),
     sort: str = Query(
-        "name_asc", pattern="^(name_asc|name_desc|rating_desc|rating_asc|size_desc|size_asc)$"
+        "name_asc",
+        pattern="^(name_asc|name_desc|rank_asc|rating_desc|rating_asc|size_desc|size_asc)$",
     ),
     limit: int = Query(200, ge=1, le=1000),
     offset: int = Query(0, ge=0),
@@ -1526,6 +1618,7 @@ def games(
     order_sql = {
         "name_asc": "g.display_name COLLATE NOCASE ASC,g.platform ASC,g.id ASC",
         "name_desc": "g.display_name COLLATE NOCASE DESC,g.platform ASC,g.id ASC",
+        "rank_asc": "pr.rank IS NULL ASC,pr.rank ASC,g.display_name COLLATE NOCASE ASC,g.id ASC",
         "rating_desc": "gm.rating IS NULL ASC,gm.rating DESC,g.display_name COLLATE NOCASE ASC,g.id ASC",
         "rating_asc": "gm.rating IS NULL ASC,gm.rating ASC,g.display_name COLLATE NOCASE ASC,g.id ASC",
         "size_desc": "g.size DESC,g.display_name COLLATE NOCASE ASC,g.id ASC",
@@ -1563,9 +1656,12 @@ def games(
             f"(SELECT substr(sha256,1,16) FROM game_assets ga WHERE ga.game_id=g.id AND ga.kind='cover' LIMIT 1) AS cover_asset_version,"
             f"(SELECT COUNT(*) FROM game_assets ga WHERE ga.game_id=g.id) AS artwork_count,"
             f"gm.rating AS rating,gm.top_staff AS top_staff,({platform_rank_expr}) AS platform_rank,"
+            f"pr.rank AS rawg_rank,pr.score AS rawg_score,"
             f"({selected_expr}) AS selected,({present_expr}) AS on_device,"
             f"({managed_expr}) AS managed,({synced_expr}) AS synced FROM games g "
-            f"LEFT JOIN game_metadata gm ON gm.game_id=g.id WHERE {where_sql} "
+            f"LEFT JOIN game_metadata gm ON gm.game_id=g.id "
+            f"LEFT JOIN platform_rankings pr ON pr.matched_game_id=g.id "
+            f"AND pr.match_method='exact' WHERE {where_sql} "
             f"ORDER BY {order_sql} LIMIT ? OFFSET ?",
             params_for_select + params + [limit, offset],
         ).fetchall()

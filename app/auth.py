@@ -285,6 +285,30 @@ class AuthService:
             updated = connection.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
         return self._principal(updated)
 
+    def update_profile(self, user_id: int, username: str, display_name: str) -> Principal:
+        username = username.strip()
+        normalized = username.casefold()
+        if not username or len(username) > 64 or any(char.isspace() for char in username):
+            raise LibraryError("Username must be 1 to 64 characters without spaces")
+        display_name = display_name.strip()[:100] or username
+        with self.db.write() as connection:
+            current = connection.execute(
+                "SELECT * FROM users WHERE id=? AND active=1", (user_id,)
+            ).fetchone()
+            if not current:
+                raise LibraryError("User was not found")
+            try:
+                connection.execute(
+                    "UPDATE users SET username=?,username_normalized=?,display_name=? WHERE id=?",
+                    (username, normalized, display_name, user_id),
+                )
+            except Exception as exc:
+                if "UNIQUE" in str(exc).upper():
+                    raise LibraryError("That username already exists") from exc
+                raise
+            updated = connection.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
+        return self._principal(updated)
+
     @staticmethod
     def _normalize_roles(roles) -> list[str]:
         unique = {str(role) for role in roles} if roles else set()

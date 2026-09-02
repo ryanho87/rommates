@@ -127,10 +127,61 @@ class RankingService:
                 "VALUES(?,?,'rawg',?,?,?,?,?,?,?)",
                 rows,
             )
+        matched = self.reconcile(platform)
         self.db.activity("ranking", f"Cached {len(rows)} RAWG rankings for {platform}")
-        return {"platform": platform, "games": len(rows)}
+        return {"platform": platform, "games": len(rows), "matched": matched}
+
+    def reconcile(self, platform: str) -> int:
+        """Attach exact RAWG title matches to catalog games for sorting and badges.
+
+        Similar filenames are intentionally excluded. They remain visible as
+        review suggestions in coverage, but never silently change a library row.
+        """
+        with self.db.connect() as connection:
+            ranked = [dict(row) for row in connection.execute(
+                "SELECT rank,title FROM platform_rankings WHERE platform=? ORDER BY rank",
+                (platform,),
+            )]
+            games = [dict(row) for row in connection.execute(
+                "SELECT id,display_name FROM games WHERE platform=? ORDER BY id",
+                (platform,),
+            )]
+        games_by_name: dict[str, list[int]] = {}
+        for game in games:
+            games_by_name.setdefault(ranking_name(game["display_name"]), []).append(game["id"])
+        used: set[int] = set()
+        matches: list[tuple[int, str, str, int]] = []
+        for item in ranked:
+            candidates = games_by_name.get(ranking_name(item["title"]), [])
+            game_id = next((candidate for candidate in candidates if candidate not in used), None)
+            if game_id is None:
+                continue
+            used.add(game_id)
+            matches.append((game_id, "exact", platform, item["rank"]))
+        with self.db.write() as connection:
+            connection.execute(
+                "UPDATE platform_rankings SET matched_game_id=NULL,match_method='' WHERE platform=?",
+                (platform,),
+            )
+            connection.executemany(
+                "UPDATE platform_rankings SET matched_game_id=?,match_method=? "
+                "WHERE platform=? AND rank=?",
+                matches,
+            )
+        return len(matches)
+
+    def reconcile_all(self) -> int:
+        with self.db.connect() as connection:
+            platforms = [
+                row["platform"]
+                for row in connection.execute(
+                    "SELECT DISTINCT platform FROM platform_rankings ORDER BY platform"
+                )
+            ]
+        return sum(self.reconcile(platform) for platform in platforms)
 
     def coverage(self, platform: str) -> dict[str, object]:
+        self.reconcile(platform)
         with self.db.connect() as connection:
             ranked = [dict(row) for row in connection.execute(
                 "SELECT * FROM platform_rankings WHERE platform=? ORDER BY rank", (platform,)
@@ -138,12 +189,13 @@ class RankingService:
             games = [dict(row) for row in connection.execute(
                 "SELECT id,display_name,primary_relpath FROM games WHERE platform=?", (platform,)
             )]
+        games_by_id = {game["id"]: game for game in games}
         normalized = [(game, ranking_name(game["display_name"])) for game in games]
         used: set[int] = set()
         counts = {"owned": 0, "possible": 0, "missing": 0}
         for item in ranked:
             target = ranking_name(item["title"])
-            exact = next((game for game, name in normalized if name == target), None)
+            exact = games_by_id.get(item.get("matched_game_id"))
             possible = None
             if not exact and target:
                 candidates = sorted(

@@ -247,8 +247,10 @@ ROMmates is flat by default. Borders, tinted surface layers, and spacing establi
 
 ### Device Assignment and Groups
 
-- **Command center:** the device page leads with exactly four member flows: add ROMs, download the selected ROM package, add a device, and create a device group. Add ROMs is the single violet action; the other flows step down without competing cards or repeated counts.
-- **Current target:** the device or group name is the page title. The command center shows the selected-ROM count and delivery state once; switching targets is a compact disclosure rather than a permanent form row.
+- **Route title:** the top bar always says “Devices.” The selected device or group appears immediately below as a large, title-style dropdown so the page location and managed target never compete.
+- **ROM views:** two pill controls—“Add ROMs” and “On Device”—are the only primary workspace choices. They switch the list in place without navigating away or duplicating the current target.
+- **Secondary flows:** “Create new device,” “Create device group,” and “Download ROMs” appear as quiet links below the view controls. Each opens a focused dialog; onboarding forms never expand inline and push the ROM list down the page.
+- **Current target:** show the selected-ROM count and delivery state once beneath the target selector. Ownership is communicated through the selector’s option groups rather than repeated in the selected label.
 - **Assignment:** device choices appear in one focused popover with explicit selected state and a review-and-apply footer. Bulk selection uses the same pattern as single-game assignment.
 - **Groups:** owner-scoped groups use one grouped roster and inline management menus behind a “Group members” disclosure. Group rows remain dividers inside one container, not individual cards.
 - **Progressive disclosure:** ownership controls, hardlink/copy diagnostics, unmatched files, and Syncthing administration are admin-only technical details. They never interrupt the member’s core device flow.

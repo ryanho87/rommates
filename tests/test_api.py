@@ -152,6 +152,74 @@ class ApiIntegrationTests(unittest.TestCase):
         self.assertTrue(stored["completed"])
         self.client.post("/api/auth/logout")
 
+    def test_account_profile_devices_and_platform_stats_are_self_service(self):
+        scan = self.client.post("/api/scan", headers=self.headers)
+        self.assertEqual(self.wait_for_job(scan.json()["job_id"])["status"], "complete")
+        created = self.client.post(
+            "/api/users",
+            headers=self.headers,
+            json={
+                "username": "account-test",
+                "display_name": "Account Test",
+                "password": "account-test-password",
+                "role": "member",
+            },
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        user_id = created.json()["id"]
+        with self.main.db.write() as connection:
+            game_id = connection.execute(
+                "SELECT id FROM games WHERE primary_relpath='gba/Test Game.gba'"
+            ).fetchone()["id"]
+            connection.execute(
+                "INSERT INTO devices(name,path,owner_user_id) VALUES('account-test-device','account-test-device/roms',?)",
+                (user_id,),
+            )
+            device_id = connection.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
+            connection.execute(
+                "INSERT INTO device_selections(device_id,game_id) VALUES(?,?)",
+                (device_id, game_id),
+            )
+            connection.execute(
+                "INSERT INTO deployments(device_id,game_id,relpath) VALUES(?,?,?)",
+                (device_id, game_id, "gba/Test Game.gba"),
+            )
+        try:
+            login = self.client.post(
+                "/api/auth/login",
+                json={"username": "account-test", "password": "account-test-password"},
+            )
+            self.assertEqual(login.status_code, 200, login.text)
+            changed = self.client.post(
+                "/api/auth/password",
+                json={
+                    "current_password": "account-test-password",
+                    "new_password": "account-test-password-changed",
+                },
+            )
+            self.assertEqual(changed.status_code, 200, changed.text)
+            summary = self.client.get("/api/account/summary")
+            self.assertEqual(summary.status_code, 200, summary.text)
+            self.assertEqual(summary.json()["user"]["username"], "account-test")
+            self.assertEqual(summary.json()["devices"][0]["name"], "account-test-device")
+            self.assertEqual(summary.json()["devices"][0]["synced_roms"], 1)
+            self.assertEqual(summary.json()["platforms"], [{"platform": "gba", "synced_roms": 1}])
+            self.assertEqual(summary.json()["total_synced_roms"], 1)
+
+            profile = self.client.patch(
+                "/api/auth/profile",
+                json={"username": "account-renamed", "display_name": "Renamed Account"},
+            )
+            self.assertEqual(profile.status_code, 200, profile.text)
+            self.assertEqual(profile.json()["user"]["username"], "account-renamed")
+            self.assertEqual(profile.json()["user"]["display_name"], "Renamed Account")
+            self.assertEqual(self.client.get("/api/auth/me").json()["user"]["username"], "account-renamed")
+            self.client.post("/api/auth/logout")
+        finally:
+            with self.main.db.write() as connection:
+                connection.execute("DELETE FROM devices WHERE id=?", (device_id,))
+                connection.execute("DELETE FROM users WHERE id=?", (user_id,))
+
     def test_ui_pages_support_direct_navigation(self):
         for path in (
             "/",
@@ -982,6 +1050,16 @@ class ApiIntegrationTests(unittest.TestCase):
                         "VALUES(?,'screenscraper',?,12,'hash',?,?)",
                         (ids[name], str(ids[name]), rating, staff),
                     )
+                connection.execute(
+                    "INSERT INTO platform_rankings(platform,rank,source,source_game_id,slug,title,score,rating,ratings_count,released,matched_game_id,match_method) "
+                    "VALUES('gba',2,'rawg','rating-low','rating-low','Rating Low',91,4.3,10,'',?,'exact')",
+                    (ids["Rating Low"],),
+                )
+                connection.execute(
+                    "INSERT INTO platform_rankings(platform,rank,source,source_game_id,slug,title,score,rating,ratings_count,released,matched_game_id,match_method) "
+                    "VALUES('gba',20,'rawg','rating-high','rating-high','Rating High',80,4.0,8,'',?,'exact')",
+                    (ids["Rating High"],),
+                )
 
             response = self.client.get(
                 "/api/games?platform=gba&search=Rating%20&sort=rating_desc&limit=100",
@@ -997,10 +1075,25 @@ class ApiIntegrationTests(unittest.TestCase):
             self.assertEqual(items[0]["platform_rank"], 1)
             self.assertEqual(items[0]["top_staff"], 1)
             self.assertIsNone(items[-1]["rating"])
+            ranked = self.client.get(
+                "/api/games?platform=gba&search=Rating%20&sort=rank_asc&limit=100",
+                headers=self.headers,
+            ).json()["items"]
+            self.assertEqual(
+                [item["display_name"] for item in ranked],
+                ["Rating Low", "Rating High", "Rating Unknown"],
+            )
+            self.assertEqual(ranked[0]["rawg_rank"], 2)
+            self.assertIsNone(ranked[-1]["rawg_rank"])
             platforms = self.client.get("/api/platforms", headers=self.headers).json()
             gba = next(item for item in platforms if item["platform"] == "gba")
             self.assertGreaterEqual(gba["rated_count"], 2)
         finally:
+            with self.main.db.write() as connection:
+                connection.execute(
+                    "DELETE FROM platform_rankings WHERE platform='gba' "
+                    "AND source_game_id IN ('rating-low','rating-high')"
+                )
             for path in paths:
                 path.unlink(missing_ok=True)
             scan = self.client.post("/api/scan?confirm_prune=true", headers=self.headers)

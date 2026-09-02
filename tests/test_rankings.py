@@ -57,6 +57,19 @@ class RankingServiceTests(unittest.TestCase):
             )
             self.assertEqual(coverage["items"][0]["match"]["display_name"], "Metroid Fusion (USA)")
             self.assertEqual(coverage["items"][1]["match"]["display_name"], "Advance Warz")
+            with db.connect() as connection:
+                exact = connection.execute(
+                    "SELECT matched_game_id,match_method FROM platform_rankings "
+                    "WHERE platform='gba' AND rank=1"
+                ).fetchone()
+                possible = connection.execute(
+                    "SELECT matched_game_id,match_method FROM platform_rankings "
+                    "WHERE platform='gba' AND rank=2"
+                ).fetchone()
+            self.assertIsNotNone(exact["matched_game_id"])
+            self.assertEqual(exact["match_method"], "exact")
+            self.assertIsNone(possible["matched_game_id"])
+            self.assertEqual(possible["match_method"], "")
 
 
 if __name__ == "__main__":

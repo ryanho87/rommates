@@ -61,7 +61,7 @@ class DatabaseMigrationTests(unittest.TestCase):
                 versions = {row["version"] for row in upgraded.execute("SELECT version FROM schema_migrations")}
             self.assertIn("result_json", columns)
             self.assertIn("progress_json", columns)
-            self.assertEqual(versions, set(range(1, 29)))
+            self.assertEqual(versions, set(range(1, 30)))
             with db.connect() as upgraded:
                 tables = {
                     row["name"]
@@ -81,6 +81,12 @@ class DatabaseMigrationTests(unittest.TestCase):
                 }
                 self.assertIn("name", group_columns)
                 self.assertIn("owner_user_id", group_columns)
+                ranking_columns = {
+                    row["name"]
+                    for row in upgraded.execute("PRAGMA table_info(platform_rankings)")
+                }
+                self.assertIn("matched_game_id", ranking_columns)
+                self.assertIn("match_method", ranking_columns)
             self.assertIn("device_inventory_files", tables)
             self.assertIn("user_onboarding", tables)
             self.assertIn("user_notifications", tables)
@@ -88,6 +94,7 @@ class DatabaseMigrationTests(unittest.TestCase):
             self.assertIn("device_roster_groups", tables)
             self.assertIn("idx_device_selections_game", indexes)
             self.assertIn("idx_deployments_game", indexes)
+            self.assertIn("idx_platform_rankings_matched_game", indexes)
 
     def test_member_and_device_ownership_migration_preserves_accounts_and_sessions(self):
         with tempfile.TemporaryDirectory() as directory:

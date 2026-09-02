@@ -135,6 +135,10 @@ const gameDetailTitle = document.querySelector("#game-detail-title");
 const gameDetailPlatform = document.querySelector("#game-detail-platform");
 const gameDetailContent = document.querySelector("#game-detail-content");
 const gameDetailClose = document.querySelector("#game-detail-close");
+const deviceFlowDialog = document.querySelector("#device-flow-dialog");
+const deviceFlowTitle = document.querySelector("#device-flow-title");
+const deviceFlowContent = document.querySelector("#device-flow-content");
+const deviceFlowClose = document.querySelector("#device-flow-close");
 const mobileMenuButton = document.querySelector("#mobile-menu-button");
 const navBackdrop = document.querySelector("#nav-backdrop");
 const inboxShell = document.querySelector("#inbox-shell");
@@ -154,19 +158,22 @@ const tourBackButton = document.querySelector("#tour-back-button");
 const tourSkipButton = document.querySelector("#tour-skip-button");
 const tourNextButton = document.querySelector("#tour-next-button");
 
-const TOUR_VERSION = 1;
+const TOUR_VERSION = 2;
 const TOUR_STEPS = {
   admin: [
     { view: "overview", selector: ".overview-strip", title: "Your collection at a glance", description: "Start here to spot scan health, missing artwork, device changes, and save conflicts." },
     { view: "library", selector: "#search-input", title: "Find and manage games", description: "Filter a large library by platform, rating, or name. Use each game's actions to download, rename, or assign devices." },
-    { view: "devices", selector: "#page-title", title: "Manage device libraries", description: "Claim existing devices, onboard new ones, and apply the desired game set." },
+    { view: "devices", selector: ".device-target-picker", title: "Choose a device or group", description: "This large selector controls which handheld or device group you are managing." },
+    { view: "devices", selector: ".device-mode-toggle", title: "Add ROMs or inspect the device", description: "Switch between the full library and ROMs currently present on the selected device." },
+    { view: "devices", selector: ".device-secondary-actions", title: "Device setup and downloads", description: "Create devices and groups, or download the selected ROM package, without leaving this page." },
     { view: "overview", selector: ".syncthing-panel", title: "Check device connectivity", description: "ROMmates reads Syncthing status so you can see whether managed devices are online before expecting transfers." },
     { view: "users", selector: "#page-title", title: "Invite people safely", description: "Combine roles to grant only the abilities each person needs, then assign ownership of their devices." },
   ],
   member: [
     { view: "library", selector: "#search-input", title: "Choose games", description: "Search and filter the catalog, then use the game menu or multi-select to include titles on your devices." },
-    { view: "devices", selector: "#page-title", title: "Onboard your device", description: "Create a device folder, review its desired games, and apply changes without server access." },
-    { view: "devices", selector: "[data-device-apply], #page-title", title: "Apply and sync", description: "Applying creates the ES-DE platform folders and triggers a Syncthing rescan when integration is configured." },
+    { view: "devices", selector: ".device-target-picker", title: "Choose your device or group", description: "The selected target stays prominent while you add ROMs, inspect its current files, or prepare a download." },
+    { view: "devices", selector: ".device-mode-toggle", title: "Switch ROM views", description: "Add ROMs opens the full catalog. On Device shows the ROMs currently present for this target." },
+    { view: "devices", selector: ".device-secondary-actions", title: "Set up or download", description: "Create another device, build a group, or download all selected ROMs as one package." },
   ],
   contributor: [
     { view: "library", selector: "#search-input", title: "Browse the collection", description: "Search by title and narrow the catalog to one platform before downloading." },
@@ -815,7 +822,7 @@ function libraryToolbar(includeDuplicate = true, platformItems = state.platforms
   const ratingAction = state.view !== "duplicates" && isAdmin()
     ? `<button class="button secondary" type="button" data-fetch-ratings ${!selectedPlatform || missingRatings === 0 ? "disabled" : ""}>${selectedPlatform ? missingRatings ? `Fetch ${missingRatings.toLocaleString()} missing ratings` : "Ratings complete" : "Choose a platform for ratings"}</button>`
     : "";
-  const rankingAction = state.view === "library"
+  const rankingAction = state.view === "library" && isAdmin()
     ? `<button class="button secondary ${state.rankingOpen ? "active" : ""}" type="button" data-toggle-ranking ${selectedPlatform ? "" : "disabled"}>Top 100 coverage</button>`
     : "";
   const auxiliaryTools = ratingAction || rankingAction
@@ -835,6 +842,7 @@ function libraryToolbar(includeDuplicate = true, platformItems = state.platforms
       ${state.view !== "duplicates" ? `<label><span class="sr-only">Sort games</span><select id="sort-filter">
         <option value="name_asc" ${state.sort === "name_asc" ? "selected" : ""}>Title A–Z</option>
         <option value="name_desc" ${state.sort === "name_desc" ? "selected" : ""}>Title Z–A</option>
+        <option value="rank_asc" ${state.sort === "rank_asc" ? "selected" : ""}>Top ranked</option>
         <option value="rating_desc" ${state.sort === "rating_desc" ? "selected" : ""}>Best rated</option>
         <option value="rating_asc" ${state.sort === "rating_asc" ? "selected" : ""}>Lowest rated</option>
         <option value="size_desc" ${state.sort === "size_desc" ? "selected" : ""}>Largest size</option>
@@ -1088,12 +1096,21 @@ async function refreshRanking() {
 }
 
 function gameRating(game) {
+  const ranking = gameRankingChip(game);
   if (game.rating === null || game.rating === undefined) {
-    return '<span class="rating-empty">Not rated</span>';
+    return `<span class="rating-cell-content"><span class="rating-empty">Not rated</span>${ranking}</span>`;
   }
   const score = Number(game.rating);
   const rank = game.platform_rank ? `#${Number(game.platform_rank).toLocaleString()} on ${escapeHtml(game.platform)}` : "";
-  return `<span class="rating-summary" title="ScreenScraper community rating"><strong>${score.toLocaleString(undefined, { maximumFractionDigits: 1 })}<small>/20</small></strong>${rank ? `<span>${rank}</span>` : ""}${game.top_staff ? '<span class="staff-pick">Staff pick</span>' : ""}</span>`;
+  return `<span class="rating-cell-content"><span class="rating-summary" title="ScreenScraper community rating"><strong>${score.toLocaleString(undefined, { maximumFractionDigits: 1 })}<small>/20</small></strong>${rank ? `<span>${rank}</span>` : ""}${game.top_staff ? '<span class="staff-pick">Staff pick</span>' : ""}</span>${ranking}</span>`;
+}
+
+function gameRankingChip(game) {
+  if (!game.rawg_rank) return "";
+  const score = game.rawg_score === null || game.rawg_score === undefined
+    ? ""
+    : ` · Metacritic ${Number(game.rawg_score).toLocaleString()}`;
+  return `<span class="rawg-rank-chip" title="RAWG top 100 rank #${Number(game.rawg_rank).toLocaleString()}${score}">#${Number(game.rawg_rank).toLocaleString()} <small>Top 100</small></span>`;
 }
 
 function platformTone(platform) {
@@ -1115,7 +1132,7 @@ function mobileGameMeta(game) {
   if (Number(game.file_count) > 1) parts.push(`${Number(game.file_count).toLocaleString()} files`);
   if (game.duplicate_status === "exact") parts.push("Exact duplicate");
   else if (game.duplicate_status === "possible") parts.push("Possible duplicate");
-  return `<span class="mobile-game-meta"><span class="mobile-platform platform-tone-${platformTone(game.platform)}">${escapeHtml(game.platform)}</span>${parts.map((part) => `<span>${part}</span>`).join("")}</span>`;
+  return `<span class="mobile-game-meta"><span class="mobile-platform platform-tone-${platformTone(game.platform)}">${escapeHtml(game.platform)}</span>${gameRankingChip(game)}${parts.map((part) => `<span>${part}</span>`).join("")}</span>`;
 }
 
 function mobileDeviceAction(game) {
@@ -1352,6 +1369,21 @@ function gameDetailFact(label, value) {
 function closeGameDetail() {
   state.gameDetailId = null;
   if (gameDetailDialog.open) gameDetailDialog.close();
+  document.documentElement.classList.remove("game-detail-open");
+}
+
+function gameDescription(description) {
+  const value = String(description || "").trim();
+  if (!value) return '<p class="meta">No ScreenScraper description has been collected for this ROM yet.</p>';
+  const limit = 320;
+  if (value.length <= limit) return `<p>${escapeHtml(value)}</p>`;
+  const candidate = value.slice(0, limit + 1);
+  const breakAt = candidate.lastIndexOf(" ");
+  const preview = value.slice(0, breakAt > limit * 0.7 ? breakAt : limit).trimEnd();
+  return `<div class="game-description" data-game-description>
+    <p data-description-preview>${escapeHtml(preview)}<button class="description-more" type="button" data-description-expand aria-expanded="false" aria-label="Show full description">…</button></p>
+    <p data-description-full hidden>${escapeHtml(value)} <button class="description-less" type="button" data-description-collapse>Show less</button></p>
+  </div>`;
 }
 
 function renderGameDetail(detail) {
@@ -1379,7 +1411,7 @@ function renderGameDetail(detail) {
         ${cover ? `<img data-artwork-src="${cover.id}" data-artwork-variant="thumbnail" data-artwork-version="${escapeHtml(`${String(cover.sha256 || "").slice(0, 16)}-${ARTWORK_THUMBNAIL_VERSION}`)}" alt="Cover art for ${escapeHtml(metadata?.title || game.display_name)}">` : '<span aria-hidden="true">ROM</span>'}
       </div>
       <div class="game-detail-summary">
-        ${metadata?.description ? `<p>${escapeHtml(metadata.description)}</p>` : `<p class="meta">No ScreenScraper description has been collected for this ROM yet.</p>`}
+        ${gameDescription(metadata?.description)}
         ${facts ? `<dl class="game-detail-facts">${facts}</dl>` : ""}
       </div>
     </div>
@@ -1390,6 +1422,16 @@ function renderGameDetail(detail) {
     <details class="game-detail-files"><summary>Bundle files</summary><ul>${fileList}</ul></details>
     <div class="game-detail-actions"><button class="button secondary" type="button" data-detail-download="${game.id}" data-name="${escapeHtml(game.display_name)}">Download ROM</button></div>`;
   gameDetailContent.querySelectorAll("[data-artwork-src]").forEach(queueArtwork);
+  gameDetailContent.querySelector("[data-description-expand]")?.addEventListener("click", (event) => {
+    const wrapper = event.currentTarget.closest("[data-game-description]");
+    wrapper.querySelector("[data-description-preview]").hidden = true;
+    wrapper.querySelector("[data-description-full]").hidden = false;
+  });
+  gameDetailContent.querySelector("[data-description-collapse]")?.addEventListener("click", (event) => {
+    const wrapper = event.currentTarget.closest("[data-game-description]");
+    wrapper.querySelector("[data-description-full]").hidden = true;
+    wrapper.querySelector("[data-description-preview]").hidden = false;
+  });
   gameDetailContent.querySelector("[data-detail-download]")?.addEventListener("click", (event) => downloadGame(Number(event.currentTarget.dataset.detailDownload), event.currentTarget.dataset.name, event.currentTarget));
 }
 
@@ -1398,7 +1440,10 @@ async function openGameDetail(gameId) {
   gameDetailPlatform.textContent = "ROM details";
   gameDetailTitle.textContent = "Loading game details";
   gameDetailContent.innerHTML = '<div class="game-detail-loading"><span class="loading-spinner" aria-hidden="true"></span><p>Loading ScreenScraper metadata and bundle details…</p></div>';
-  if (!gameDetailDialog.open) gameDetailDialog.showModal();
+  if (!gameDetailDialog.open) {
+    document.documentElement.classList.add("game-detail-open");
+    gameDetailDialog.showModal();
+  }
   try {
     const detail = await api(`/api/games/${gameId}`);
     if (state.gameDetailId !== gameId) return;
@@ -1631,7 +1676,7 @@ async function renderOverview() {
 
 async function renderLibrary() {
   const renderVersion = beginPageRender();
-  setHeading("Library", "Browse, rename, and clean the canonical collection.");
+  setHeading("Library", "Search the shared collection, inspect each ROM, and choose games for your devices.");
   if (!state.libraryPlatformInitialized) {
     state.platform = state.platforms.find((item) => item.platform.toLowerCase() === "gba")?.platform
       || state.platforms[0]?.platform
@@ -1639,7 +1684,7 @@ async function renderLibrary() {
     state.libraryPlatformInitialized = true;
   }
   const response = await getGames();
-  const ranking = state.rankingOpen && state.platform
+  const ranking = isAdmin() && state.rankingOpen && state.platform
     ? await api(`/api/rankings/${encodeURIComponent(state.platform)}`)
     : null;
   if (!pageRenderIsCurrent(renderVersion, "library")) return;
@@ -2327,13 +2372,26 @@ function deviceMetric(value, label, explanation) {
   return `<span class="device-metric" tabindex="0" aria-label="${escapeHtml(accessibleLabel)}" data-tooltip="${escapeHtml(explanation)}"><strong>${count}</strong> ${escapeHtml(label)} <span class="metric-info" aria-hidden="true">ⓘ</span></span>`;
 }
 
-function deviceOnboardingPanel() {
-  if (!state.deviceOnboarding) return "";
+function closeDeviceFlowDialog() {
+  if (deviceFlowDialog.open) deviceFlowDialog.close();
+  deviceFlowContent.innerHTML = "";
+}
+
+function openDeviceFlowDialog(kind) {
+  const creatingGroup = kind === "group";
+  deviceFlowTitle.textContent = creatingGroup ? "Create a device group" : "Create a new device";
+  deviceFlowContent.innerHTML = creatingGroup ? deviceGroupCreationPanel(true) : deviceOnboardingPanel(true);
+  if (!deviceFlowDialog.open) deviceFlowDialog.showModal();
+  if (creatingGroup) bindDeviceGroupCreation(deviceFlowDialog, true);
+  else bindDeviceOnboarding(deviceFlowDialog, true);
+  requestAnimationFrame(() => deviceFlowContent.querySelector("input, select, button")?.focus());
+}
+
+function deviceOnboardingPanel(force = false) {
+  if (!force && !state.deviceOnboarding) return "";
   return `<section class="device-onboarding" aria-labelledby="device-onboarding-title">
     <div class="device-onboarding-copy">
-      <span class="eyebrow">New handheld</span>
-      <h2 id="device-onboarding-title">Create its ROM workspace</h2>
-      <p>ROMmates will create and register a device folder immediately. No library scan is required.</p>
+      <p id="device-onboarding-title">Create its ROM workspace and choose how the package reaches the handheld. No library scan is required.</p>
     </div>
     <form class="device-onboarding-form" data-device-onboarding-form>
       <label class="field"><span>Device folder name</span><input class="input" name="name" placeholder="retroid-pocket-6" autocomplete="off" autocapitalize="none" maxlength="64" required><small>Letters, numbers, dots, dashes, and underscores.</small></label>
@@ -2370,21 +2428,18 @@ function createdDevicePanel() {
   </section>`;
 }
 
-function bindDeviceOnboarding() {
-  view.querySelectorAll("[data-new-device]").forEach((button) => button.addEventListener("click", () => {
-    state.deviceOnboarding = true;
-    state.deviceGroupCreating = false;
-    renderDevices();
-  }));
-  view.querySelector("[data-cancel-device-onboarding]")?.addEventListener("click", () => {
+function bindDeviceOnboarding(root = view, inDialog = false) {
+  root.querySelectorAll("[data-new-device]").forEach((button) => button.addEventListener("click", () => openDeviceFlowDialog("device")));
+  root.querySelector("[data-cancel-device-onboarding]")?.addEventListener("click", () => {
+    if (inDialog) return closeDeviceFlowDialog();
     state.deviceOnboarding = false;
     renderDevices();
   });
-  const form = view.querySelector("[data-device-onboarding-form]");
+  const form = root.querySelector("[data-device-onboarding-form]");
   const input = form?.elements.name;
   const cloneSelect = form?.elements.clone_device_id;
   const cloneSyncRow = form?.querySelector("[data-clone-sync-row]");
-  const preview = view.querySelector("[data-device-path-preview]");
+  const preview = root.querySelector("[data-device-path-preview]");
   input?.addEventListener("input", () => {
     const slug = input.value.trim().toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9._-]/g, "").replace(/-+/g, "-");
     if (preview) preview.textContent = `devices/${slug || "new-device"}/roms`;
@@ -2412,6 +2467,7 @@ function bindDeviceOnboarding() {
       });
       state.deviceOnboarding = false;
       state.createdDevice = created;
+      if (inDialog) closeDeviceFlowDialog();
       await loadReferenceData();
       state.deviceId = created.id;
       state.deviceScope = "all";
@@ -2422,11 +2478,11 @@ function bindDeviceOnboarding() {
       toast(error.message, "error");
     }
   });
-  view.querySelector("[data-dismiss-created-device]")?.addEventListener("click", () => {
+  root.querySelector("[data-dismiss-created-device]")?.addEventListener("click", () => {
     state.createdDevice = null;
     renderDevices();
   });
-  view.querySelector("[data-copy-device-path]")?.addEventListener("click", async (event) => {
+  root.querySelector("[data-copy-device-path]")?.addEventListener("click", async (event) => {
     try {
       await navigator.clipboard.writeText(event.currentTarget.dataset.copyDevicePath);
       toast("Device ROM path copied");
@@ -2480,9 +2536,8 @@ function devicePickerOptions(selectedId) {
     if (!targets.length) return "";
     const label = deviceOwnership(targets[0].device).group;
     const options = targets.map((target) => {
-      const ownership = deviceOwnership(target.device);
       const memberSuffix = target.groupId ? ` · ${target.members.length} devices` : "";
-      return `<option value="${target.device.id}" ${target.device.id === selectedId ? "selected" : ""}>${escapeHtml(deviceTargetName(target))}${memberSuffix} — ${escapeHtml(ownership.label)}</option>`;
+      return `<option value="${target.device.id}" ${target.device.id === selectedId ? "selected" : ""}>${escapeHtml(deviceTargetName(target))}${memberSuffix}</option>`;
     }).join("");
     return `<optgroup label="${escapeHtml(label)}">${options}</optgroup>`;
   }).join("");
@@ -2521,30 +2576,29 @@ function deviceGroupPanel(target, previews) {
   </details>`;
 }
 
-function deviceCommandCenter(device, target, preview, isGroup = false) {
+function deviceWorkspaceControls(device, target, preview, isGroup = false) {
   const ready = Boolean(device.syncthing_ready_at);
   const gameCount = Number(preview.games || 0);
   const pending = Number(preview.additions || 0) + Number(preview.removals || 0) + Number(preview.conversions || 0);
-  const adding = state.deviceScope === "all";
+  const homeScope = isGroup ? "selected" : "on_device";
   const delivery = isGroup
     ? `${target.members.length.toLocaleString()} ${target.members.length === 1 ? "device" : "devices"}`
     : device.delivery_mode === "download" ? "Manual downloads" : ready ? "Syncthing ready" : "Syncthing setup pending";
-  const switcher = deviceTargets().length > 1
-    ? `<details class="device-switcher"><summary>Switch</summary><div><label class="field"><span>Device or group</span><select id="device-select">${devicePickerOptions(device.id)}</select></label></div></details>`
-    : `<select id="device-select" class="sr-only" aria-label="Current device">${devicePickerOptions(device.id)}</select>`;
-  return `<section class="device-command-center" aria-label="Device actions">
-    <div class="device-command-status">
-      <div><strong>${gameCount.toLocaleString()} selected ${gameCount === 1 ? "ROM" : "ROMs"}</strong><span>${escapeHtml(delivery)}</span></div>
-      ${switcher}
+  return `<section class="device-workspace" aria-label="Device workspace">
+    <label class="device-target-picker" for="device-select">
+      <span>Device or group</span>
+      <select id="device-select">${devicePickerOptions(device.id)}</select>
+      <small>${gameCount.toLocaleString()} selected ${gameCount === 1 ? "ROM" : "ROMs"} · ${escapeHtml(delivery)}</small>
+    </label>
+    <div class="device-mode-toggle" role="group" aria-label="ROM list">
+      <button type="button" class="device-mode-chip ${state.deviceScope === "all" ? "active" : ""}" data-device-scope="all" aria-pressed="${state.deviceScope === "all"}">Add ROMs</button>
+      <button type="button" class="device-mode-chip ${state.deviceScope === homeScope ? "active" : ""}" data-device-scope="${homeScope}" aria-pressed="${state.deviceScope === homeScope}">On Device</button>
     </div>
-    <div class="device-primary-actions">
-      <button class="button ${adding ? "secondary" : ""}" type="button" ${adding ? "data-device-view-games" : "data-device-add-games"}>${adding ? `← ${isGroup ? "Group ROMs" : "Device ROMs"}` : "＋ Add ROMs"}</button>
-      <button class="button secondary" type="button" data-device-export ${gameCount ? "" : "disabled"}>Download all ROMs</button>
-      ${pending ? `<button class="button secondary device-apply-action" id="apply-device">Review changes <span>${pending.toLocaleString()}</span></button>` : ""}
-    </div>
-    <div class="device-create-actions" aria-label="Device setup">
-      <button class="text-button" type="button" data-new-device>＋ Add a new device</button>
-      <button class="text-button" type="button" data-new-device-group>＋ Create a device group</button>
+    <div class="device-secondary-actions" aria-label="Device actions">
+      <button class="text-button" type="button" data-new-device>Create new device</button>
+      <button class="text-button" type="button" data-new-device-group>Create device group</button>
+      <button class="text-button" type="button" data-device-export ${gameCount ? "" : "disabled"}>Download ROMs</button>
+      ${pending ? `<button class="button secondary small device-apply-action" id="apply-device">Review ${pending.toLocaleString()} ${pending === 1 ? "change" : "changes"}</button>` : ""}
     </div>
   </section>`;
 }
@@ -2567,12 +2621,12 @@ function deviceAdminDetails(device, target, preview, inventory, isGroup) {
   </div></details>`;
 }
 
-function deviceGroupCreationPanel() {
-  if (!state.deviceGroupCreating) return "";
+function deviceGroupCreationPanel(force = false) {
+  if (!force && !state.deviceGroupCreating) return "";
   const devices = state.devices.filter((item) => !item.roster_group_id && item.owner_user_id);
   const choices = devices.map((item) => `<label class="device-choice compact"><input type="checkbox" data-new-group-member="${item.id}" data-owner-id="${item.owner_user_id}" disabled><span><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(deviceOwnership(item).label)} · ${Number(item.selected_games || 0).toLocaleString()} selected games</small></span></label>`).join("");
   return `<section class="device-group-create">
-    <div><span class="eyebrow">New device group</span><h2>Create a shared roster</h2><p>Choose the source roster first, then add devices owned by the same person.</p></div>
+    <div><p>Choose the source roster first, then add devices owned by the same person.</p></div>
     ${devices.length >= 2 ? `<form data-create-device-group>
       <label class="field"><span>Group name</span><input name="name" type="text" maxlength="64" placeholder="Travel handhelds" required></label>
       <label class="field"><span>Start with games from</span><select name="source_device_id" required><option value="">Choose a source device</option>${devices.map((item) => `<option value="${item.id}">${escapeHtml(item.name)} · ${escapeHtml(deviceOwnership(item).label)}</option>`).join("")}</select></label>
@@ -2582,8 +2636,9 @@ function deviceGroupCreationPanel() {
   </section>`;
 }
 
-function bindDeviceGroupCreation() {
-  const form = view.querySelector("[data-create-device-group]");
+function bindDeviceGroupCreation(root = view, inDialog = false) {
+  root.querySelectorAll("[data-new-device-group]").forEach((button) => button.addEventListener("click", () => openDeviceFlowDialog("group")));
+  const form = root.querySelector("[data-create-device-group]");
   const source = form?.elements.source_device_id;
   const name = form?.elements.name;
   const members = [...(form?.querySelectorAll("[data-new-group-member]") || [])];
@@ -2618,6 +2673,7 @@ function bindDeviceGroupCreation() {
         }),
       });
       state.deviceGroupCreating = false;
+      if (inDialog) closeDeviceFlowDialog();
       await loadReferenceData();
       state.deviceId = sourceDeviceId;
       state.deviceScope = "selected";
@@ -2628,7 +2684,8 @@ function bindDeviceGroupCreation() {
       toast(error.message, "error");
     }
   });
-  view.querySelector("[data-cancel-device-group]")?.addEventListener("click", () => {
+  root.querySelector("[data-cancel-device-group]")?.addEventListener("click", () => {
+    if (inDialog) return closeDeviceFlowDialog();
     state.deviceGroupCreating = false;
     renderDevices();
   });
@@ -2673,18 +2730,17 @@ function deviceRosterPanel(device) {
 
 async function renderDevices() {
   const renderVersion = beginPageRender();
-  setHeading("Devices", "See what is present now, then choose what changes next.");
+  setHeading("Devices", "Choose a device or group, then manage its ROMs.");
   if (!state.devices.length) {
-    state.deviceOnboarding = true;
-    setViewHtml(deviceOnboardingPanel());
+    setViewHtml(`<div class="empty-state"><div><h2>Add your first device</h2><p>Create a ROM workspace before choosing games.</p><div class="empty-actions"><button class="button" type="button" data-new-device>Create new device</button><button class="button secondary" type="button" data-new-device-group>Create device group</button></div></div></div>`);
     bindDeviceOnboarding();
+    bindDeviceGroupCreation();
     return;
   }
   const selectedDevice = state.devices.find((item) => item.id === Number(state.deviceId)) || state.devices[0];
   const target = deviceTargets().find((item) => item.members.some((member) => member.id === selectedDevice.id)) || deviceTargets()[0];
   const device = target.device;
   const isGroup = Boolean(target.groupId);
-  setHeading(deviceTargetName(target), isGroup ? `${target.members.length} devices share one game list.` : "Choose games and keep this device up to date.");
   state.deviceId = device.id;
   const homeScope = isGroup ? "selected" : "on_device";
   if (![homeScope, "all"].includes(state.deviceScope)) state.deviceScope = homeScope;
@@ -2722,43 +2778,23 @@ async function renderDevices() {
   } else if (!data.items.length && noFilters && state.deviceScope === "selected") {
     table = `<div class="empty-state device-empty-state"><div><h2>${escapeHtml(deviceTargetName(target))} has no selected games</h2><p>Browse the library to build the shared roster for every device in this group.</p><button class="button secondary" data-device-empty-browse>Browse library</button></div></div>`;
   }
-  const listTitle = state.deviceScope === "all" ? "Add ROMs" : isGroup ? "ROMs in this group" : "ROMs on this device";
-  const listCopy = state.deviceScope === "all"
-    ? `Choose ROMs for ${escapeHtml(deviceTargetName(target))}. Your selections are saved immediately.`
-    : isGroup ? "Every group member uses this selected ROM list." : "This list reflects ROMs currently present in the device folder.";
   setViewHtml(`
-    ${deviceOnboardingPanel()}
-    ${deviceGroupCreationPanel()}
     ${createdDevicePanel()}
-    ${deviceCommandCenter(device, target, preview, isGroup)}
-    ${isGroup ? deviceGroupPanel(target, memberPreviews) : ""}
-    ${deviceAdminDetails(device, target, preview, inventory, isGroup)}
-    <section class="device-game-section"><div class="device-game-heading"><div><h2>${listTitle}</h2><p>${listCopy}</p></div></div>
+    ${deviceWorkspaceControls(device, target, preview, isGroup)}
+    <section class="device-game-section" aria-labelledby="device-game-list-title">
+      <h2 class="sr-only" id="device-game-list-title">${state.deviceScope === "all" ? "ROMs available to add" : isGroup ? "ROMs selected for this group" : "ROMs on this device"}</h2>
       ${isAdmin() && !isGroup && inventory.unmatched_files ? `<p class="device-inventory-note">${deviceMetric(inventory.unmatched_files, inventory.unmatched_files === 1 ? "unmatched file" : "unmatched files", "Physical files that ROMmates cannot associate with the current library index.")}</p>` : ""}
       ${libraryToolbar(false, platformItems, platformCountSuffix)}${table}
-    </section>`);
+    </section>
+    ${isGroup ? deviceGroupPanel(target, memberPreviews) : ""}
+    ${deviceAdminDetails(device, target, preview, inventory, isGroup)}`);
   bindFilters(renderDevices);
   bindDeviceOnboarding();
   bindDeviceGroupCreation();
-  view.querySelector("[data-new-device-group]")?.addEventListener("click", () => {
-    state.deviceGroupCreating = !state.deviceGroupCreating;
-    state.deviceOnboarding = false;
-    renderDevices();
-  });
   document.querySelector("#device-select").addEventListener("change", (event) => {
     state.deviceId = Number(event.target.value);
     const selected = state.devices.find((item) => item.id === state.deviceId);
     state.deviceScope = selected?.roster_group_id ? "selected" : "on_device";
-    state.offset = 0;
-    renderDevices();
-  });
-  view.querySelector("[data-device-add-games]")?.addEventListener("click", () => {
-    state.deviceScope = "all";
-    state.offset = 0;
-    renderDevices();
-  });
-  view.querySelector("[data-device-view-games]")?.addEventListener("click", () => {
-    state.deviceScope = homeScope;
     state.offset = 0;
     renderDevices();
   });
@@ -4111,17 +4147,69 @@ function passwordFormMarkup() {
   </form>`;
 }
 
-function renderAccount() {
-  beginPageRender();
+async function renderAccount() {
+  const renderVersion = beginPageRender();
   setHeading("Account", "Manage your profile and sign-in security.");
-  const roles = (state.principal?.roles || [state.principal?.role]).filter(Boolean);
+  const summary = await api("/api/account/summary");
+  if (!pageRenderIsCurrent(renderVersion, "account")) return;
+  const accountUser = summary.user || state.principal || {};
+  const roles = (accountUser.roles || [accountUser.role]).filter(Boolean);
   const identity = state.principal?.bootstrap
     ? `<div class="account-profile"><span class="eyebrow">Bootstrap access</span><h2>Bootstrap administrator</h2><p>This emergency administrator uses the server access token. Create a named administrator account to manage a personal password.</p></div>`
-    : `<div class="account-profile"><span class="eyebrow">Signed in as</span><h2>${escapeHtml(state.principal?.display_name || state.principal?.username || "ROMmates user")}</h2><p>@${escapeHtml(state.principal?.username || "user")}</p><div class="account-role-list">${roles.map((role) => `<span class="badge unique">${escapeHtml(role)}</span>`).join("")}</div></div>`;
+    : `<section class="account-profile"><div class="section-heading"><div><span class="eyebrow">Profile</span><h2>Your account</h2><p>Update the name people see and the username you sign in with.</p></div></div><form class="auth-form account-profile-form" id="account-profile-form">
+      <label class="field"><span>Name</span><input class="input" name="display_name" value="${escapeHtml(accountUser.display_name || "")}" maxlength="100" required autocomplete="name"></label>
+      <label class="field"><span>Username</span><input class="input" name="username" value="${escapeHtml(accountUser.username || "")}" maxlength="64" required autocomplete="username" aria-describedby="account-username-help"></label>
+      <small class="field-help" id="account-username-help">No spaces. Changing this updates your next sign-in.</small>
+      <div class="account-role-list" aria-label="Assigned roles">${roles.map((role) => `<span class="badge unique">${escapeHtml(role)}</span>`).join("")}</div>
+      <button class="button" type="submit">Save profile</button>
+    </form></section>`;
   const security = state.principal?.bootstrap
     ? `<section class="account-security"><div class="section-heading"><div><h2>Password security</h2><p>Bootstrap access is configured with <code>ROMMATES_ACCESS_TOKEN</code> on the server.</p></div></div></section>`
     : `<section class="account-security"><div class="section-heading"><div><h2>Change password</h2><p>Changing your password signs out your other ROMmates sessions.</p></div></div>${passwordFormMarkup()}</section>`;
-  setViewHtml(`<div class="account-page">${identity}${security}</div>`);
+  const devices = summary.devices.length
+    ? `<div class="account-device-list">${summary.devices.map((device) => `<button class="account-device" type="button" data-account-device="${device.id}"><span><strong>${escapeHtml(device.name)}</strong><small>${device.group_name ? `${escapeHtml(device.group_name)} · ` : ""}${device.delivery_mode === "download" ? "Manual download" : device.syncthing_ready_at ? "Syncthing ready" : "Syncthing setup pending"}</small></span><span><strong>${Number(device.synced_roms).toLocaleString()}</strong><small>synced</small></span></button>`).join("")}</div>`
+    : `<div class="empty-state compact"><div><h3>No devices assigned to you</h3><p>Create a device or ask an administrator to assign an existing one to your account.</p></div></div>`;
+  const maxPlatform = Math.max(1, ...summary.platforms.map((item) => Number(item.synced_roms)));
+  const platformStats = summary.platforms.length
+    ? `<div class="account-platform-list">${summary.platforms.map((item) => `<div class="account-platform-row"><span class="mobile-platform platform-tone-${platformTone(item.platform)}">${escapeHtml(item.platform)}</span><span class="account-platform-track" aria-hidden="true"><span style="width:${Math.max(4, Number(item.synced_roms) * 100 / maxPlatform)}%"></span></span><strong>${Number(item.synced_roms).toLocaleString()}</strong></div>`).join("")}</div>`
+    : `<p class="meta">Apply games to one of your devices to build this breakdown.</p>`;
+  setViewHtml(`<div class="account-page">
+    ${identity}${security}
+    <section class="account-devices"><div class="section-heading"><div><h2>My devices</h2><p>Devices explicitly assigned to your account.</p></div><strong>${summary.devices.length.toLocaleString()}</strong></div>${devices}</section>
+    <section class="account-platforms"><div class="section-heading"><div><h2>Synced ROMs by platform</h2><p>Actual deployments across your devices, including the same game on more than one device.</p></div><div class="account-stat-total"><strong>${Number(summary.total_synced_roms).toLocaleString()}</strong><span>placements</span></div></div>${platformStats}</section>
+  </div>`);
+  const profileForm = view.querySelector("#account-profile-form");
+  if (profileForm) {
+    // Password managers occasionally clear a username value while examining a
+    // profile form. Restore the authenticated value after the DOM is attached.
+    profileForm.elements.username.value = accountUser.username || "";
+  }
+  profileForm?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const submit = form.querySelector("button[type='submit']");
+    const values = new FormData(form);
+    submit.disabled = true;
+    try {
+      const result = await api("/api/auth/profile", {
+        method: "PATCH",
+        body: JSON.stringify({
+          display_name: values.get("display_name"),
+          username: values.get("username"),
+        }),
+      });
+      state.principal = result.user;
+      await refreshStatus();
+      toast("Profile updated");
+      await renderAccount();
+    } catch (error) {
+      submit.disabled = false;
+      toast(error.message, "error");
+    }
+  });
+  view.querySelectorAll("[data-account-device]").forEach((button) => button.addEventListener("click", () => {
+    navigateTo("devices", { deviceId: Number(button.dataset.accountDevice) });
+  }));
   bindAccountPasswordForm(view.querySelector("#password-change-form"));
 }
 
@@ -4232,7 +4320,15 @@ gameDetailClose.addEventListener("click", closeGameDetail);
 gameDetailDialog.addEventListener("click", (event) => {
   if (event.target === gameDetailDialog) closeGameDetail();
 });
-gameDetailDialog.addEventListener("close", () => { state.gameDetailId = null; });
+gameDetailDialog.addEventListener("close", () => {
+  state.gameDetailId = null;
+  document.documentElement.classList.remove("game-detail-open");
+});
+deviceFlowClose.addEventListener("click", closeDeviceFlowDialog);
+deviceFlowDialog.addEventListener("click", (event) => {
+  if (event.target === deviceFlowDialog) closeDeviceFlowDialog();
+});
+deviceFlowDialog.addEventListener("close", () => { deviceFlowContent.innerHTML = ""; });
 
 scanButton.addEventListener("click", () => startScan());
 stopJobButton.addEventListener("click", () => cancelJob(Number(stopJobButton.dataset.jobId), stopJobButton));

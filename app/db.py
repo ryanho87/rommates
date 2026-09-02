@@ -102,6 +102,8 @@ CREATE TABLE IF NOT EXISTS platform_rankings (
     rating REAL,
     ratings_count INTEGER NOT NULL DEFAULT 0,
     released TEXT NOT NULL DEFAULT '',
+    matched_game_id INTEGER REFERENCES games(id) ON DELETE SET NULL,
+    match_method TEXT NOT NULL DEFAULT '',
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY(platform, rank),
     UNIQUE(platform, source, source_game_id)
@@ -771,6 +773,23 @@ class Database:
                     "UPDATE devices SET deployment_mode='hardlink' WHERE deployment_mode<>'hardlink'"
                 )
                 connection.execute("INSERT INTO schema_migrations(version) VALUES(28)")
+            ranking_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(platform_rankings)")
+            }
+            if "matched_game_id" not in ranking_columns:
+                connection.execute(
+                    "ALTER TABLE platform_rankings ADD COLUMN matched_game_id INTEGER "
+                    "REFERENCES games(id) ON DELETE SET NULL"
+                )
+            if "match_method" not in ranking_columns:
+                connection.execute(
+                    "ALTER TABLE platform_rankings ADD COLUMN match_method TEXT NOT NULL DEFAULT ''"
+                )
+            connection.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_platform_rankings_matched_game "
+                "ON platform_rankings(matched_game_id) WHERE matched_game_id IS NOT NULL"
+            )
+            connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(29)")
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
