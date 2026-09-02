@@ -829,17 +829,17 @@ function libraryToolbar(includeDuplicate = true, platformItems = state.platforms
     ? `<details class="library-aux-tools" ${window.matchMedia("(min-width: 721px)").matches ? "open" : ""}><summary>Ratings and rankings</summary><div>${ratingAction}${rankingAction}</div></details>`
     : "";
   return `
-    <div class="toolbar library-toolbar">
-      <label class="search-field">
+    <div class="toolbar library-toolbar ${includeDuplicate ? "has-status-filter" : ""}">
+      <label class="search-field library-search">
         <span class="sr-only">Search ROMs</span>
         <input id="search-input" type="search" value="${escapeHtml(state.search)}" placeholder="Search ROMs" autocomplete="off">
       </label>
-      <label>
+      <label class="library-filter library-filter-platform">
         <span class="sr-only">Platform</span>
         <select id="platform-filter">${platformOptions(platformItems, countSuffix)}</select>
       </label>
-      ${includeDuplicate ? `<label><span class="sr-only">Duplicate status</span><select id="duplicate-filter">${duplicateOptions}</select></label>` : ""}
-      ${state.view !== "duplicates" ? `<label><span class="sr-only">Sort games</span><select id="sort-filter">
+      ${includeDuplicate ? `<label class="library-filter library-filter-duplicate"><span class="sr-only">Duplicate status</span><select id="duplicate-filter">${duplicateOptions}</select></label>` : ""}
+      ${state.view !== "duplicates" ? `<label class="library-filter library-filter-sort"><span class="sr-only">Sort games</span><select id="sort-filter">
         <option value="name_asc" ${state.sort === "name_asc" ? "selected" : ""}>Title A–Z</option>
         <option value="name_desc" ${state.sort === "name_desc" ? "selected" : ""}>Title Z–A</option>
         <option value="rank_asc" ${state.sort === "rank_asc" ? "selected" : ""}>Top ranked</option>
@@ -1178,7 +1178,7 @@ function gameRows(items, deviceMode = false) {
       <tr class="game-row ${deviceMode ? "device-game-row" : ""} ${canManageDevices() ? "" : "read-only-row"}" data-game-detail="${game.id}" tabindex="0" aria-label="View details for ${escapeHtml(game.display_name)}">
         <td class="checkbox-cell">${canManageDevices() ? `<input type="checkbox" aria-label="Select ${escapeHtml(game.display_name)}" data-${deviceMode ? "device" : "row"}-select="${game.id}" ${checked ? "checked" : ""}>` : ""}</td>
         <td class="artwork-cell">${artworkThumb(game, !deviceMode && (isAdmin() || Number(game.artwork_count) > 0))}</td>
-        <td class="name-cell" title="${escapeHtml(game.primary_relpath)}"><strong>${escapeHtml(game.display_name)}</strong><span class="path-line">${escapeHtml(game.primary_relpath)}</span>${mobileGameMeta(game)}</td>
+        <td class="name-cell" title="${escapeHtml(game.primary_relpath)}"><span class="game-title">${escapeHtml(game.display_name)}</span><span class="path-line">${escapeHtml(game.primary_relpath)}</span>${mobileGameMeta(game)}</td>
         <td class="platform-cell">${escapeHtml(game.platform)}</td>
         <td class="rating-cell">${gameRating(game)}</td>
         ${deviceMode ? "" : `<td class="duplicate-cell">${duplicateLabel(game.duplicate_status)}</td>`}
