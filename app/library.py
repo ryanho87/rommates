@@ -906,6 +906,7 @@ class LibraryService:
         deployment_mode: str = "hardlink",
         owner_user_id: int | None = None,
         delivery_mode: str = "syncthing",
+        storage_capacity_bytes: int = 0,
     ) -> dict[str, object]:
         """Create and register a device directory without requiring a library scan."""
         device_name = name.strip()
@@ -919,6 +920,8 @@ class LibraryService:
             raise LibraryError("ROMmates always deploys device ROMs as hardlinks where supported")
         if delivery_mode not in {"syncthing", "download"}:
             raise LibraryError("Delivery mode must be syncthing or download")
+        if storage_capacity_bytes < 0:
+            raise LibraryError("Storage capacity cannot be negative")
 
         root = self.settings.devices_root.resolve()
         root.mkdir(parents=True, exist_ok=True)
@@ -945,8 +948,16 @@ class LibraryService:
 
         with self.db.write() as connection:
             connection.execute(
-                "INSERT INTO devices(name,path,deployment_mode,owner_user_id,delivery_mode) VALUES(?,?,?,?,?)",
-                (device_name, device_name, "hardlink", owner_user_id, delivery_mode),
+                "INSERT INTO devices(name,path,deployment_mode,owner_user_id,delivery_mode,storage_capacity_bytes) "
+                "VALUES(?,?,?,?,?,?)",
+                (
+                    device_name,
+                    device_name,
+                    "hardlink",
+                    owner_user_id,
+                    delivery_mode,
+                    storage_capacity_bytes,
+                ),
             )
             row = connection.execute(
                 "SELECT * FROM devices WHERE id=last_insert_rowid()"
@@ -1760,7 +1771,7 @@ class LibraryService:
         )
         if not device_root.is_dir():
             return set()
-        inventory: set[str] = set()
+        inventory: dict[str, int] = {}
         try:
             paths = device_root.rglob("*")
             for path in paths:
@@ -1771,7 +1782,7 @@ class LibraryService:
                         continue
                     if path.name.endswith((COPY_SUFFIX, LEGACY_COPY_SUFFIX)):
                         continue
-                    inventory.add(path.relative_to(device_root).as_posix())
+                    inventory[path.relative_to(device_root).as_posix()] = path.stat().st_size
                 except OSError:
                     continue
         except OSError:
@@ -1779,14 +1790,17 @@ class LibraryService:
         with self.db.write() as connection:
             connection.execute("DELETE FROM device_inventory_files WHERE device_id=?", (device_id,))
             connection.executemany(
-                "INSERT INTO device_inventory_files(device_id,relpath) VALUES(?,?)",
-                ((device_id, relpath) for relpath in sorted(inventory)),
+                "INSERT INTO device_inventory_files(device_id,relpath,size) VALUES(?,?,?)",
+                (
+                    (device_id, relpath, size)
+                    for relpath, size in sorted(inventory.items())
+                ),
             )
         self._device_inventory_cache[device_id] = (
             time.monotonic() + DEVICE_INVENTORY_CACHE_SECONDS,
             frozenset(inventory),
         )
-        return inventory
+        return set(inventory)
 
     def set_selections(self, device_id: int, game_ids: Iterable[int], selected: bool) -> int:
         ids = sorted(set(int(game_id) for game_id in game_ids))
@@ -2325,10 +2339,12 @@ class LibraryService:
                 f"{copied} copied, {removed} removed"
             )
             with self.db.write() as connection:
-                connection.executemany(
-                    "INSERT OR REPLACE INTO device_inventory_files(device_id,relpath,observed_at) "
-                    "VALUES(?,?,CURRENT_TIMESTAMP)",
-                    ((device_id, relpath) for _, relpath in desired),
+                connection.execute(
+                    "INSERT OR REPLACE INTO device_inventory_files(device_id,relpath,size,observed_at) "
+                    "SELECT ?,gf.device_relpath,gf.size,CURRENT_TIMESTAMP "
+                    "FROM device_selections ds JOIN game_files gf ON gf.game_id=ds.game_id "
+                    "WHERE ds.device_id=?",
+                    (device_id, device_id),
                 )
                 removed_relpaths = [relpath for _, relpath in existing - set(desired)]
                 connection.executemany(

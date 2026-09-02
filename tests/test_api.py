@@ -1403,14 +1403,84 @@ class ApiIntegrationTests(unittest.TestCase):
                     "display_name": "Test Game",
                     "platform": "gba",
                     "files": 1,
+                    "bytes": len(b"test-rom"),
                 }],
             )
+            self.assertEqual(preview["current_rom_bytes"], 0)
+            self.assertEqual(preview["desired_rom_bytes"], len(b"test-rom"))
+            self.assertEqual(preview["projected_rom_bytes"], len(b"test-rom"))
+            self.assertEqual(preview["storage_capacity_bytes"], 0)
+            self.assertFalse(preview["over_capacity"])
         finally:
             self.client.put(
                 f"/api/devices/{device['id']}/selection",
                 headers=self.headers,
                 json={"game_id": game["id"], "selected": False},
             )
+
+    def test_device_storage_capacity_and_projected_rom_usage(self):
+        scan = self.client.post("/api/scan", headers=self.headers)
+        self.assertEqual(self.wait_for_job(scan.json()["job_id"])["status"], "complete")
+        game = next(
+            item for item in self.client.get(
+                "/api/games?limit=1000", headers=self.headers
+            ).json()["items"]
+            if item["display_name"] == "Test Game"
+        )
+        device = self.client.get("/api/devices", headers=self.headers).json()[0]
+        unknown = self.root / "devices" / device["path"] / "roms" / "gba" / "Unknown.gba"
+        unknown.parent.mkdir(parents=True, exist_ok=True)
+        unknown.write_bytes(b"unknown-rom")
+        try:
+            inventory = self.client.get(
+                f"/api/games?device_id={device['id']}&device_scope=all",
+                headers=self.headers,
+            )
+            self.assertEqual(inventory.status_code, 200, inventory.text)
+            self.assertEqual(inventory.json()["device_inventory"]["bytes"], len(b"unknown-rom"))
+
+            capacity = self.client.put(
+                f"/api/devices/{device['id']}/storage-capacity",
+                headers=self.headers,
+                json={"storage_capacity_bytes": 12},
+            )
+            self.assertEqual(capacity.status_code, 200, capacity.text)
+            self.assertEqual(capacity.json()["storage_capacity_bytes"], 12)
+            self.client.put(
+                f"/api/devices/{device['id']}/selection",
+                headers=self.headers,
+                json={"game_id": game["id"], "selected": True},
+            )
+
+            preview = self.client.get(
+                f"/api/devices/{device['id']}/preview", headers=self.headers
+            ).json()
+            self.assertEqual(preview["current_rom_bytes"], len(b"unknown-rom"))
+            self.assertEqual(preview["unmanaged_rom_bytes"], len(b"unknown-rom"))
+            self.assertEqual(
+                preview["projected_rom_bytes"], len(b"unknown-rom") + len(b"test-rom")
+            )
+            self.assertEqual(preview["storage_capacity_bytes"], 12)
+            self.assertTrue(preview["over_capacity"])
+
+            rejected = self.client.put(
+                f"/api/devices/{device['id']}/storage-capacity",
+                headers=self.headers,
+                json={"storage_capacity_bytes": -1},
+            )
+            self.assertEqual(rejected.status_code, 422)
+        finally:
+            self.client.put(
+                f"/api/devices/{device['id']}/selection",
+                headers=self.headers,
+                json={"game_id": game["id"], "selected": False},
+            )
+            self.client.put(
+                f"/api/devices/{device['id']}/storage-capacity",
+                headers=self.headers,
+                json={"storage_capacity_bytes": 0},
+            )
+            unknown.unlink(missing_ok=True)
 
     def test_device_changes_can_be_discarded_without_touching_files(self):
         scan = self.client.post("/api/scan", headers=self.headers)

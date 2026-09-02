@@ -673,10 +673,15 @@ class DeviceCreateRequest(BaseModel):
     delivery_mode: str = Field(default="syncthing", pattern="^(syncthing|download)$")
     clone_device_id: int | None = Field(default=None, ge=1)
     keep_in_sync: bool = False
+    storage_capacity_bytes: int = Field(default=0, ge=0, le=1_125_899_906_842_624)
 
 
 class DeviceOwnerRequest(BaseModel):
     owner_user_id: int | None = Field(default=None, ge=1)
+
+
+class DeviceStorageCapacityRequest(BaseModel):
+    storage_capacity_bytes: int = Field(ge=0, le=1_125_899_906_842_624)
 
 
 class DeviceSyncthingReadyRequest(BaseModel):
@@ -1745,11 +1750,17 @@ def games(
                 "SELECT COUNT(*) AS count FROM device_present df WHERE NOT EXISTS("
                 "SELECT 1 FROM game_files gf WHERE gf.device_relpath=df.relpath)"
             ).fetchone()["count"]
+            inventory_bytes = connection.execute(
+                "SELECT COALESCE(SUM(size),0) AS bytes FROM device_inventory_files "
+                "WHERE device_id=?",
+                (device_id,),
+            ).fetchone()["bytes"]
             device_inventory = {
                 "present_games": present_games,
                 "changes": changes,
                 "unmatched_files": unmatched_files,
                 "files": len(present_relpaths),
+                "bytes": int(inventory_bytes or 0),
                 "platforms": [
                     dict(row)
                     for row in connection.execute(
@@ -2326,7 +2337,11 @@ def create_device(payload: DeviceCreateRequest, request: Request):
         else source_device["owner_user_id"] if source_device is not None else None
     )
     device = library.create_device(
-        payload.name, "hardlink", owner_user_id, payload.delivery_mode
+        payload.name,
+        "hardlink",
+        owner_user_id,
+        payload.delivery_mode,
+        payload.storage_capacity_bytes,
     )
     owner_label = principal.display_name or principal.username or "An administrator"
     if payload.delivery_mode == "syncthing":
@@ -2542,6 +2557,28 @@ def update_device_owner(device_id: int, payload: DeviceOwnerRequest, request: Re
     return {"device_id": device_id, "owner_user_id": payload.owner_user_id}
 
 
+@app.put("/api/devices/{device_id}/storage-capacity")
+def update_device_storage_capacity(
+    device_id: int, payload: DeviceStorageCapacityRequest, request: Request
+):
+    device = require_device_access(device_id, request_principal(request))
+    with db.write() as connection:
+        connection.execute(
+            "UPDATE devices SET storage_capacity_bytes=? WHERE id=?",
+            (payload.storage_capacity_bytes, device_id),
+        )
+    detail = (
+        f"Set {device['name']} ROM storage capacity to {payload.storage_capacity_bytes} bytes"
+        if payload.storage_capacity_bytes
+        else f"Cleared {device['name']} ROM storage capacity"
+    )
+    db.activity("device", detail)
+    return {
+        "device_id": device_id,
+        "storage_capacity_bytes": payload.storage_capacity_bytes,
+    }
+
+
 @app.put("/api/devices/{device_id}/selection")
 def update_selection(device_id: int, payload: SelectionRequest, request: Request):
     require_device_access(device_id, request_principal(request))
@@ -2579,10 +2616,31 @@ def device_preview(device_id: int, request: Request):
         if not device:
             raise HTTPException(status_code=404, detail="Device was not found")
         desired = connection.execute(
-            "SELECT COUNT(DISTINCT game_id) AS games,COUNT(*) AS files FROM "
-            "(SELECT ds.game_id,gf.device_relpath FROM device_selections ds JOIN game_files gf ON gf.game_id=ds.game_id WHERE ds.device_id=?)",
+            "SELECT COUNT(DISTINCT game_id) AS games,COUNT(*) AS files,"
+            "COALESCE(SUM(size),0) AS bytes FROM "
+            "(SELECT ds.game_id,gf.device_relpath,gf.size FROM device_selections ds "
+            "JOIN game_files gf ON gf.game_id=ds.game_id WHERE ds.device_id=?)",
             (device_id,),
         ).fetchone()
+        managed_bytes = connection.execute(
+            "SELECT COALESCE(SUM(gf.size),0) AS bytes FROM deployments dp "
+            "JOIN game_files gf ON gf.game_id=dp.game_id AND gf.device_relpath=dp.relpath "
+            "WHERE dp.device_id=?",
+            (device_id,),
+        ).fetchone()["bytes"]
+        inventory_bytes = connection.execute(
+            "SELECT COALESCE(SUM(size),0) AS bytes FROM device_inventory_files WHERE device_id=?",
+            (device_id,),
+        ).fetchone()["bytes"]
+        retained_unmanaged_bytes = connection.execute(
+            "SELECT COALESCE(SUM(dif.size),0) AS bytes FROM device_inventory_files dif "
+            "WHERE dif.device_id=? AND NOT EXISTS("
+            "SELECT 1 FROM deployments dp WHERE dp.device_id=dif.device_id AND dp.relpath=dif.relpath) "
+            "AND NOT EXISTS(SELECT 1 FROM device_selections ds JOIN game_files gf "
+            "ON gf.game_id=ds.game_id WHERE ds.device_id=dif.device_id "
+            "AND gf.device_relpath=dif.relpath)",
+            (device_id,),
+        ).fetchone()["bytes"]
         additions = connection.execute(
             "SELECT COUNT(*) AS count FROM device_selections ds JOIN game_files gf ON gf.game_id=ds.game_id "
             "WHERE ds.device_id=? AND NOT EXISTS(SELECT 1 FROM deployments dp WHERE dp.device_id=ds.device_id "
@@ -2594,7 +2652,8 @@ def device_preview(device_id: int, request: Request):
             (device_id,),
         ).fetchone()["count"]
         addition_games = connection.execute(
-            "SELECT g.id,g.display_name,g.platform,COUNT(*) AS files FROM device_selections ds "
+            "SELECT g.id,g.display_name,g.platform,COUNT(*) AS files,"
+            "COALESCE(SUM(gf.size),0) AS bytes FROM device_selections ds "
             "JOIN games g ON g.id=ds.game_id JOIN game_files gf ON gf.game_id=ds.game_id "
             "WHERE ds.device_id=? AND NOT EXISTS(SELECT 1 FROM deployments dp WHERE dp.device_id=ds.device_id "
             "AND dp.game_id=ds.game_id AND dp.relpath=gf.device_relpath) "
@@ -2602,8 +2661,10 @@ def device_preview(device_id: int, request: Request):
             (device_id,),
         ).fetchall()
         removal_games = connection.execute(
-            "SELECT g.id,g.display_name,g.platform,COUNT(*) AS files FROM deployments dp "
-            "JOIN games g ON g.id=dp.game_id WHERE dp.device_id=? "
+            "SELECT g.id,g.display_name,g.platform,COUNT(*) AS files,"
+            "COALESCE(SUM(gf.size),0) AS bytes FROM deployments dp "
+            "JOIN games g ON g.id=dp.game_id LEFT JOIN game_files gf ON gf.game_id=dp.game_id "
+            "AND gf.device_relpath=dp.relpath WHERE dp.device_id=? "
             "AND NOT EXISTS(SELECT 1 FROM device_selections ds WHERE ds.device_id=dp.device_id "
             "AND ds.game_id=dp.game_id) GROUP BY g.id,g.display_name,g.platform "
             "ORDER BY g.display_name COLLATE NOCASE",
@@ -2611,10 +2672,22 @@ def device_preview(device_id: int, request: Request):
         ).fetchall()
     inspection = library.device_storage_inspection(device_id)
     storage = inspection["summary"]
+    current_rom_bytes = max(int(managed_bytes or 0), int(inventory_bytes or 0))
+    unmanaged_rom_bytes = int(retained_unmanaged_bytes or 0)
+    projected_rom_bytes = int(desired["bytes"] or 0) + unmanaged_rom_bytes
+    storage_capacity_bytes = int(device["storage_capacity_bytes"] or 0)
     return {
         "device": dict(device),
         "games": desired["games"],
         "files": desired["files"],
+        "current_rom_bytes": current_rom_bytes,
+        "desired_rom_bytes": int(desired["bytes"] or 0),
+        "projected_rom_bytes": projected_rom_bytes,
+        "unmanaged_rom_bytes": unmanaged_rom_bytes,
+        "storage_capacity_bytes": storage_capacity_bytes,
+        "over_capacity": bool(
+            storage_capacity_bytes and projected_rom_bytes > storage_capacity_bytes
+        ),
         "additions": additions,
         "removals": removals,
         "conversions": storage["conversions"],

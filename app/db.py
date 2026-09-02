@@ -199,6 +199,7 @@ CREATE TABLE IF NOT EXISTS devices (
     syncthing_ready_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
     syncthing_device_id TEXT NOT NULL DEFAULT '',
     syncthing_folder_id TEXT NOT NULL DEFAULT '',
+    storage_capacity_bytes INTEGER NOT NULL DEFAULT 0 CHECK(storage_capacity_bytes >= 0),
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -220,6 +221,7 @@ CREATE INDEX IF NOT EXISTS idx_deployments_game ON deployments(game_id, device_i
 CREATE TABLE IF NOT EXISTS device_inventory_files (
     device_id INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
     relpath TEXT NOT NULL,
+    size INTEGER NOT NULL DEFAULT 0,
     observed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY(device_id, relpath)
 );
@@ -801,6 +803,23 @@ class Database:
             )
             connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(29)")
             connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(30)")
+            device_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(devices)")
+            }
+            if "storage_capacity_bytes" not in device_columns:
+                connection.execute(
+                    "ALTER TABLE devices ADD COLUMN storage_capacity_bytes "
+                    "INTEGER NOT NULL DEFAULT 0 CHECK(storage_capacity_bytes >= 0)"
+                )
+            inventory_columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(device_inventory_files)")
+            }
+            if "size" not in inventory_columns:
+                connection.execute(
+                    "ALTER TABLE device_inventory_files ADD COLUMN size INTEGER NOT NULL DEFAULT 0"
+                )
+            connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(31)")
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:

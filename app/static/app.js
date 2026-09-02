@@ -2377,8 +2377,23 @@ function devicePlanReview(plan, label, open = true) {
   ].filter(Boolean).join("");
   return `<details class="device-plan-review" ${open ? "open" : ""}>
     <summary><span>${escapeHtml(label)}</span><small>${escapeHtml(devicePlanCountText(plan))}</small></summary>
+    ${devicePlanStorage(plan)}
     <div class="device-change-scope">${scope || '<p class="device-change-empty">No named ROM changes are in scope.</p>'}</div>
   </details>`;
+}
+
+function devicePlanStorage(plan) {
+  const current = Number(plan.current_rom_bytes || 0);
+  const projected = Number(plan.projected_rom_bytes || 0);
+  const capacity = Number(plan.storage_capacity_bytes || 0);
+  if (!capacity) {
+    return `<p class="device-plan-storage">${formatBytes(current)} currently used · ${formatBytes(projected)} after changes · storage capacity not set</p>`;
+  }
+  const remaining = capacity - projected;
+  if (remaining < 0) {
+    return `<p class="device-plan-storage over"><strong>Storage limit exceeded.</strong> ${formatBytes(projected)} after changes is ${formatBytes(Math.abs(remaining))} over the ${formatBytes(capacity)} capacity.</p>`;
+  }
+  return `<p class="device-plan-storage">${formatBytes(current)} currently used · ${formatBytes(projected)} after changes · ${formatBytes(remaining)} available</p>`;
 }
 
 async function bulkAssignSelected() {
@@ -2427,6 +2442,14 @@ function closeDeviceFlowDialog() {
 }
 
 function openDeviceFlowDialog(kind, members = []) {
+  if (kind === "capacity") {
+    deviceFlowTitle.textContent = members.length > 1 ? "Set device storage capacities" : "Set SD card capacity";
+    deviceFlowContent.innerHTML = deviceCapacityPanel(members);
+    if (!deviceFlowDialog.open) deviceFlowDialog.showModal();
+    bindDeviceCapacity(deviceFlowDialog);
+    requestAnimationFrame(() => deviceFlowContent.querySelector("input, button")?.focus());
+    return;
+  }
   if (kind === "syncthing") {
     state.syncTargetMembers = members;
     deviceFlowTitle.textContent = "Sync with Syncthing";
@@ -2443,6 +2466,54 @@ function openDeviceFlowDialog(kind, members = []) {
   if (creatingGroup) bindDeviceGroupCreation(deviceFlowDialog, true);
   else bindDeviceOnboarding(deviceFlowDialog, true);
   requestAnimationFrame(() => deviceFlowContent.querySelector("input, select, button")?.focus());
+}
+
+function capacityGiBValue(bytes) {
+  if (!Number(bytes)) return "";
+  const value = Number(bytes) / 1024 ** 3;
+  return Number.isInteger(value) ? String(value) : value.toFixed(1).replace(/\.0$/, "");
+}
+
+function deviceCapacityPanel(members) {
+  const fields = members.map((member) => `<label class="field device-capacity-field"><span>${escapeHtml(member.name)}</span><span class="input-with-suffix"><input class="input" type="number" name="capacity_${member.id}" data-capacity-device="${member.id}" min="0" max="1048576" step="0.1" inputmode="decimal" value="${capacityGiBValue(member.storage_capacity_bytes)}" placeholder="128"><span>GB</span></span></label>`).join("");
+  return `<section class="device-capacity-panel">
+    <p>Enter the usable capacity available on each device. ROMmates compares this limit with the ROM folder after pending changes. Leave room for saves, artwork, and emulator data stored elsewhere on the card.</p>
+    <form data-device-capacity-form>
+      <div class="device-capacity-fields">${fields}</div>
+      <small>Use 0 or clear a field to stop checking that device.</small>
+      <div class="device-onboarding-actions"><button class="button secondary" type="button" data-cancel-device-capacity>Cancel</button><button class="button" type="submit">Save capacity</button></div>
+    </form>
+  </section>`;
+}
+
+function bindDeviceCapacity(root) {
+  root.querySelector("[data-cancel-device-capacity]")?.addEventListener("click", closeDeviceFlowDialog);
+  root.querySelector("[data-device-capacity-form]")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const submit = form.querySelector("button[type='submit']");
+    const inputs = [...form.querySelectorAll("[data-capacity-device]")];
+    submit.disabled = true;
+    submit.textContent = "Saving…";
+    try {
+      await Promise.all(inputs.map((input) => {
+        const gib = Number(input.value || 0);
+        if (!Number.isFinite(gib) || gib < 0) throw new Error("Enter a valid storage capacity");
+        return api(`/api/devices/${Number(input.dataset.capacityDevice)}/storage-capacity`, {
+          method: "PUT",
+          body: JSON.stringify({ storage_capacity_bytes: Math.round(gib * 1024 ** 3) }),
+        });
+      }));
+      closeDeviceFlowDialog();
+      toast(`Saved storage ${inputs.length === 1 ? "capacity" : "capacities"}`);
+      await loadReferenceData();
+      await renderDevices();
+    } catch (error) {
+      submit.disabled = false;
+      submit.textContent = "Save capacity";
+      toast(error.message, "error");
+    }
+  });
 }
 
 function syncthingSharePanel(members) {
@@ -2495,6 +2566,7 @@ function deviceOnboardingPanel(force = false) {
     <form class="device-onboarding-form" data-device-onboarding-form>
       <label class="field"><span>Device folder name</span><input class="input" name="name" placeholder="retroid-pocket-6" autocomplete="off" autocapitalize="none" maxlength="64" required><small>Letters, numbers, dots, dashes, and underscores.</small></label>
       <label class="field"><span>Get ROMs onto the device</span><select name="delivery_mode"><option value="syncthing">Sync automatically with Syncthing</option><option value="download">Download a ZIP manually</option></select></label>
+      <label class="field"><span>Usable SD card capacity</span><span class="input-with-suffix"><input class="input" type="number" name="storage_capacity_gib" min="0" max="1048576" step="0.1" inputmode="decimal" placeholder="128"><span>GB</span></span><small>Optional. Leave room for saves and emulator data.</small></label>
       <div class="device-clone-options">
         <label class="field"><span>Start with games from</span><select name="clone_device_id"><option value="">Start with an empty roster</option>${state.devices.map((device) => `<option value="${device.id}">${escapeHtml(device.name)} (${Number(device.selected_games || 0).toLocaleString()} selected)</option>`).join("")}</select></label>
         <label class="device-choice compact hidden" data-clone-sync-row><input type="checkbox" name="keep_in_sync"><span><strong>Keep these device rosters in sync</strong><small>Future game selections on either device will update both desired rosters.</small></span></label>
@@ -2564,6 +2636,7 @@ function bindDeviceOnboarding(root = view, inDialog = false) {
           name: slug,
           deployment_mode: "hardlink",
           delivery_mode: form.elements.delivery_mode.value,
+          storage_capacity_bytes: Math.round(Number(form.elements.storage_capacity_gib.value || 0) * 1024 ** 3),
           clone_device_id: form.elements.clone_device_id.value ? Number(form.elements.clone_device_id.value) : null,
           keep_in_sync: form.elements.keep_in_sync.checked,
         }),
@@ -2698,7 +2771,42 @@ function deviceSyncSummary(statuses) {
   };
 }
 
-function deviceWorkspaceControls(device, target, preview, inventory, syncStatuses, isGroup = false) {
+function deviceStorageRow(preview, label, showLabel) {
+  const current = Number(preview.current_rom_bytes || 0);
+  const projected = Number(preview.projected_rom_bytes || 0);
+  const capacity = Number(preview.storage_capacity_bytes || 0);
+  const changed = projected !== current;
+  const remaining = capacity - projected;
+  const over = capacity > 0 && remaining < 0;
+  const near = capacity > 0 && !over && projected / capacity >= 0.9;
+  const percent = capacity ? Math.min(100, Math.max(0, projected / capacity * 100)) : 0;
+  const status = !capacity
+    ? `${changed ? `${formatBytes(projected)} after changes · ` : ""}Capacity not set`
+    : over
+      ? `${formatBytes(Math.abs(remaining))} over capacity after changes`
+      : changed
+        ? `${formatBytes(projected)} after changes · ${formatBytes(remaining)} available`
+        : `${formatBytes(remaining)} available for more ROMs`;
+  return `<div class="device-storage-row ${over ? "over" : near ? "near" : ""}">
+    <div class="device-storage-row-head">${showLabel ? `<strong>${escapeHtml(label)}</strong>` : ""}<button class="text-button" type="button" data-device-capacity>${capacity ? "Edit capacity" : "Set capacity"}</button></div>
+    <div class="device-storage-values"><strong>${formatBytes(current)} used</strong>${capacity ? `<span>of ${formatBytes(capacity)}</span>` : ""}</div>
+    ${capacity ? `<div class="device-capacity-track" role="progressbar" aria-label="${escapeHtml(label)} projected ROM storage" aria-valuemin="0" aria-valuemax="${capacity}" aria-valuenow="${Math.min(projected, capacity)}"><span style="width:${percent.toFixed(2)}%"></span></div>` : ""}
+    <span class="device-storage-status">${escapeHtml(status)}</span>
+  </div>`;
+}
+
+function deviceStorageSummary(target, previews) {
+  return `<div class="device-storage-summary">
+    <span class="device-fact-label">ROM storage</span>
+    <div class="device-storage-list">${previews.map((preview, index) => deviceStorageRow(
+      preview,
+      target.members[index]?.name || preview.device?.name || "Device",
+      previews.length > 1,
+    )).join("")}</div>
+  </div>`;
+}
+
+function deviceWorkspaceControls(device, target, preview, memberPreviews, inventory, syncStatuses, isGroup = false) {
   const ready = Boolean(device.syncthing_ready_at);
   const gameCount = Number(preview.games || 0);
   const pending = Number(preview.additions || 0) + Number(preview.removals || 0) + Number(preview.conversions || 0);
@@ -2719,6 +2827,7 @@ function deviceWorkspaceControls(device, target, preview, inventory, syncStatuse
       <small>${gameCount.toLocaleString()} selected ${gameCount === 1 ? "ROM" : "ROMs"} · ${escapeHtml(delivery)}</small>
     </label>
     <section class="device-at-a-glance" aria-label="Device storage and sync status">
+      ${deviceStorageSummary(target, memberPreviews)}
       <div class="device-platform-summary"><span class="device-fact-label">${isGroup ? "Shared roster by platform" : "On-device storage by platform"}</span><div>${platformSummary}</div></div>
       <div class="device-sync-summary">
         <span class="device-fact-label">Sync status</span>
@@ -2737,6 +2846,7 @@ function deviceWorkspaceControls(device, target, preview, inventory, syncStatuse
           <button type="button" data-new-device role="menuitem">Create new device</button>
           <button type="button" data-new-device-group role="menuitem">Create device group</button>
           <button type="button" data-device-export role="menuitem" ${gameCount ? "" : "disabled"}>Download ROMs</button>
+          <button type="button" data-device-capacity role="menuitem">Set storage capacity</button>
           ${syncEligible ? '<button type="button" data-syncthing-share role="menuitem">Sync with Syncthing</button>' : ""}
         </div>
       </details>
@@ -2890,10 +3000,15 @@ async function renderDevices() {
   state.deviceId = device.id;
   const homeScope = isGroup ? "selected" : "on_device";
   if (![homeScope, "all"].includes(state.deviceScope)) state.deviceScope = homeScope;
-  const [response, memberPreviews, syncStatuses] = await Promise.all([
-    getGames(device.id, state.deviceScope),
+  const syncStatusesPromise = Promise.all(
+    target.members.map((member) => navigationApi(`/api/devices/${member.id}/sync-status`)),
+  );
+  // Refresh the selected device's physical inventory before calculating its
+  // storage projection so newly added or unmanaged ROM files are included.
+  const response = await getGames(device.id, state.deviceScope);
+  const [memberPreviews, syncStatuses] = await Promise.all([
     Promise.all(target.members.map((member) => navigationApi(`/api/devices/${member.id}/preview`))),
-    Promise.all(target.members.map((member) => navigationApi(`/api/devices/${member.id}/sync-status`))),
+    syncStatusesPromise,
   ]);
   const preview = isGroup ? {
     games: Number(memberPreviews[0]?.games || 0),
@@ -2927,7 +3042,7 @@ async function renderDevices() {
   }
   setViewHtml(`
     ${createdDevicePanel()}
-    ${deviceWorkspaceControls(device, target, preview, inventory, syncStatuses, isGroup)}
+    ${deviceWorkspaceControls(device, target, preview, memberPreviews, inventory, syncStatuses, isGroup)}
     <section class="device-game-section" aria-labelledby="device-game-list-title">
       <h2 class="sr-only" id="device-game-list-title">${state.deviceScope === "all" ? "ROMs available to add" : isGroup ? "ROMs selected for this group" : "ROMs on this device"}</h2>
       ${isAdmin() && !isGroup && inventory.unmatched_files ? `<p class="device-inventory-note">${deviceMetric(inventory.unmatched_files, inventory.unmatched_files === 1 ? "unmatched file" : "unmatched files", "Physical files that ROMmates cannot associate with the current library index.")}</p>` : ""}
@@ -2944,6 +3059,11 @@ async function renderDevices() {
     const members = target.members.filter((member) => member.delivery_mode !== "download");
     openDeviceFlowDialog("syncthing", members);
   });
+  view.querySelectorAll("[data-device-capacity]").forEach((button) => button.addEventListener("click", () => {
+    const menu = button.closest("details");
+    if (menu) menu.open = false;
+    openDeviceFlowDialog("capacity", target.members);
+  }));
   document.querySelector("#device-select").addEventListener("change", (event) => {
     state.deviceId = Number(event.target.value);
     const selected = state.devices.find((item) => item.id === state.deviceId);
