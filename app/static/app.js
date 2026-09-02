@@ -2507,53 +2507,64 @@ function deviceGroupPanel(target, previews) {
       && Number(item.owner_user_id || 0) === Number(target.device.owner_user_id || 0),
   );
   const choices = independent.map((item) => `<label class="device-choice compact"><input type="checkbox" data-roster-target="${item.id}"><span><strong>${escapeHtml(item.name)}</strong><small>${Number(item.selected_games || 0).toLocaleString()} selected games</small></span></label>`).join("");
-  return `<section class="device-group-panel">
-    <div class="device-group-heading">
-      <div><span class="eyebrow">Device group · ${escapeHtml(groupOwner)}</span><p>One desired game list, delivered independently to ${target.members.length} devices.</p></div>
+  return `<details class="device-group-panel">
+    <summary class="device-group-summary"><span>Group members</span><strong>${target.members.length.toLocaleString()} devices</strong></summary>
+    <div class="device-group-body"><div class="device-group-heading">
+      <div><span class="eyebrow">Owned by ${escapeHtml(groupOwner)}</span><p>These devices share one selected ROM list.</p></div>
       <div class="device-group-actions">
         <details data-group-settings><summary>Group settings</summary><div class="device-roster-controls"><label class="field"><span>Group name</span><input type="text" maxlength="64" value="${escapeHtml(deviceTargetName(target))}" data-group-name></label><button class="button secondary small" type="button" data-save-group-name>Save name</button><button class="text-button danger-text" type="button" data-delete-device-group>Delete group</button></div></details>
         <details data-roster-manager><summary>Add devices</summary><div class="device-roster-controls">${choices ? `<div class="device-roster-choices">${choices}</div><button class="button secondary small" type="button" data-link-rosters disabled>Add selected devices</button>` : "<p>No independent devices are available.</p>"}</div></details>
       </div>
     </div>
     <ul class="device-group-members">${rows}</ul>
-    <div class="device-group-footer"><span>${Number(target.device.selected_games || 0).toLocaleString()} desired games</span><span>${totalPending.toLocaleString()} total pending file operations</span></div>
-  </section>`;
+    <div class="device-group-footer"><span>${Number(target.device.selected_games || 0).toLocaleString()} selected ROMs</span><span>${totalPending.toLocaleString()} pending file operations</span></div></div>
+  </details>`;
 }
 
-function deviceOwnershipOverview(currentDevice) {
-  const current = deviceOwnership(currentDevice);
-  if (!isAdmin()) {
-    return `<div class="device-ownership-overview"><span class="ownership-badge ${current.tone}">${escapeHtml(current.label)}</span></div>`;
-  }
-  const counts = { mine: 0, other: 0, unassigned: 0 };
-  state.devices.forEach((device) => { counts[deviceOwnership(device).key] += 1; });
-  return `<div class="device-ownership-overview"><span class="ownership-badge ${current.tone}">${escapeHtml(current.label)}</span><span>${counts.mine.toLocaleString()} mine</span><span>${counts.other.toLocaleString()} owned by other people</span><span>${counts.unassigned.toLocaleString()} unassigned</span></div>`;
-}
-
-function deviceQuickActions(device, isGroup = false) {
+function deviceCommandCenter(device, target, preview, isGroup = false) {
   const ready = Boolean(device.syncthing_ready_at);
-  const gameCount = Number(device.selected_games || 0);
-  const exportButton = `<button class="button secondary" type="button" data-device-export ${gameCount ? "" : "disabled"}>Download all games</button>`;
-  if (isGroup) {
-    return `<section class="device-quick-actions" aria-label="Group actions"><div class="device-quick-status"><span class="syncthing-state ready">${gameCount.toLocaleString()} selected games</span><span>Download the shared roster as one ES-DE-ready ZIP.</span></div><div class="device-quick-buttons">${exportButton}</div></section>`;
-  }
-  const groupId = Number(device.roster_group_id || 0);
-  const peers = groupId ? state.devices.filter((item) => Number(item.roster_group_id || 0) === groupId && item.id !== device.id) : [];
-  const candidates = state.devices.filter((item) => item.id !== device.id && Number(item.owner_user_id || 0) === Number(device.owner_user_id || 0) && !peers.some((peer) => peer.id === item.id));
-  const cloneSources = state.devices.filter((item) => item.id !== device.id);
-  const cloneOptions = cloneSources.map((item) => `<option value="${item.id}">${escapeHtml(item.name)} (${Number(item.selected_games || 0).toLocaleString()} games)</option>`).join("");
-  const choices = candidates.map((item) => `<label class="device-choice compact"><input type="checkbox" data-roster-target="${item.id}" ${item.roster_group_id ? "disabled" : ""}><span><strong>${escapeHtml(item.name)}</strong><small>${Number(item.selected_games || 0).toLocaleString()} selected games${item.roster_group_id ? " · already in a group" : ""}</small></span></label>`).join("");
-  const status = device.delivery_mode === "download" ? "Manual download" : ready ? "Syncthing ready" : "Syncthing setup pending";
-  const adminReady = isAdmin() && device.delivery_mode !== "download"
-    ? `<button class="button secondary" type="button" data-device-sync-ready ${!device.owner_user_id ? "disabled" : ""}>${ready ? "Mark setup pending" : "Mark Syncthing ready"}</button>` : "";
-  return `<section class="device-quick-actions" aria-label="Device actions">
-    <div class="device-quick-status"><span class="syncthing-state ${ready || device.delivery_mode === "download" ? "ready" : "pending"}">${escapeHtml(status)}</span><span>${gameCount.toLocaleString()} selected ${gameCount === 1 ? "game" : "games"}</span></div>
-    <div class="device-quick-buttons">
-      ${groupId ? "" : `<details class="device-action-menu" data-device-action><summary>Copy games</summary><div class="device-roster-controls">${cloneOptions ? `<label class="field"><span>Copy from</span><select data-clone-source><option value="">Choose a device</option>${cloneOptions}</select></label><p>Replace this desired game list once. The devices stay independent.</p><button class="button small" type="button" data-clone-roster disabled>Copy game list</button>` : "<p>No other accessible devices are available.</p>"}</div></details>`}
-      <details class="device-action-menu" data-device-action><summary>${peers.length ? "Manage device group" : "Keep devices together"}</summary><div class="device-roster-controls">${choices ? `<div class="device-roster-choices">${choices}</div><button class="button small" type="button" data-link-rosters disabled>${peers.length ? "Add devices" : "Create device group"}</button>` : "<p>No other accessible devices are available.</p>"}${peers.length ? '<button class="text-button danger-text" type="button" data-unlink-roster>Remove this device from group</button>' : ""}</div></details>
-      ${exportButton}${adminReady}
+  const gameCount = Number(preview.games || 0);
+  const pending = Number(preview.additions || 0) + Number(preview.removals || 0) + Number(preview.conversions || 0);
+  const adding = state.deviceScope === "all";
+  const delivery = isGroup
+    ? `${target.members.length.toLocaleString()} ${target.members.length === 1 ? "device" : "devices"}`
+    : device.delivery_mode === "download" ? "Manual downloads" : ready ? "Syncthing ready" : "Syncthing setup pending";
+  const switcher = deviceTargets().length > 1
+    ? `<details class="device-switcher"><summary>Switch</summary><div><label class="field"><span>Device or group</span><select id="device-select">${devicePickerOptions(device.id)}</select></label></div></details>`
+    : `<select id="device-select" class="sr-only" aria-label="Current device">${devicePickerOptions(device.id)}</select>`;
+  return `<section class="device-command-center" aria-label="Device actions">
+    <div class="device-command-status">
+      <div><strong>${gameCount.toLocaleString()} selected ${gameCount === 1 ? "ROM" : "ROMs"}</strong><span>${escapeHtml(delivery)}</span></div>
+      ${switcher}
+    </div>
+    <div class="device-primary-actions">
+      <button class="button ${adding ? "secondary" : ""}" type="button" ${adding ? "data-device-view-games" : "data-device-add-games"}>${adding ? `← ${isGroup ? "Group ROMs" : "Device ROMs"}` : "＋ Add ROMs"}</button>
+      <button class="button secondary" type="button" data-device-export ${gameCount ? "" : "disabled"}>Download all ROMs</button>
+      ${pending ? `<button class="button secondary device-apply-action" id="apply-device">Review changes <span>${pending.toLocaleString()}</span></button>` : ""}
+    </div>
+    <div class="device-create-actions" aria-label="Device setup">
+      <button class="text-button" type="button" data-new-device>＋ Add a new device</button>
+      <button class="text-button" type="button" data-new-device-group>＋ Create a device group</button>
     </div>
   </section>`;
+}
+
+function deviceAdminDetails(device, target, preview, inventory, isGroup) {
+  if (!isAdmin()) return "";
+  const ownership = deviceOwnership(device);
+  const ownerControl = isGroup ? `<span>${escapeHtml(target.group?.owner_display_name || target.group?.owner_username || ownership.label)}</span>` : `<select id="device-owner"><option value="">Unassigned</option>${state.users.filter((user) => user.active && (user.roles || [user.role]).some((role) => ["member", "admin"].includes(role))).map((user) => `<option value="${user.id}" ${Number(device.owner_user_id) === Number(user.id) ? "selected" : ""}>${escapeHtml(user.display_name)} (${escapeHtml(user.username)})</option>`).join("")}</select>`;
+  const readyAction = !isGroup && device.delivery_mode !== "download"
+    ? `<button class="button secondary small" type="button" data-device-sync-ready ${!device.owner_user_id ? "disabled" : ""}>${device.syncthing_ready_at ? "Mark setup pending" : "Mark Syncthing ready"}</button>` : "";
+  return `<details class="device-admin-details"><summary>Technical details</summary><div class="device-admin-details-body">
+    <label class="field"><span>Owner</span>${ownerControl}</label>
+    <div class="device-admin-metrics">
+      ${deviceMetric(preview.hardlinked, isGroup ? "hardlinked across group" : "hardlinked", "Files that share storage with the canonical library.")}
+      ${deviceMetric(preview.copied, isGroup ? "copied across group" : "copied", "Managed files stored as independent copies.")}
+      ${!isGroup ? deviceMetric(inventory.present_games, "currently on device", "Library bundles matched to files in this device directory.") : ""}
+      ${preview.missing ? deviceMetric(preview.missing, "managed files missing", "Recorded deployments no longer present in the device directory.") : ""}
+      ${preview.unknown ? deviceMetric(preview.unknown, "storage states unknown", "Storage identity could not be inspected.") : ""}
+    </div>${readyAction}
+  </div></details>`;
 }
 
 function deviceGroupCreationPanel() {
@@ -2675,8 +2686,8 @@ async function renderDevices() {
   const isGroup = Boolean(target.groupId);
   setHeading(deviceTargetName(target), isGroup ? `${target.members.length} devices share one game list.` : "Choose games and keep this device up to date.");
   state.deviceId = device.id;
-  if (isGroup && state.deviceScope === "on_device") state.deviceScope = "selected";
-  if (!isGroup && state.deviceScope === "selected") state.deviceScope = "on_device";
+  const homeScope = isGroup ? "selected" : "on_device";
+  if (![homeScope, "all"].includes(state.deviceScope)) state.deviceScope = homeScope;
   const [response, ...memberPreviews] = await Promise.all([
     getGames(device.id, state.deviceScope),
     ...target.members.map((member) => navigationApi(`/api/devices/${member.id}/preview`)),
@@ -2703,52 +2714,29 @@ async function renderDevices() {
     ...item,
     count: state.deviceScope === "all" ? item.count : scopedPlatformCounts.get(item.platform) || 0,
   }));
-  const platformCountSuffix = state.deviceScope === "on_device"
-    ? " on device"
-    : state.deviceScope === "selected"
-      ? " selected"
-    : state.deviceScope === "changes"
-      ? " pending"
-      : " in library";
+  const platformCountSuffix = state.deviceScope === "all" ? " in library" : isGroup ? " selected" : " on device";
   const noFilters = !state.search && !state.platform;
   let table = gamesTable(data, true);
   if (!data.items.length && noFilters && state.deviceScope === "on_device") {
     table = `<div class="empty-state device-empty-state"><div><h2>No matching library ROMs are on ${escapeHtml(device.name)}</h2><p>ROMmates checks the actual device directory. Browse the library to choose games, or scan the canonical library if these filenames should already match.</p><button class="button secondary" data-device-empty-browse>Browse library</button></div></div>`;
-  } else if (!data.items.length && noFilters && state.deviceScope === "changes") {
-    table = `<div class="empty-state device-empty-state"><div><h2>${escapeHtml(device.name)} is up to date</h2><p>The desired selection matches the ROMs currently present in its device directory.</p></div></div>`;
   } else if (!data.items.length && noFilters && state.deviceScope === "selected") {
     table = `<div class="empty-state device-empty-state"><div><h2>${escapeHtml(deviceTargetName(target))} has no selected games</h2><p>Browse the library to build the shared roster for every device in this group.</p><button class="button secondary" data-device-empty-browse>Browse library</button></div></div>`;
   }
+  const listTitle = state.deviceScope === "all" ? "Add ROMs" : isGroup ? "ROMs in this group" : "ROMs on this device";
+  const listCopy = state.deviceScope === "all"
+    ? `Choose ROMs for ${escapeHtml(deviceTargetName(target))}. Your selections are saved immediately.`
+    : isGroup ? "Every group member uses this selected ROM list." : "This list reflects ROMs currently present in the device folder.";
   setViewHtml(`
-    <div class="device-page-actions"><button class="button secondary" type="button" data-new-device>＋ Add device</button><button class="button secondary" type="button" data-new-device-group>＋ Create group</button></div>
     ${deviceOnboardingPanel()}
     ${deviceGroupCreationPanel()}
     ${createdDevicePanel()}
-    ${deviceOwnershipOverview(device)}
+    ${deviceCommandCenter(device, target, preview, isGroup)}
     ${isGroup ? deviceGroupPanel(target, memberPreviews) : ""}
-    ${deviceQuickActions(device, isGroup)}
-    <div class="device-strip">
-      <label class="field"><span>Switch ${isGroup ? "group" : "device"}</span><select id="device-select">${devicePickerOptions(device.id)}</select></label>
-      ${isGroup ? "" : isAdmin() ? `<label class="field"><span>Owner</span><select id="device-owner"><option value="">Unassigned · administrators can manage</option>${state.users.filter((user) => user.active && (user.roles || [user.role]).some((role) => ["member", "admin"].includes(role))).map((user) => `<option value="${user.id}" ${Number(device.owner_user_id) === Number(user.id) ? "selected" : ""}>${escapeHtml(user.display_name)} (${escapeHtml(user.username)})${Number(user.id) === Number(state.principal?.id) ? " · You" : ""}</option>`).join("")}</select>${!device.owner_user_id ? "<small>Select your account to mark this device as yours.</small>" : ""}</label>` : `<div class="field device-owner-summary"><span>Owner</span><strong>${escapeHtml(device.owner_display_name || "You")}</strong></div>`}
-      <div class="device-summary">
-        ${isAdmin() ? deviceMetric(preview.hardlinked, isGroup ? "hardlinked across group" : "hardlinked", "Individual device files that share storage with their canonical library files on the NUC.") : ""}
-        ${isAdmin() ? deviceMetric(preview.copied, isGroup ? "copied across group" : "copied", "Individual managed device files stored as independent copies on the NUC.") : ""}
-        ${isAdmin() && preview.missing ? deviceMetric(preview.missing, "managed files missing", "Files recorded as deployed by ROMmates that are no longer present in the device directory.") : ""}
-        ${isAdmin() && preview.unknown ? deviceMetric(preview.unknown, "storage states unknown", "Managed files whose source or device storage identity could not be inspected.") : ""}
-        ${isGroup ? "" : deviceMetric(inventory.present_games, "currently on device", "Library game bundles matched to files currently present in this device directory. Unmatched files are counted separately below.")}
-        ${deviceMetric(preview.games, isGroup ? "desired for group" : "desired", "Game bundles currently selected in ROMmates for this target.")}
-        ${deviceMetric(preview.additions, isGroup ? "files to add/update across group" : "files to add/update", "Individual files ROMmates will create or replace the next time changes are applied.")}
-        ${isAdmin() && preview.conversions ? deviceMetric(preview.conversions, "copies to convert", "Existing managed copies eligible to be replaced with space-saving hardlinks.") : ""}
-        ${deviceMetric(preview.removals, "files to remove", "Managed files ROMmates will remove because their games are no longer selected.")}
-        <button class="button" id="apply-device" ${preview.additions === 0 && preview.removals === 0 && preview.conversions === 0 ? "disabled" : ""}>${isGroup ? "Review and apply group" : "Review and apply"}</button>
-      </div>
-    </div>
-    <div class="device-scope" role="group" aria-label="Device ROM view">
-      ${isGroup ? `<button class="scope-button ${state.deviceScope === "selected" ? "active" : ""}" data-device-scope="selected" aria-pressed="${state.deviceScope === "selected"}">Selected games <span>${preview.games.toLocaleString()}</span></button>` : `<button class="scope-button ${state.deviceScope === "on_device" ? "active" : ""}" data-device-scope="on_device" aria-pressed="${state.deviceScope === "on_device"}">On device <span>${inventory.present_games.toLocaleString()}</span></button><button class="scope-button ${state.deviceScope === "changes" ? "active" : ""}" data-device-scope="changes" aria-pressed="${state.deviceScope === "changes"}">Pending changes <span>${inventory.changes.toLocaleString()}</span></button>`}
-      <button class="scope-button ${state.deviceScope === "all" ? "active" : ""}" data-device-scope="all" aria-pressed="${state.deviceScope === "all"}">Browse library</button>
-    </div>
-    ${!isGroup && inventory.unmatched_files ? `<p class="device-inventory-note">${deviceMetric(inventory.unmatched_files, inventory.unmatched_files === 1 ? "file does not match a library bundle" : "files do not match library bundles", "These physical files exist in the device directory, but ROMmates cannot associate their paths with games in the current library index.")}</p>` : ""}
-    ${libraryToolbar(false, platformItems, platformCountSuffix)}${table}`);
+    ${deviceAdminDetails(device, target, preview, inventory, isGroup)}
+    <section class="device-game-section"><div class="device-game-heading"><div><h2>${listTitle}</h2><p>${listCopy}</p></div></div>
+      ${isAdmin() && !isGroup && inventory.unmatched_files ? `<p class="device-inventory-note">${deviceMetric(inventory.unmatched_files, inventory.unmatched_files === 1 ? "unmatched file" : "unmatched files", "Physical files that ROMmates cannot associate with the current library index.")}</p>` : ""}
+      ${libraryToolbar(false, platformItems, platformCountSuffix)}${table}
+    </section>`);
   bindFilters(renderDevices);
   bindDeviceOnboarding();
   bindDeviceGroupCreation();
@@ -2761,6 +2749,16 @@ async function renderDevices() {
     state.deviceId = Number(event.target.value);
     const selected = state.devices.find((item) => item.id === state.deviceId);
     state.deviceScope = selected?.roster_group_id ? "selected" : "on_device";
+    state.offset = 0;
+    renderDevices();
+  });
+  view.querySelector("[data-device-add-games]")?.addEventListener("click", () => {
+    state.deviceScope = "all";
+    state.offset = 0;
+    renderDevices();
+  });
+  view.querySelector("[data-device-view-games]")?.addEventListener("click", () => {
+    state.deviceScope = homeScope;
     state.offset = 0;
     renderDevices();
   });
@@ -2936,7 +2934,7 @@ async function renderDevices() {
   });
   view.querySelector("[data-device-export]")?.addEventListener("click", async (event) => {
     const button = event.currentTarget;
-    const games = Number(device.selected_games || 0);
+    const games = Number(preview.games || 0);
     const confirmed = await confirmAction({
       title: `Download ${device.name}'s selected ROMs?`,
       content: `<p class="warning-copy">ROMmates will validate ${games.toLocaleString()} selected ${games === 1 ? "game" : "games"}, then stream one ZIP with ES-DE platform folders. Large packages can take a long time, so keep this browser open until the download completes.</p>`,
@@ -4216,6 +4214,9 @@ window.matchMedia("(min-width: 721px)").addEventListener("change", (event) => {
 
 document.addEventListener("click", (event) => {
   if (!inboxShell.contains(event.target)) setInboxOpen(false);
+  document.querySelectorAll(".device-switcher[open]").forEach((switcher) => {
+    if (!switcher.contains(event.target)) switcher.open = false;
+  });
   document.querySelectorAll("[data-roster-manager][open]").forEach((manager) => {
     if (!manager.contains(event.target)) manager.open = false;
   });

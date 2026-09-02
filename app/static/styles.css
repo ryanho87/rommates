@@ -690,6 +690,32 @@ input[type="checkbox"] { width: 15px; height: 15px; margin: 0; accent-color: var
 .device-created-path .button { justify-self: start; }
 .device-summary { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 16px; color: var(--text-muted); font-size: 0.8rem; }
 .device-summary strong { color: var(--text); }
+.device-command-center { display: grid; gap: 12px; margin-bottom: 16px; padding: 2px 0 16px; border-bottom: 1px solid var(--border); }
+.device-command-status { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.device-command-status > div:first-child { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.device-command-status strong { color: var(--text); font-size: 0.9rem; }
+.device-command-status span { color: var(--text-muted); font-size: 0.72rem; }
+.device-primary-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.device-primary-actions > .button:first-child { min-width: 138px; }
+.device-apply-action span { min-width: 20px; margin-left: 7px; padding: 1px 6px; border-radius: var(--radius-pill); background: var(--accent-soft); color: var(--accent); font-size: 0.68rem; }
+.device-create-actions { display: flex; gap: 18px; }
+.device-create-actions .text-button { min-height: 28px; padding: 0; color: var(--text-muted); font-weight: 650; }
+.device-create-actions .text-button:hover { color: var(--accent); }
+.device-switcher { position: relative; flex: 0 0 auto; }
+.device-switcher > summary { min-height: 30px; padding: 5px 10px; border-radius: var(--radius-sm); color: var(--accent); font-size: 0.72rem; font-weight: 700; cursor: pointer; list-style: none; }
+.device-switcher > summary::-webkit-details-marker { display: none; }
+.device-switcher > summary:hover,
+.device-switcher[open] > summary { background: var(--accent-soft); }
+.device-switcher > div { position: absolute; z-index: 55; top: calc(100% + 6px); right: 0; width: min(360px, calc(100vw - 28px)); padding: 12px; border: 1px solid var(--border-strong); border-radius: var(--radius-md); background: var(--surface-raised); box-shadow: var(--shadow); }
+.device-switcher select { width: 100%; }
+.device-admin-details { margin: 0 0 16px; border-bottom: 1px solid var(--border); }
+.device-admin-details > summary { width: fit-content; margin-bottom: 10px; color: var(--text-faint); font-size: 0.7rem; cursor: pointer; }
+.device-admin-details-body { display: grid; grid-template-columns: minmax(220px, .65fr) minmax(0, 1.35fr) auto; gap: 14px; align-items: end; padding: 0 0 14px; }
+.device-admin-metrics { display: flex; flex-wrap: wrap; gap: 8px 16px; padding-bottom: 7px; color: var(--text-muted); font-size: 0.72rem; }
+.device-game-section { min-width: 0; }
+.device-game-heading { display: flex; align-items: end; justify-content: space-between; gap: 16px; margin: 0 0 10px; }
+.device-game-heading h2 { margin: 0; font-size: 1rem; }
+.device-game-heading p { margin: 3px 0 0; color: var(--text-muted); font-size: 0.72rem; }
 .device-sync-status { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-raised); color: var(--text-muted); font-size: 0.72rem; }
 .device-sync-status > span:nth-child(2) { flex: 1; }
 .device-sync-actions { display: flex; flex: 0 0 auto; gap: 8px; }
@@ -739,7 +765,12 @@ input[type="checkbox"] { width: 15px; height: 15px; margin: 0; accent-color: var
 .device-roster-controls :is(input, select) { min-width: 0; width: 100%; }
 .device-roster-choices { display: grid; gap: 7px; max-height: 270px; overflow: auto; }
 .device-roster-controls .danger-text { justify-self: start; color: var(--danger); }
-.device-group-panel { margin-bottom: 12px; border: 1px solid var(--border-strong); border-radius: var(--radius-lg); background: var(--surface-raised); overflow: visible; }
+.device-group-panel { margin-bottom: 14px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface); overflow: visible; }
+.device-group-summary { display: flex; align-items: center; justify-content: space-between; min-height: 42px; padding: 0 13px; color: var(--text-muted); cursor: pointer; list-style: none; }
+.device-group-summary::-webkit-details-marker { display: none; }
+.device-group-summary strong { color: var(--text); font-size: 0.72rem; }
+.device-group-panel[open] > .device-group-summary { border-bottom: 1px solid var(--border); }
+.device-group-body { min-width: 0; }
 .device-group-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; padding: 16px; }
 .device-group-heading h2 { margin: 2px 0 3px; font-size: 1rem; }
 .device-group-heading p { margin: 0; color: var(--text-muted); font-size: 0.74rem; }
@@ -1303,6 +1334,20 @@ dialog form { padding: 18px; }
 
 @media (max-width: 720px) {
   .inbox-popover { position: fixed; right: 10px; bottom: calc(10px + env(safe-area-inset-bottom)); top: auto; left: 10px; width: auto; max-height: 72vh; }
+  .device-command-center { gap: 10px; margin-bottom: 14px; padding-bottom: 14px; }
+  .device-command-status { align-items: flex-start; }
+  .device-command-status > div:first-child { align-items: flex-start; flex-direction: column; gap: 2px; }
+  .device-primary-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; }
+  .device-primary-actions > .button { width: 100%; min-width: 0; min-height: 44px; padding-inline: 10px; white-space: normal; }
+  .device-primary-actions .device-apply-action { grid-column: 1 / -1; }
+  .device-create-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .device-create-actions .text-button { align-items: flex-start; justify-content: flex-start; min-width: 0; min-height: 44px; padding: 8px 2px; text-align: left; white-space: normal; }
+  .device-switcher > div { position: fixed; top: max(74px, calc(env(safe-area-inset-top) + 62px)); right: 12px; left: 12px; width: auto; }
+  .device-admin-details-body { grid-template-columns: 1fr; align-items: stretch; }
+  .device-admin-details-body > .button { width: 100%; }
+  .device-game-heading { align-items: flex-start; flex-direction: column; gap: 8px; }
+  .device-game-heading > .button { width: 100%; }
+  .device-group-summary { min-height: 46px; }
   .device-sync-status { align-items: flex-start; flex-wrap: wrap; }
   .device-sync-status > span:nth-child(2) { flex-basis: calc(100% - 130px); }
   .device-sync-status .button { width: 100%; }

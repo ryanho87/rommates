@@ -247,9 +247,12 @@ ROMmates is flat by default. Borders, tinted surface layers, and spacing establi
 
 ### Device Assignment and Groups
 
+- **Command center:** the device page leads with exactly four member flows: add ROMs, download the selected ROM package, add a device, and create a device group. Add ROMs is the single violet action; the other flows step down without competing cards or repeated counts.
+- **Current target:** the device or group name is the page title. The command center shows the selected-ROM count and delivery state once; switching targets is a compact disclosure rather than a permanent form row.
 - **Assignment:** device choices appear in one focused popover with explicit selected state and a review-and-apply footer. Bulk selection uses the same pattern as single-game assignment.
-- **Groups:** owner-scoped groups use the largest panel radius, a single grouped roster, and inline management menus. Group rows remain dividers inside one container, not individual cards.
-- **Consequences:** show desired games, additions, removals, hardlinks, copies, and Syncthing state before applying.
+- **Groups:** owner-scoped groups use one grouped roster and inline management menus behind a “Group members” disclosure. Group rows remain dividers inside one container, not individual cards.
+- **Progressive disclosure:** ownership controls, hardlink/copy diagnostics, unmatched files, and Syncthing administration are admin-only technical details. They never interrupt the member’s core device flow.
+- **Consequences:** show a review action only when pending filesystem changes exist. The confirmation view carries detailed additions and removals before applying.
 
 ### Feedback, Jobs, and Empty States
 
