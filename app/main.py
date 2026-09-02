@@ -992,7 +992,18 @@ async def add_security_headers(request: Request, call_next):
     )
     response.headers["Referrer-Policy"] = "no-referrer"
     response.headers["X-Content-Type-Options"] = "nosniff"
-    if request.url.path.startswith(("/api/", "/mcp")):
+    if (
+        request.url.path.startswith("/api/artwork/assets/")
+        and response.status_code == 200
+    ):
+        # Artwork is immutable at a versioned client URL and safe to retain in a
+        # private browser cache. Keep this exception ahead of the general API
+        # no-store policy or every thumbnail is downloaded again on each render.
+        response.headers.setdefault(
+            "Cache-Control", "private, max-age=31536000, immutable"
+        )
+        response.headers.setdefault("Vary", "Authorization, Cookie")
+    elif request.url.path.startswith(("/api/", "/mcp")):
         response.headers["Cache-Control"] = "no-store"
     elif request.url.path.startswith("/static/"):
         response.headers["Cache-Control"] = "no-cache"
@@ -1540,6 +1551,7 @@ def games(
             f"(SELECT COUNT(*) FROM device_selections ds JOIN devices dc ON dc.id=ds.device_id "
             f"WHERE ds.game_id=g.id AND {visible_device('dc')}) AS device_count,"
             f"(SELECT id FROM game_assets ga WHERE ga.game_id=g.id AND ga.kind='cover' LIMIT 1) AS cover_asset_id,"
+            f"(SELECT substr(sha256,1,16) FROM game_assets ga WHERE ga.game_id=g.id AND ga.kind='cover' LIMIT 1) AS cover_asset_version,"
             f"(SELECT COUNT(*) FROM game_assets ga WHERE ga.game_id=g.id) AS artwork_count,"
             f"gm.rating AS rating,gm.top_staff AS top_staff,({platform_rank_expr}) AS platform_rank,"
             f"({selected_expr}) AS selected,({present_expr}) AS on_device,"
@@ -1932,7 +1944,14 @@ def game_artwork(game_id: int):
 @app.get("/api/artwork/assets/{asset_id}")
 def artwork_asset(asset_id: int):
     path, content_type = screenscraper.asset_path(asset_id)
-    return FileResponse(path, media_type=content_type, headers={"Cache-Control": "private, max-age=86400"})
+    return FileResponse(
+        path,
+        media_type=content_type,
+        headers={
+            "Cache-Control": "private, max-age=31536000, immutable",
+            "Vary": "Authorization, Cookie",
+        },
+    )
 
 
 @app.post("/api/artwork/scrape", status_code=202)

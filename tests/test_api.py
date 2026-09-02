@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import hashlib
 import io
 import os
 import tempfile
@@ -35,6 +36,7 @@ class ApiIntegrationTests(unittest.TestCase):
                 "ROMMATES_DATABASE_PATH": str(root / "data/rommates.db"),
                 "ROMMATES_SAVES_ROOT": str(root / "saves"),
                 "ROMMATES_SNAPSHOTS_ROOT": str(root / "snapshots"),
+                "ROMMATES_MEDIA_ROOT": str(root / "media"),
                 "ROMMATES_SAVE_SNAPSHOT_QUIET_SECONDS": "0",
                 "ROMMATES_SCAN_ON_START": "false",
                 "ROMMATES_REQUIRE_EXISTING_ROOTS": "true",
@@ -872,6 +874,46 @@ class ApiIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 400)
         self.assertNotIn("password", response.text.casefold())
+
+    def test_artwork_assets_use_versioned_private_browser_cache(self):
+        scan = self.client.post("/api/scan", headers=self.headers)
+        self.assertEqual(self.wait_for_job(scan.json()["job_id"])["status"], "complete")
+        game = self.client.get("/api/games", headers=self.headers).json()["items"][0]
+        payload = b"cached-cover"
+        digest = hashlib.sha256(payload).hexdigest()
+        asset_path = self.main.settings.media_root / str(game["id"]) / "cover.jpg"
+        asset_path.parent.mkdir(parents=True, exist_ok=True)
+        asset_path.write_bytes(payload)
+        with self.main.db.write() as connection:
+            connection.execute(
+                "INSERT INTO game_assets(game_id,source,kind,media_type,local_relpath,content_type,size,sha256) "
+                "VALUES(?,'test','cover','box-2D',?,'image/jpeg',?,?) "
+                "ON CONFLICT(game_id,kind) DO UPDATE SET local_relpath=excluded.local_relpath,"
+                "content_type=excluded.content_type,size=excluded.size,sha256=excluded.sha256",
+                (
+                    game["id"],
+                    asset_path.relative_to(self.main.settings.media_root).as_posix(),
+                    len(payload),
+                    digest,
+                ),
+            )
+            asset_id = connection.execute(
+                "SELECT id FROM game_assets WHERE game_id=? AND kind='cover'", (game["id"],)
+            ).fetchone()["id"]
+
+        games = self.client.get("/api/games", headers=self.headers).json()["items"]
+        cached_game = next(item for item in games if item["id"] == game["id"])
+        self.assertEqual(cached_game["cover_asset_version"], digest[:16])
+        response = self.client.get(
+            f"/api/artwork/assets/{asset_id}?v={digest[:16]}", headers=self.headers
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, payload)
+        self.assertEqual(
+            response.headers["cache-control"], "private, max-age=31536000, immutable"
+        )
+        self.assertIn("Authorization", response.headers["vary"])
+        self.assertIn("Cookie", response.headers["vary"])
 
     def test_dashboard_summarizes_collection_work_queues(self):
         scan = self.client.post("/api/scan", headers=self.headers)

@@ -15,6 +15,10 @@ const VIEW_ROUTES = Object.freeze({
 
 const ROUTE_VIEWS = new Map(Object.entries(VIEW_ROUTES).map(([viewName, path]) => [path, viewName]));
 
+const ARTWORK_MEMORY_CACHE_LIMIT = 192;
+const ARTWORK_FETCH_CONCURRENCY = 8;
+const ARTWORK_PREFETCH_MARGIN = "1500px 0px";
+
 function normalizedRoute(pathname = window.location.pathname) {
   const route = pathname.replace(/\/+$/, "");
   return route || "/";
@@ -77,7 +81,12 @@ const state = {
   saveSnapshotId: null,
   saveSnapshotOffset: 0,
   saveSnapshotSearch: "",
-  artworkUrls: [],
+  // Object URLs make authenticated artwork usable by <img>. Keep a bounded LRU
+  // across view rerenders; the HTTP cache remains the longer-lived second tier.
+  artworkCache: new Map(),
+  artworkLoads: new Map(),
+  artworkQueue: [],
+  artworkFetches: 0,
   artworkId: null,
   artworkDetail: null,
   artworkObserver: null,
@@ -1204,7 +1213,7 @@ function gamesTable(data, deviceMode = false) {
 function artworkThumb(game, interactive = true) {
   const hasArtwork = Number(game.artwork_count) > 0;
   const label = hasArtwork ? `View artwork for ${game.display_name}` : `Find artwork for ${game.display_name}`;
-  const content = game.cover_asset_id ? `<img data-artwork-src="${game.cover_asset_id}" alt="" loading="lazy"><span class="sr-only">${game.artwork_count} assets</span>` : `<span aria-hidden="true">${hasArtwork ? "●" : "＋"}</span>`;
+  const content = game.cover_asset_id ? `<img data-artwork-src="${game.cover_asset_id}" data-artwork-version="${escapeHtml(game.cover_asset_version || "")}" alt="" loading="lazy"><span class="sr-only">${game.artwork_count} assets</span>` : `<span aria-hidden="true">${hasArtwork ? "●" : "＋"}</span>`;
   return interactive
     ? `<button class="artwork-button ${hasArtwork ? "has-artwork" : ""}" data-artwork-view="${game.id}" data-artwork-name="${escapeHtml(game.display_name)}" data-artwork-existing="${game.artwork_count || 0}" title="${escapeHtml(label)}" aria-label="${escapeHtml(label)}">${content}</button>`
     : `<span class="artwork-button passive ${hasArtwork ? "has-artwork" : ""}" title="${escapeHtml(hasArtwork ? `${game.artwork_count} cached assets` : "No cached artwork")}">${content}</span>`;
@@ -1215,7 +1224,7 @@ function artworkPanel(game) {
   if (!detail) return `<tr class="inline-editor"><td colspan="10"><div class="artwork-panel"><p class="meta">Loading artwork…</p></div></td></tr>`;
   const metadata = detail.metadata;
   const cards = detail.assets.length
-    ? detail.assets.map((asset) => `<figure class="asset-card"><img data-artwork-src="${asset.id}" alt="${escapeHtml(asset.kind)} for ${escapeHtml(game.display_name)}"><figcaption>${escapeHtml(asset.kind)} <span>${formatBytes(asset.size)}</span></figcaption></figure>`).join("")
+    ? detail.assets.map((asset) => `<figure class="asset-card"><img data-artwork-src="${asset.id}" data-artwork-version="${escapeHtml(String(asset.sha256 || "").slice(0, 16))}" alt="${escapeHtml(asset.kind)} for ${escapeHtml(game.display_name)}"><figcaption>${escapeHtml(asset.kind)} <span>${formatBytes(asset.size)}</span></figcaption></figure>`).join("")
     : '<div class="artwork-empty"><strong>No artwork cached</strong><p>Match this game with ScreenScraper to add a cover, screenshot, and logo.</p></div>';
   return `<tr class="inline-editor"><td colspan="10"><div class="artwork-panel">
     <div class="assignment-head"><div><h3>${escapeHtml(metadata?.title || game.display_name)}</h3><p>${metadata ? `Matched by ${escapeHtml(metadata.match_method)} · ScreenScraper game ${escapeHtml(metadata.source_game_id)}` : "No ScreenScraper match yet"}</p></div><div class="bulk-actions">${isAdmin() ? `<button class="button secondary small" data-manage-game-artwork="${game.id}" data-name="${escapeHtml(game.display_name)}" data-platform="${escapeHtml(game.platform)}">Manage artwork</button>` : ""}<button class="button secondary small" data-close-artwork>Close</button></div></div>
@@ -1224,33 +1233,93 @@ function artworkPanel(game) {
   </div></td></tr>`;
 }
 
+function artworkCacheKey(image) {
+  return `${image.dataset.artworkSrc}:${image.dataset.artworkVersion || "unversioned"}`;
+}
+
+function useCachedArtwork(image, key) {
+  const cached = state.artworkCache.get(key);
+  if (!cached) return false;
+  state.artworkCache.delete(key);
+  state.artworkCache.set(key, cached);
+  if (image.isConnected) image.src = cached.url;
+  return true;
+}
+
+function retainArtwork(key, url) {
+  const previous = state.artworkCache.get(key);
+  if (previous && previous.url !== url) URL.revokeObjectURL(previous.url);
+  state.artworkCache.delete(key);
+  state.artworkCache.set(key, { url });
+  while (state.artworkCache.size > ARTWORK_MEMORY_CACHE_LIMIT) {
+    const oldestKey = state.artworkCache.keys().next().value;
+    const oldest = state.artworkCache.get(oldestKey);
+    if (oldest) URL.revokeObjectURL(oldest.url);
+    state.artworkCache.delete(oldestKey);
+  }
+}
+
+async function fetchArtwork(image) {
+  const key = artworkCacheKey(image);
+  if (useCachedArtwork(image, key)) return;
+  const token = storedAccessToken();
+  let pending = state.artworkLoads.get(key);
+  if (!pending) {
+    const version = encodeURIComponent(image.dataset.artworkVersion || "unversioned");
+    pending = (async () => {
+      const response = await fetch(`/api/artwork/assets/${image.dataset.artworkSrc}?v=${version}`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        cache: "force-cache",
+      });
+      if (!response.ok) return null;
+      const url = URL.createObjectURL(await response.blob());
+      retainArtwork(key, url);
+      return url;
+    })().finally(() => state.artworkLoads.delete(key));
+    state.artworkLoads.set(key, pending);
+  }
+  const url = await pending;
+  if (url && image.isConnected && artworkCacheKey(image) === key) image.src = url;
+}
+
+function pumpArtworkQueue() {
+  while (state.artworkFetches < ARTWORK_FETCH_CONCURRENCY && state.artworkQueue.length) {
+    const image = state.artworkQueue.shift();
+    if (!image?.isConnected) continue;
+    state.artworkFetches += 1;
+    fetchArtwork(image)
+      .catch(() => { /* A missing thumbnail should not prevent the library from loading. */ })
+      .finally(() => {
+        state.artworkFetches -= 1;
+        pumpArtworkQueue();
+      });
+  }
+}
+
+function queueArtwork(image) {
+  const key = artworkCacheKey(image);
+  if (useCachedArtwork(image, key) || image.dataset.artworkQueued === "true") return;
+  image.dataset.artworkQueued = "true";
+  state.artworkQueue.push(image);
+  pumpArtworkQueue();
+}
+
 async function loadArtworkImages() {
   state.artworkObserver?.disconnect();
-  state.artworkUrls.forEach((url) => URL.revokeObjectURL(url));
-  state.artworkUrls = [];
-  const token = storedAccessToken();
-  const load = async (image) => {
-    try {
-      const response = await fetch(`/api/artwork/assets/${image.dataset.artworkSrc}`, {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-      });
-      if (!response.ok) return;
-      const url = URL.createObjectURL(await response.blob());
-      state.artworkUrls.push(url);
-      if (image.isConnected) image.src = url;
-    } catch { /* A missing thumbnail should not prevent the library from loading. */ }
-  };
+  const images = [...view.querySelectorAll("[data-artwork-src]")];
   if (!("IntersectionObserver" in window)) {
-    await Promise.all([...view.querySelectorAll("[data-artwork-src]")].map(load));
+    images.forEach(queueArtwork);
     return;
   }
   state.artworkObserver = new IntersectionObserver((entries, observer) => {
     entries.filter((entry) => entry.isIntersecting).forEach((entry) => {
       observer.unobserve(entry.target);
-      load(entry.target);
+      queueArtwork(entry.target);
     });
-  }, { rootMargin: "240px 0px" });
-  view.querySelectorAll("[data-artwork-src]").forEach((image) => state.artworkObserver.observe(image));
+  }, { rootMargin: ARTWORK_PREFETCH_MARGIN });
+  images.forEach((image) => {
+    if (!useCachedArtwork(image, artworkCacheKey(image))) state.artworkObserver.observe(image);
+  });
 }
 
 function bulkBarHtml() {
