@@ -2767,6 +2767,7 @@ function deviceSyncSummary(statuses) {
 }
 
 function deviceStorageRow(preview, label, showLabel) {
+  const capacityScale = 1000;
   const current = Number(preview.current_rom_bytes || 0);
   const projected = Number(preview.projected_rom_bytes || 0);
   const capacity = Number(preview.storage_capacity_bytes || 0);
@@ -2775,10 +2776,14 @@ function deviceStorageRow(preview, label, showLabel) {
   const remaining = capacity - projected;
   const over = capacity > 0 && remaining < 0;
   const near = capacity > 0 && !over && projected / capacity >= 0.9;
-  const visibleCurrent = capacity ? Math.min(capacity, Math.max(0, current)) : 0;
-  const visibleProjected = capacity ? Math.min(capacity, Math.max(0, projected)) : 0;
+  // Keep SVG geometry in a small, fixed coordinate space. Large byte-sized
+  // viewBoxes can disappear entirely in mobile Safari once capacities reach
+  // tens or hundreds of gigabytes.
+  const visibleCurrent = capacity ? Math.min(capacityScale, Math.max(0, (current / capacity) * capacityScale)) : 0;
+  const visibleProjected = capacity ? Math.min(capacityScale, Math.max(0, (projected / capacity) * capacityScale)) : 0;
   const stagedStart = Math.min(visibleCurrent, visibleProjected);
   const stagedSize = Math.abs(visibleProjected - visibleCurrent);
+  const svgNumber = (value) => value.toFixed(3).replace(/\.?0+$/, "");
   const status = !capacity
     ? `${changed ? `${formatBytes(projected)} after changes · ` : ""}Capacity not set`
     : over
@@ -2789,10 +2794,10 @@ function deviceStorageRow(preview, label, showLabel) {
   return `<div class="device-storage-row ${over ? "over" : near ? "near" : ""}">
     <div class="device-storage-row-head">${showLabel ? `<strong>${escapeHtml(label)}</strong>` : ""}<button class="text-button" type="button" data-device-capacity>${capacity ? "Edit capacity" : "Set capacity"}</button></div>
     <div class="device-storage-values"><strong>${formatBytes(current)} used</strong>${capacity ? `<span>of ${formatBytes(capacity)}</span>` : ""}</div>
-    ${capacity ? `<svg class="device-capacity-track${current >= capacity ? " current-over" : ""}" viewBox="0 0 ${capacity} 6" preserveAspectRatio="none" role="progressbar" aria-label="${escapeHtml(label)} ROM storage: ${formatBytes(current)} currently used${changed ? `, ${formatBytes(projected)} after staged changes` : ""}" aria-valuemin="0" aria-valuemax="${capacity}" aria-valuenow="${Math.min(projected, capacity)}">
-      <rect class="device-capacity-background" x="0" y="0" width="${capacity}" height="6"></rect>
-      <rect class="device-capacity-current" x="0" y="0" width="${visibleCurrent}" height="6"></rect>
-      ${changed ? `<rect class="device-capacity-staged ${stagedDelta < 0 ? "removal" : "addition"}" x="${stagedStart}" y="0" width="${stagedSize}" height="6"></rect>` : ""}
+    ${capacity ? `<svg class="device-capacity-track${current >= capacity ? " current-over" : ""}" viewBox="0 0 ${capacityScale} 8" preserveAspectRatio="none" role="progressbar" aria-label="${escapeHtml(label)} ROM storage: ${formatBytes(current)} currently used${changed ? `, ${formatBytes(projected)} after staged changes` : ""}" aria-valuemin="0" aria-valuemax="${capacity}" aria-valuenow="${Math.min(projected, capacity)}">
+      <rect class="device-capacity-background" x="0" y="0" width="${capacityScale}" height="8"></rect>
+      <rect class="device-capacity-current" x="0" y="0" width="${svgNumber(visibleCurrent)}" height="8"></rect>
+      ${changed ? `<rect class="device-capacity-staged ${stagedDelta < 0 ? "removal" : "addition"}" x="${svgNumber(stagedStart)}" y="0" width="${svgNumber(stagedSize)}" height="8"></rect>` : ""}
     </svg>` : ""}
     <span class="device-storage-status">${escapeHtml(status)}</span>
   </div>`;
