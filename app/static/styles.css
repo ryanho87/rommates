@@ -728,10 +728,14 @@ input[type="checkbox"] { width: 15px; height: 15px; margin: 0; accent-color: var
 .device-storage-values { display: flex; align-items: baseline; gap: 6px; }
 .device-storage-values strong { color: var(--text); font-size: 0.95rem; }
 .device-storage-values span, .device-storage-status { color: var(--text-muted); font-size: 0.68rem; }
-.device-capacity-track { height: 6px; overflow: hidden; border-radius: var(--radius-pill); background: var(--surface); }
-.device-capacity-track > span { display: block; height: 100%; border-radius: inherit; background: var(--accent); }
-.device-storage-row.near .device-capacity-track > span { background: var(--warning); }
-.device-storage-row.over .device-capacity-track > span { background: var(--danger); }
+.device-capacity-track { display: block; width: 100%; height: 6px; overflow: hidden; border-radius: var(--radius-pill); }
+.device-capacity-background { fill: var(--surface); }
+.device-capacity-current { fill: var(--accent); }
+.device-capacity-staged { fill: var(--warning); }
+.device-capacity-staged.removal { fill: color-mix(in oklch, var(--success) 46%, var(--surface)); }
+.device-storage-row.over .device-capacity-track { outline: 1px solid var(--danger); outline-offset: 1px; }
+.device-storage-row.over .device-capacity-staged.addition,
+.device-capacity-track.current-over .device-capacity-current { fill: var(--danger); }
 .device-storage-row.over .device-storage-status { color: var(--danger); font-weight: 700; }
 .device-platform-summary { display: grid; min-width: 0; gap: 8px; }
 .device-platform-summary > div { display: flex; min-width: 0; gap: 6px; overflow-x: auto; scrollbar-width: thin; }

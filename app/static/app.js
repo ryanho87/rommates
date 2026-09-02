@@ -2771,21 +2771,29 @@ function deviceStorageRow(preview, label, showLabel) {
   const projected = Number(preview.projected_rom_bytes || 0);
   const capacity = Number(preview.storage_capacity_bytes || 0);
   const changed = projected !== current;
+  const stagedDelta = projected - current;
   const remaining = capacity - projected;
   const over = capacity > 0 && remaining < 0;
   const near = capacity > 0 && !over && projected / capacity >= 0.9;
-  const percent = capacity ? Math.min(100, Math.max(0, projected / capacity * 100)) : 0;
+  const visibleCurrent = capacity ? Math.min(capacity, Math.max(0, current)) : 0;
+  const visibleProjected = capacity ? Math.min(capacity, Math.max(0, projected)) : 0;
+  const stagedStart = Math.min(visibleCurrent, visibleProjected);
+  const stagedSize = Math.abs(visibleProjected - visibleCurrent);
   const status = !capacity
     ? `${changed ? `${formatBytes(projected)} after changes · ` : ""}Capacity not set`
     : over
       ? `${formatBytes(Math.abs(remaining))} over capacity after changes`
       : changed
-        ? `${formatBytes(projected)} after changes · ${formatBytes(remaining)} available`
+        ? `${stagedDelta > 0 ? `+${formatBytes(stagedDelta)} staged · ` : `${formatBytes(Math.abs(stagedDelta))} staged for removal · `}${formatBytes(projected)} after changes · ${formatBytes(remaining)} available`
         : `${formatBytes(remaining)} available for more ROMs`;
   return `<div class="device-storage-row ${over ? "over" : near ? "near" : ""}">
     <div class="device-storage-row-head">${showLabel ? `<strong>${escapeHtml(label)}</strong>` : ""}<button class="text-button" type="button" data-device-capacity>${capacity ? "Edit capacity" : "Set capacity"}</button></div>
     <div class="device-storage-values"><strong>${formatBytes(current)} used</strong>${capacity ? `<span>of ${formatBytes(capacity)}</span>` : ""}</div>
-    ${capacity ? `<div class="device-capacity-track" role="progressbar" aria-label="${escapeHtml(label)} projected ROM storage" aria-valuemin="0" aria-valuemax="${capacity}" aria-valuenow="${Math.min(projected, capacity)}"><span style="width:${percent.toFixed(2)}%"></span></div>` : ""}
+    ${capacity ? `<svg class="device-capacity-track${current >= capacity ? " current-over" : ""}" viewBox="0 0 ${capacity} 6" preserveAspectRatio="none" role="progressbar" aria-label="${escapeHtml(label)} ROM storage: ${formatBytes(current)} currently used${changed ? `, ${formatBytes(projected)} after staged changes` : ""}" aria-valuemin="0" aria-valuemax="${capacity}" aria-valuenow="${Math.min(projected, capacity)}">
+      <rect class="device-capacity-background" x="0" y="0" width="${capacity}" height="6"></rect>
+      <rect class="device-capacity-current" x="0" y="0" width="${visibleCurrent}" height="6"></rect>
+      ${changed ? `<rect class="device-capacity-staged ${stagedDelta < 0 ? "removal" : "addition"}" x="${stagedStart}" y="0" width="${stagedSize}" height="6"></rect>` : ""}
+    </svg>` : ""}
     <span class="device-storage-status">${escapeHtml(status)}</span>
   </div>`;
 }
