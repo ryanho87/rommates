@@ -458,7 +458,13 @@ class SaveSnapshotService:
             ).fetchall()
         return {"items": [dict(row) for row in rows], "total": total, "limit": limit, "offset": offset}
 
-    def current_files(self, search: str = "", limit: int = 250, offset: int = 0) -> dict[str, object]:
+    def current_files(
+        self,
+        search: str = "",
+        limit: int = 250,
+        offset: int = 0,
+        sort: str = "modified_desc",
+    ) -> dict[str, object]:
         root = self.settings.saves_root
         items: list[dict[str, object]] = []
         if self.available():
@@ -476,6 +482,21 @@ class SaveSnapshotService:
                     "mtime_ns": stat.st_mtime_ns,
                     **self._classify(relpath),
                 })
+        text_key = lambda item, field: str(item.get(field) or "").casefold()
+        sort_keys = {
+            "path_asc": lambda item: (text_key(item, "relpath"),),
+            "path_desc": lambda item: (text_key(item, "relpath"),),
+            "emulator_asc": lambda item: (text_key(item, "emulator"), text_key(item, "relpath")),
+            "emulator_desc": lambda item: (text_key(item, "emulator"), text_key(item, "relpath")),
+            "type_asc": lambda item: (text_key(item, "kind"), text_key(item, "relpath")),
+            "type_desc": lambda item: (text_key(item, "kind"), text_key(item, "relpath")),
+            "size_asc": lambda item: (int(item.get("size") or 0), text_key(item, "relpath")),
+            "size_desc": lambda item: (int(item.get("size") or 0), text_key(item, "relpath")),
+            "modified_asc": lambda item: (int(item.get("mtime_ns") or 0), text_key(item, "relpath")),
+            "modified_desc": lambda item: (int(item.get("mtime_ns") or 0), text_key(item, "relpath")),
+        }
+        selected_sort = sort if sort in sort_keys else "modified_desc"
+        items.sort(key=sort_keys[selected_sort], reverse=selected_sort.endswith("_desc"))
         total = len(items)
         return {
             "items": items[offset:offset + limit],

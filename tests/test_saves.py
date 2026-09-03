@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -114,6 +115,39 @@ class SaveSnapshotTests(unittest.TestCase):
         self.assertEqual({item["emulator"] for item in summary["emulators"]}, {
             "RetroArch", "melonds", "dolphin", "ryujinx",
         })
+
+    def test_current_files_sort_before_paginating_and_default_to_newest(self):
+        oldest = self.write("melonds/saves/Alpha.sav", b"1")
+        middle = self.write("retroarch/mGBA/Beta.state1", b"22")
+        newest = self.write("dolphin/config/Charlie.bin", b"333")
+        os.utime(oldest, ns=(1_000_000_000, 1_000_000_000))
+        os.utime(middle, ns=(2_000_000_000, 2_000_000_000))
+        os.utime(newest, ns=(3_000_000_000, 3_000_000_000))
+
+        self.assertEqual(
+            [item["relpath"] for item in self.service.current_files(limit=2)["items"]],
+            ["dolphin/config/Charlie.bin", "retroarch/mGBA/Beta.state1"],
+        )
+        self.assertEqual(
+            [item["relpath"] for item in self.service.current_files(sort="path_asc")["items"]],
+            ["dolphin/config/Charlie.bin", "melonds/saves/Alpha.sav", "retroarch/mGBA/Beta.state1"],
+        )
+        self.assertEqual(
+            [item["size"] for item in self.service.current_files(sort="size_desc")["items"]],
+            [3, 2, 1],
+        )
+        self.assertEqual(
+            [item["kind"] for item in self.service.current_files(sort="type_asc")["items"]],
+            ["other", "save", "state"],
+        )
+        self.assertEqual(
+            [item["emulator"] for item in self.service.current_files(sort="emulator_asc")["items"]],
+            ["dolphin", "melonds", "RetroArch"],
+        )
+        self.assertEqual(
+            [item["relpath"] for item in self.service.current_files(sort="modified_asc")["items"]],
+            ["melonds/saves/Alpha.sav", "retroarch/mGBA/Beta.state1", "dolphin/config/Charlie.bin"],
+        )
 
     def test_shared_vault_matches_only_filename_based_save_layouts(self):
         gba_id = self.add_game("gba", "Pokemon Emerald (USA)", "gba/Pokemon Emerald (USA).gba")

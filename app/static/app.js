@@ -78,6 +78,7 @@ const state = {
   saveTab: "current",
   saveSearch: "",
   saveOffset: 0,
+  saveSort: "modified_desc",
   saveMatchSearch: "",
   saveMatchStatus: "all",
   saveMatchOffset: 0,
@@ -628,7 +629,7 @@ function prefetchNavigationData() {
     `/api/naming/suggestions?${new URLSearchParams({ search: "", platform: "", confidence: "all", save_impact: "all", limit: state.limit, offset: 0 })}`,
     "/api/naming/catalogs",
     "/api/saves",
-    `/api/saves/current?${new URLSearchParams({ search: "", limit: 250, offset: 0 })}`,
+    `/api/saves/current?${new URLSearchParams({ search: "", limit: 250, offset: 0, sort: "modified_desc" })}`,
     "/api/jobs",
     "/api/activity",
     "/api/trash",
@@ -3729,7 +3730,30 @@ function currentSavesHtml(data, inventory) {
   if (!data.items.length) {
     return `${emulatorSummary}${toolbar}<div class="empty-state save-empty"><div><h2>${state.saveSearch ? "No saves match this search" : "No save files found"}</h2><p>${state.saveSearch ? "Try part of the filename, emulator, or relative directory." : "No emulator save data has arrived through Syncthing yet."}</p></div></div>`;
   }
-  return `${emulatorSummary}${toolbar}<div class="table-wrap"><table><thead><tr><th>Save path</th><th>Emulator</th><th>Type</th><th>Size</th><th>Modified</th></tr></thead><tbody>${data.items.map((item) => `<tr><td class="name-cell"><code class="save-path">${escapeHtml(item.relpath)}</code>${item.core ? `<span class="path-line">${escapeHtml(item.core)}</span>` : ""}</td><td>${escapeHtml(item.emulator)}</td><td><span class="badge ${item.kind === "save" ? "unique" : item.kind === "state" ? "possible" : "cancelled"}">${escapeHtml(item.kind)}</span></td><td class="meta">${formatBytes(item.size)}</td><td class="meta">${new Date(Number(item.mtime_ns) / 1e6).toLocaleString()}</td></tr>`).join("")}</tbody></table></div>${infiniteFooter(data, data.total === 1 ? "vault file" : "vault files")}`;
+  return `${emulatorSummary}${toolbar}<div class="table-wrap"><table><thead><tr>${saveSortHeader("path", "Save path")}${saveSortHeader("emulator", "Emulator")}${saveSortHeader("type", "Type")}${saveSortHeader("size", "Size")}${saveSortHeader("modified", "Modified")}</tr></thead><tbody>${data.items.map((item) => `<tr><td class="name-cell"><code class="save-path">${escapeHtml(item.relpath)}</code>${item.core ? `<span class="path-line">${escapeHtml(item.core)}</span>` : ""}</td><td>${escapeHtml(item.emulator)}</td><td><span class="badge ${item.kind === "save" ? "unique" : item.kind === "state" ? "possible" : "cancelled"}">${escapeHtml(item.kind)}</span></td><td class="meta">${formatBytes(item.size)}</td><td class="meta">${new Date(Number(item.mtime_ns) / 1e6).toLocaleString()}</td></tr>`).join("")}</tbody></table></div>${infiniteFooter(data, data.total === 1 ? "vault file" : "vault files")}`;
+}
+
+const SAVE_SORT_DEFAULT_DIRECTIONS = {
+  path: "asc",
+  emulator: "asc",
+  type: "asc",
+  size: "desc",
+  modified: "desc",
+};
+
+function saveSortHeader(key, label) {
+  const ascending = state.saveSort === `${key}_asc`;
+  const descending = state.saveSort === `${key}_desc`;
+  const active = ascending || descending;
+  const direction = ascending ? "ascending" : "descending";
+  const indicator = active ? (ascending ? "↑" : "↓") : "↕";
+  return `<th${active ? ` aria-sort="${direction}"` : ""}><button class="table-sort-button${active ? " active" : ""}" type="button" data-save-sort="${key}" aria-label="Sort by ${escapeHtml(label)}${active ? `, currently ${direction}` : ""}"><span>${escapeHtml(label)}</span><span class="table-sort-indicator" aria-hidden="true">${indicator}</span></button></th>`;
+}
+
+function nextSaveSort(key) {
+  if (state.saveSort === `${key}_asc`) return `${key}_desc`;
+  if (state.saveSort === `${key}_desc`) return `${key}_asc`;
+  return `${key}_${SAVE_SORT_DEFAULT_DIRECTIONS[key] || "asc"}`;
 }
 
 function snapshotChangeSummary(snapshot) {
@@ -3780,9 +3804,9 @@ async function renderSaves() {
   let matchData = null;
   let conflictData = null;
   if (state.saveTab === "current") {
-    const params = new URLSearchParams({ search: state.saveSearch, limit: 250, offset: state.saveOffset });
+    const params = new URLSearchParams({ search: state.saveSearch, limit: 250, offset: state.saveOffset, sort: state.saveSort });
     const response = await navigationApi(`/api/saves/current?${params}`);
-    currentData = mergeInfinitePage(`saves-current\u001f${state.saveSearch}`, response, (item) => item.relpath);
+    currentData = mergeInfinitePage(`saves-current\u001f${state.saveSearch}\u001f${state.saveSort}`, response, (item) => item.relpath);
     content = currentSavesHtml(currentData, overview.inventory);
   } else if (state.saveTab === "snapshots") {
     snapshotData = await navigationApi("/api/saves/snapshots?limit=100");
@@ -3864,6 +3888,11 @@ async function renderSaves() {
       renderSaves();
     }, 220);
   });
+  view.querySelectorAll("[data-save-sort]").forEach((button) => button.addEventListener("click", () => {
+    state.saveSort = nextSaveSort(button.dataset.saveSort);
+    state.saveOffset = 0;
+    renderSaves();
+  }));
   const saveMatchSearch = view.querySelector("#save-match-search");
   let saveMatchSearchTimer;
   saveMatchSearch?.addEventListener("input", (event) => {

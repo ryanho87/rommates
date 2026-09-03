@@ -3043,8 +3043,12 @@ def current_saves(
     search: str = "",
     limit: int = Query(250, ge=1, le=1000),
     offset: int = Query(0, ge=0),
+    sort: str = Query(
+        "modified_desc",
+        pattern="^(path|emulator|type|size|modified)_(asc|desc)$",
+    ),
 ):
-    return saves.current_files(search, limit, offset)
+    return saves.current_files(search, limit, offset, sort)
 
 
 @app.get("/api/saves/conflicts")
