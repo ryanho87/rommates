@@ -27,6 +27,9 @@ class Principal:
     bootstrap: bool = False
     must_change_password: bool = False
     roles: tuple[str, ...] = ()
+    impersonator_id: int | None = None
+    impersonator_username: str = ""
+    impersonator_display_name: str = ""
 
     def has_role(self, role: str) -> bool:
         return role in (self.roles or (self.role,))
@@ -40,6 +43,11 @@ class Principal:
             "roles": list(self.roles or (self.role,)),
             "bootstrap": self.bootstrap,
             "must_change_password": self.must_change_password,
+            "impersonation": {
+                "admin_id": self.impersonator_id,
+                "admin_username": self.impersonator_username,
+                "admin_display_name": self.impersonator_display_name,
+            } if self.impersonator_id is not None else None,
         }
 
 
@@ -120,18 +128,112 @@ class AuthService:
             return None
         token_hash = hashlib.sha256(token.encode()).hexdigest()
         now = int(time.time())
+        impersonator = None
         with self.db.write() as connection:
-            row = connection.execute(
-                "SELECT u.* FROM auth_sessions s JOIN users u ON u.id=s.user_id "
-                "WHERE s.token_hash=? AND s.expires_at>=? AND u.active=1",
+            session = connection.execute(
+                "SELECT user_id,impersonated_user_id FROM auth_sessions "
+                "WHERE token_hash=? AND expires_at>=?",
                 (token_hash, now),
             ).fetchone()
+            row = None
+            if session:
+                original = connection.execute(
+                    "SELECT * FROM users WHERE id=? AND active=1", (session["user_id"],)
+                ).fetchone()
+                target_id = session["impersonated_user_id"]
+                if target_id is not None and original and original["role"] == "admin":
+                    row = connection.execute(
+                        "SELECT * FROM users WHERE id=? AND active=1", (target_id,)
+                    ).fetchone()
+                    if row:
+                        impersonator = original
+                if not row:
+                    row = original
+                    if target_id is not None:
+                        connection.execute(
+                            "UPDATE auth_sessions SET impersonated_user_id=NULL WHERE token_hash=?",
+                            (token_hash,),
+                        )
             if row:
                 connection.execute(
                     "UPDATE auth_sessions SET last_seen_at=CURRENT_TIMESTAMP WHERE token_hash=?",
                     (token_hash,),
                 )
-        return self._principal(row) if row else None
+        if not row:
+            return None
+        principal = self._principal(row)
+        if not impersonator:
+            return principal
+        return Principal(
+            id=principal.id,
+            username=principal.username,
+            display_name=principal.display_name,
+            role=principal.role,
+            bootstrap=principal.bootstrap,
+            must_change_password=principal.must_change_password,
+            roles=principal.roles,
+            impersonator_id=int(impersonator["id"]),
+            impersonator_username=str(impersonator["username"]),
+            impersonator_display_name=str(impersonator["display_name"]),
+        )
+
+    def begin_impersonation(self, token: str, actor_id: int, target_user_id: int) -> Principal:
+        if not token:
+            raise LibraryError("Sign in with an administrator account to use test view")
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        with self.db.write() as connection:
+            session = connection.execute(
+                "SELECT user_id FROM auth_sessions WHERE token_hash=? AND expires_at>=?",
+                (token_hash, int(time.time())),
+            ).fetchone()
+            if not session or int(session["user_id"]) != actor_id:
+                raise LibraryError("Your administrator session could not be verified")
+            actor = connection.execute(
+                "SELECT * FROM users WHERE id=? AND active=1", (actor_id,)
+            ).fetchone()
+            target = connection.execute(
+                "SELECT * FROM users WHERE id=? AND active=1", (target_user_id,)
+            ).fetchone()
+            if not actor or actor["role"] != "admin":
+                raise LibraryError("Administrator access is required")
+            if not target:
+                raise LibraryError("The account is disabled or no longer exists")
+            target_roles = {
+                row["role"]
+                for row in connection.execute(
+                    "SELECT role FROM user_roles WHERE user_id=?", (target_user_id,)
+                )
+            } or {str(target["role"])}
+            if "admin" in target_roles:
+                raise LibraryError("Choose a non-administrator account for test view")
+            connection.execute(
+                "UPDATE auth_sessions SET impersonated_user_id=? WHERE token_hash=?",
+                (target_user_id, token_hash),
+            )
+        principal = self.from_session(token)
+        if not principal or principal.impersonator_id != actor_id:
+            raise LibraryError("Could not enter test view")
+        return principal
+
+    def end_impersonation(self, token: str) -> Principal:
+        if not token:
+            raise LibraryError("The administrator session could not be found")
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        with self.db.write() as connection:
+            session = connection.execute(
+                "SELECT impersonated_user_id FROM auth_sessions WHERE token_hash=? AND expires_at>=?",
+                (token_hash, int(time.time())),
+            ).fetchone()
+            if not session or session["impersonated_user_id"] is None:
+                raise LibraryError("Test view is not active")
+            connection.execute(
+                "UPDATE auth_sessions SET impersonated_user_id=NULL WHERE token_hash=?",
+                (token_hash,),
+            )
+        principal = self.from_session(token)
+        if not principal:
+            raise LibraryError("The administrator session could not be restored")
+        return principal
 
     def logout(self, token: str) -> None:
         if not token:

@@ -955,6 +955,7 @@ def role_allows(principal: Principal, method: str, path: str) -> bool:
     if path in {
         "/api/auth/me",
         "/api/auth/logout",
+        "/api/auth/impersonation/end",
         "/api/auth/password",
         "/api/auth/profile",
         "/api/account/summary",
@@ -1048,6 +1049,7 @@ async def protect_private_api(request: Request, call_next):
         if principal.must_change_password and path not in {
             "/api/auth/me",
             "/api/auth/logout",
+            "/api/auth/impersonation/end",
             "/api/auth/password",
             "/api/status",
         }:
@@ -1158,9 +1160,43 @@ def logout(request: Request):
     return response
 
 
+@app.post("/api/auth/impersonate/{user_id}")
+def impersonate_user(user_id: int, request: Request):
+    principal = request_principal(request)
+    if principal.id is None or principal.bootstrap or not principal.has_role("admin"):
+        raise HTTPException(
+            status_code=400,
+            detail="Sign in with a named administrator account to use test view",
+        )
+    target = auth.begin_impersonation(
+        request.cookies.get("rommates_session", ""), principal.id, user_id
+    )
+    db.activity(
+        "user",
+        f"Administrator {principal.username} entered test view as {target.username}",
+    )
+    return {"user": target.payload(), "impersonating": True}
+
+
+@app.post("/api/auth/impersonation/end")
+def end_impersonation(request: Request):
+    principal = request_principal(request)
+    if principal.impersonator_id is None:
+        raise HTTPException(status_code=400, detail="Test view is not active")
+    target_username = principal.username
+    restored = auth.end_impersonation(request.cookies.get("rommates_session", ""))
+    db.activity(
+        "user",
+        f"Administrator {restored.username} left test view for {target_username}",
+    )
+    return {"user": restored.payload(), "impersonating": False}
+
+
 @app.post("/api/auth/password")
 def change_password(payload: PasswordChangeRequest, request: Request):
     principal = request_principal(request)
+    if principal.impersonator_id is not None:
+        raise HTTPException(status_code=403, detail="Return to your administrator account to change credentials")
     if principal.id is None or principal.bootstrap:
         raise HTTPException(
             status_code=400,
@@ -1179,6 +1215,8 @@ def change_password(payload: PasswordChangeRequest, request: Request):
 @app.patch("/api/auth/profile")
 def update_profile(payload: ProfileUpdateRequest, request: Request):
     principal = request_principal(request)
+    if principal.impersonator_id is not None:
+        raise HTTPException(status_code=403, detail="Return to your administrator account to edit this profile")
     if principal.id is None or principal.bootstrap:
         raise HTTPException(
             status_code=400,

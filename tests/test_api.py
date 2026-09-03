@@ -327,6 +327,72 @@ class ApiIntegrationTests(unittest.TestCase):
         self.assertEqual(self.client.get("/api/users").status_code, 403)
         self.client.post("/api/auth/logout")
 
+    def test_admin_can_use_non_admin_test_view_and_return_without_credentials(self):
+        admin = self.client.post(
+            "/api/users",
+            headers=self.headers,
+            json={
+                "username": "uat-admin",
+                "display_name": "UAT Admin",
+                "password": "uat-admin-password",
+                "role": "admin",
+            },
+        ).json()
+        viewer = self.client.post(
+            "/api/users",
+            headers=self.headers,
+            json={
+                "username": "uat-viewer",
+                "display_name": "UAT Viewer",
+                "password": "uat-viewer-password",
+                "role": "viewer",
+            },
+        ).json()
+        with self.main.db.write() as connection:
+            connection.execute(
+                "UPDATE users SET must_change_password=0 WHERE id=?", (viewer["id"],)
+            )
+        try:
+            login = self.client.post(
+                "/api/auth/login",
+                json={"username": "uat-admin", "password": "uat-admin-password"},
+            )
+            self.assertEqual(login.status_code, 200, login.text)
+            changed = self.client.post(
+                "/api/auth/password",
+                json={
+                    "current_password": "uat-admin-password",
+                    "new_password": "uat-admin-password-changed",
+                },
+            )
+            self.assertEqual(changed.status_code, 200, changed.text)
+
+            started = self.client.post(f"/api/auth/impersonate/{viewer['id']}")
+            self.assertEqual(started.status_code, 200, started.text)
+            acting = self.client.get("/api/auth/me").json()["user"]
+            self.assertEqual(acting["username"], "uat-viewer")
+            self.assertEqual(acting["impersonation"]["admin_username"], "uat-admin")
+            self.assertEqual(self.client.get("/api/users").status_code, 403)
+            self.assertEqual(self.client.get("/api/games").status_code, 200)
+            self.assertEqual(
+                self.client.patch(
+                    "/api/auth/profile",
+                    json={"username": "should-not-change", "display_name": "No"},
+                ).status_code,
+                403,
+            )
+
+            ended = self.client.post("/api/auth/impersonation/end")
+            self.assertEqual(ended.status_code, 200, ended.text)
+            self.assertEqual(ended.json()["user"]["username"], "uat-admin")
+            self.assertEqual(self.client.get("/api/users").status_code, 200)
+            self.client.post("/api/auth/logout")
+        finally:
+            with self.main.db.write() as connection:
+                connection.execute(
+                    "DELETE FROM users WHERE id IN (?,?)", (admin["id"], viewer["id"])
+                )
+
     def test_contributor_upload_waits_for_administrator_approval(self):
         created = self.client.post(
             "/api/users",

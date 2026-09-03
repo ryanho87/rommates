@@ -155,6 +155,9 @@ const sidebarCloseButton = document.querySelector("#sidebar-close-button");
 const guidedTourButton = document.querySelector("#guided-tour-button");
 const headerAccount = document.querySelector("#header-account");
 const mobileSessionLink = document.querySelector("#mobile-session-link");
+const impersonationBanner = document.querySelector("#impersonation-banner");
+const impersonationCopy = document.querySelector("#impersonation-copy");
+const endImpersonationButton = document.querySelector("#end-impersonation-button");
 const tourLayer = document.querySelector("#tour-layer");
 const tourCard = document.querySelector("#tour-card");
 const tourLauncher = document.querySelector("#tour-launcher");
@@ -355,6 +358,13 @@ function applyRoleNavigation() {
   headerAccount.setAttribute("aria-label", `Open ${displayName}'s account`);
   headerAccount.classList.remove("hidden");
   mobileSessionLink.classList.remove("hidden");
+  const impersonation = state.principal?.impersonation;
+  impersonationBanner.classList.toggle("hidden", !impersonation);
+  if (impersonation) {
+    impersonationCopy.textContent = `Viewing ROMmates as ${displayName}`;
+    const adminName = impersonation.admin_display_name || impersonation.admin_username || "administrator";
+    endImpersonationButton.textContent = `Return to ${adminName}`;
+  }
 }
 
 // Views re-render by replacing their whole subtree, which destroys the element the
@@ -4298,9 +4308,13 @@ async function renderUsers() {
   const roleChoices = (userId, assigned = []) => `<div class="role-grants">${data.roles.map((role) => `<label class="role-grant" title="${escapeHtml(roleCopy[role] || "")}"><input type="checkbox" data-user-role="${userId}" value="${role}" ${assigned.includes(role) ? "checked" : ""}><span>${escapeHtml(role[0].toUpperCase() + role.slice(1))}</span></label>`).join("")}</div>`;
   const rows = data.items.map((user) => {
     const roles = user.roles || [user.role];
-    return `<tr><td class="name-cell"><strong>${escapeHtml(user.display_name)}</strong><span class="path-line">${escapeHtml(user.username)}${state.principal?.id === user.id ? " · You" : ""}</span></td><td>${roleChoices(user.id, roles)}<span class="path-line">${roles.map((role) => roleCopy[role]).filter(Boolean).map(escapeHtml).join(" · ")}</span></td><td><label class="device-choice compact"><input type="checkbox" data-user-active="${user.id}" ${user.active ? "checked" : ""}><span>${user.active ? "Active" : "Disabled"}</span></label>${user.must_change_password ? '<span class="path-line credential-pending">Password change required</span>' : ""}</td><td class="meta">${escapeHtml(user.last_login_at || "Never")}</td><td><form class="inline-password" data-user-password-form="${user.id}"><input class="input" name="password" type="password" required minlength="12" autocomplete="new-password" placeholder="Temporary password" aria-label="Temporary password for ${escapeHtml(user.username)}"><button class="button secondary small">Reset</button></form></td></tr>`;
+    const canTest = user.active && !roles.includes("admin") && state.principal?.id !== user.id && !state.principal?.bootstrap;
+    const testView = roles.includes("admin") || state.principal?.id === user.id
+      ? '<span class="meta">Not available</span>'
+      : `<button class="button secondary small" type="button" data-impersonate-user="${user.id}" ${canTest ? "" : "disabled"}>View as</button>`;
+    return `<tr><td class="name-cell"><strong>${escapeHtml(user.display_name)}</strong><span class="path-line">${escapeHtml(user.username)}${state.principal?.id === user.id ? " · You" : ""}</span></td><td>${roleChoices(user.id, roles)}<span class="path-line">${roles.map((role) => roleCopy[role]).filter(Boolean).map(escapeHtml).join(" · ")}</span></td><td><label class="device-choice compact"><input type="checkbox" data-user-active="${user.id}" ${user.active ? "checked" : ""}><span>${user.active ? "Active" : "Disabled"}</span></label>${user.must_change_password ? '<span class="path-line credential-pending">Password change required</span>' : ""}</td><td class="meta">${escapeHtml(user.last_login_at || "Never")}</td><td>${testView}</td><td><form class="inline-password" data-user-password-form="${user.id}"><input class="input" name="password" type="password" required minlength="12" autocomplete="new-password" placeholder="Temporary password" aria-label="Temporary password for ${escapeHtml(user.username)}"><button class="button secondary small">Reset</button></form></td></tr>`;
   }).join("");
-  setViewHtml(`<section class="user-create"><div><h2>Add account</h2><p>Set a temporary password, then grant one or more independent capabilities.</p></div><form class="user-create-form" id="user-create-form"><label class="field"><span>Username</span><input class="input" name="username" required maxlength="64" autocomplete="off"></label><label class="field"><span>Display name</span><input class="input" name="display_name" maxlength="100" autocomplete="off"></label><label class="field"><span>Temporary password</span><input class="input" name="password" type="password" required minlength="12" autocomplete="new-password"></label><fieldset class="field role-field"><legend>Roles</legend>${roleChoices("new", ["viewer"])}</fieldset><button class="button" type="submit">Create account</button></form></section><div class="section-heading"><div><h2>Accounts</h2><p>Roles combine. Grant Contributor for reviewed uploads and Member for owned-device management; neither grants administrative access.</p></div><span class="meta">${data.items.length.toLocaleString()} total</span></div><div class="table-wrap"><table><thead><tr><th>User</th><th>Roles</th><th>Status</th><th>Last login</th><th>Credentials</th></tr></thead><tbody>${rows}</tbody></table></div>`);
+  setViewHtml(`<section class="user-create"><div><h2>Add account</h2><p>Set a temporary password, then grant one or more independent capabilities.</p></div><form class="user-create-form" id="user-create-form"><label class="field"><span>Username</span><input class="input" name="username" required maxlength="64" autocomplete="off"></label><label class="field"><span>Display name</span><input class="input" name="display_name" maxlength="100" autocomplete="off"></label><label class="field"><span>Temporary password</span><input class="input" name="password" type="password" required minlength="12" autocomplete="new-password"></label><fieldset class="field role-field"><legend>Roles</legend>${roleChoices("new", ["viewer"])}</fieldset><button class="button" type="submit">Create account</button></form></section><div class="section-heading"><div><h2>Accounts</h2><p>Use View as to test the exact navigation and permissions a non-admin account receives.</p></div><span class="meta">${data.items.length.toLocaleString()} total</span></div><div class="table-wrap"><table><thead><tr><th>User</th><th>Roles</th><th>Status</th><th>Last login</th><th>Test view</th><th>Credentials</th></tr></thead><tbody>${rows}</tbody></table></div>`);
   view.querySelector("#user-create-form")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
@@ -4343,6 +4357,16 @@ async function renderUsers() {
       event.currentTarget.reset();
       await renderUsers();
     } catch (error) { toast(error.message, "error"); }
+  }));
+  view.querySelectorAll("[data-impersonate-user]").forEach((button) => button.addEventListener("click", async () => {
+    button.disabled = true;
+    try {
+      await api(`/api/auth/impersonate/${button.dataset.impersonateUser}`, { method: "POST" });
+      window.location.assign("/library");
+    } catch (error) {
+      button.disabled = false;
+      toast(error.message, "error");
+    }
   }));
 }
 
@@ -4612,6 +4636,7 @@ async function renderCurrentView() {
 }
 
 function renderAuthentication() {
+  impersonationBanner.classList.add("hidden");
   setHeading("Sign in", "Use your ROMmates account or the bootstrap administrator token.");
   setViewHtml(`<div class="auth-panel"><h2>ROMmates account</h2><p>Your permissions follow your assigned role.</p><form class="auth-form" id="account-login-form"><label class="field" for="login-username"><span>Username</span><input class="input" id="login-username" name="username" autocomplete="username" required maxlength="64"></label><label class="field" for="login-password"><span>Password</span><input class="input" id="login-password" name="password" type="password" autocomplete="current-password" required></label><button class="button">Sign in</button></form><details class="bootstrap-login"><summary>Use bootstrap administrator token</summary><form class="auth-form" id="auth-form"><label class="field" for="access-token"><span>Access token</span><input class="input" id="access-token" name="token" type="password" autocomplete="current-password" required minlength="16"></label><button class="button secondary">Unlock as administrator</button></form></details></div>`);
   document.querySelector("#account-login-form").addEventListener("submit", async (event) => {
@@ -4970,7 +4995,19 @@ logoutButton.addEventListener("click", async () => {
   document.querySelector("#account-state")?.classList.add("hidden");
   headerAccount.classList.add("hidden");
   mobileSessionLink.classList.add("hidden");
+  impersonationBanner.classList.add("hidden");
   renderAuthentication();
+});
+
+endImpersonationButton.addEventListener("click", async () => {
+  endImpersonationButton.disabled = true;
+  try {
+    await api("/api/auth/impersonation/end", { method: "POST" });
+    window.location.assign("/users");
+  } catch (error) {
+    endImpersonationButton.disabled = false;
+    toast(error.message, "error");
+  }
 });
 
 guidedTourButton.addEventListener("click", startTour);

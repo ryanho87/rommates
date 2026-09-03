@@ -78,6 +78,30 @@ class AuthServiceTests(unittest.TestCase):
         updated = next(item for item in self.auth.list_users() if item["id"] == user["id"])
         self.assertEqual(updated["roles"], ["viewer", "member"])
 
+    def test_admin_session_can_enter_and_leave_non_admin_test_view(self):
+        admin = self.auth.create_user(
+            "admin", "Admin", "admin-long-password", "admin"
+        )
+        viewer = self.auth.create_user(
+            "viewer", "Viewer", "viewer-long-password", "viewer"
+        )
+        other_admin = self.auth.create_user(
+            "other-admin", "Other Admin", "other-admin-password", "admin"
+        )
+        _, token, _ = self.auth.authenticate("admin", "admin-long-password", "uat")
+
+        acting = self.auth.begin_impersonation(token, admin["id"], viewer["id"])
+        self.assertEqual(acting.id, viewer["id"])
+        self.assertEqual(acting.impersonator_id, admin["id"])
+        self.assertEqual(acting.payload()["impersonation"]["admin_display_name"], "Admin")
+        self.assertFalse(acting.has_role("admin"))
+
+        restored = self.auth.end_impersonation(token)
+        self.assertEqual(restored.id, admin["id"])
+        self.assertIsNone(restored.impersonator_id)
+        with self.assertRaisesRegex(LibraryError, "non-administrator"):
+            self.auth.begin_impersonation(token, admin["id"], other_admin["id"])
+
 
 if __name__ == "__main__":
     unittest.main()

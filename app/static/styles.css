@@ -1058,6 +1058,20 @@ input[type="checkbox"] { width: 15px; height: 15px; margin: 0; accent-color: var
 .inline-password { display: flex; align-items: center; gap: 6px; min-width: 250px; }
 .inline-password .input { min-width: 150px; }
 .credential-pending { color: var(--warning) !important; }
+.impersonation-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 12px 14px 0;
+  padding: 9px 12px;
+  border: 1px solid color-mix(in oklch, var(--warning) 45%, var(--border));
+  border-radius: var(--radius-md);
+  background: color-mix(in oklch, var(--warning-soft) 66%, var(--surface));
+  color: var(--text-muted);
+  font-size: 0.76rem;
+}
+.impersonation-banner strong { margin-right: 8px; color: var(--warning); }
 .field-help { margin-top: -7px; color: var(--text-muted); font-size: 0.7rem; }
 .password-actions { display: flex; justify-content: flex-end; gap: 8px; padding-top: 4px; }
 .upload-review-actions { display: flex; align-items: center; gap: 8px; }
@@ -1918,6 +1932,8 @@ html.game-detail-open body { overflow: hidden; overscroll-behavior: none; }
   .user-create-form .button { width: 100%; }
   .inline-password { align-items: stretch; flex-direction: column; min-width: 0; }
   .inline-password .input { min-width: 0; }
+  .impersonation-banner { align-items: stretch; flex-direction: column; margin: 9px 10px 0; }
+  .impersonation-banner .button { width: 100%; }
 
   .user-create { gap: 16px; padding-bottom: 18px; }
   .user-create-form { gap: 12px; }

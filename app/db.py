@@ -440,6 +440,7 @@ CREATE TABLE IF NOT EXISTS user_onboarding (
 CREATE TABLE IF NOT EXISTS auth_sessions (
     token_hash TEXT PRIMARY KEY,
     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    impersonated_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
     expires_at INTEGER NOT NULL,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -868,6 +869,15 @@ class Database:
                 "ON device_sync_runs(status,device_id,id)"
             )
             connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(32)")
+            session_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(auth_sessions)")
+            }
+            if "impersonated_user_id" not in session_columns:
+                connection.execute(
+                    "ALTER TABLE auth_sessions ADD COLUMN impersonated_user_id "
+                    "INTEGER REFERENCES users(id) ON DELETE SET NULL"
+                )
+            connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(33)")
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
