@@ -2681,9 +2681,8 @@ def update_device_deployment_mode(
     return {"mode": payload.mode}
 
 
-@app.get("/api/devices/{device_id}/preview")
-def device_preview(device_id: int, request: Request):
-    require_device_access(device_id, request_principal(request))
+def device_summary_payload(device_id: int) -> dict[str, object]:
+    """Return the database-backed device summary without touching ROM files."""
     with db.connect() as connection:
         device = connection.execute("SELECT * FROM devices WHERE id=?", (device_id,)).fetchone()
         if not device:
@@ -2695,12 +2694,12 @@ def device_preview(device_id: int, request: Request):
             "JOIN game_files gf ON gf.game_id=ds.game_id WHERE ds.device_id=?)",
             (device_id,),
         ).fetchone()
-        managed_bytes = connection.execute(
-            "SELECT COALESCE(SUM(gf.size),0) AS bytes FROM deployments dp "
+        managed = connection.execute(
+            "SELECT COUNT(*) AS files,COALESCE(SUM(gf.size),0) AS bytes FROM deployments dp "
             "JOIN game_files gf ON gf.game_id=dp.game_id AND gf.device_relpath=dp.relpath "
             "WHERE dp.device_id=?",
             (device_id,),
-        ).fetchone()["bytes"]
+        ).fetchone()
         inventory_bytes = connection.execute(
             "SELECT COALESCE(SUM(size),0) AS bytes FROM device_inventory_files WHERE device_id=?",
             (device_id,),
@@ -2724,6 +2723,45 @@ def device_preview(device_id: int, request: Request):
             "AND NOT EXISTS(SELECT 1 FROM device_selections ds WHERE ds.device_id=dp.device_id AND ds.game_id=dp.game_id)",
             (device_id,),
         ).fetchone()["count"]
+    current_rom_bytes = max(int(managed["bytes"] or 0), int(inventory_bytes or 0))
+    unmanaged_rom_bytes = int(retained_unmanaged_bytes or 0)
+    projected_rom_bytes = int(desired["bytes"] or 0) + unmanaged_rom_bytes
+    storage_capacity_bytes = int(device["storage_capacity_bytes"] or 0)
+    return {
+        "device": dict(device),
+        "games": desired["games"],
+        "files": desired["files"],
+        "managed_files": int(managed["files"] or 0),
+        "current_rom_bytes": current_rom_bytes,
+        "desired_rom_bytes": int(desired["bytes"] or 0),
+        "projected_rom_bytes": projected_rom_bytes,
+        "unmanaged_rom_bytes": unmanaged_rom_bytes,
+        "storage_capacity_bytes": storage_capacity_bytes,
+        "over_capacity": bool(
+            storage_capacity_bytes and projected_rom_bytes > storage_capacity_bytes
+        ),
+        "additions": additions,
+        "removals": removals,
+        "conversions": 0,
+        "hardlinked": None,
+        "copied": None,
+        "missing": None,
+        "unknown": None,
+        "storage_inspected": False,
+    }
+
+
+@app.get("/api/devices/{device_id}/summary")
+def device_summary(device_id: int, request: Request):
+    require_device_access(device_id, request_principal(request))
+    return device_summary_payload(device_id)
+
+
+@app.get("/api/devices/{device_id}/preview")
+def device_preview(device_id: int, request: Request):
+    require_device_access(device_id, request_principal(request))
+    summary = device_summary_payload(device_id)
+    with db.connect() as connection:
         addition_games = connection.execute(
             "SELECT g.id,g.display_name,g.platform,COUNT(*) AS files,"
             "COALESCE(SUM(gf.size),0) AS bytes FROM device_selections ds "
@@ -2745,29 +2783,14 @@ def device_preview(device_id: int, request: Request):
         ).fetchall()
     inspection = library.device_storage_inspection(device_id)
     storage = inspection["summary"]
-    current_rom_bytes = max(int(managed_bytes or 0), int(inventory_bytes or 0))
-    unmanaged_rom_bytes = int(retained_unmanaged_bytes or 0)
-    projected_rom_bytes = int(desired["bytes"] or 0) + unmanaged_rom_bytes
-    storage_capacity_bytes = int(device["storage_capacity_bytes"] or 0)
     return {
-        "device": dict(device),
-        "games": desired["games"],
-        "files": desired["files"],
-        "current_rom_bytes": current_rom_bytes,
-        "desired_rom_bytes": int(desired["bytes"] or 0),
-        "projected_rom_bytes": projected_rom_bytes,
-        "unmanaged_rom_bytes": unmanaged_rom_bytes,
-        "storage_capacity_bytes": storage_capacity_bytes,
-        "over_capacity": bool(
-            storage_capacity_bytes and projected_rom_bytes > storage_capacity_bytes
-        ),
-        "additions": additions,
-        "removals": removals,
+        **summary,
         "conversions": storage["conversions"],
         "hardlinked": storage["hardlinked"],
         "copied": storage["copied"],
         "missing": storage["missing"],
         "unknown": storage["unknown"],
+        "storage_inspected": True,
         "changes": {
             "additions": [dict(row) for row in addition_games],
             "conversions": inspection["conversions"],

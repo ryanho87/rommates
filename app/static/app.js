@@ -59,7 +59,7 @@ const state = {
   bulkAssignmentDeviceIds: new Set(),
   deviceId: null,
   deviceScope: "on_device",
-  deviceInventoryRefreshRequested: viewFromLocation() === "devices",
+  deviceInventoryRefreshRequested: false,
   deviceOnboarding: false,
   deviceGroupCreating: false,
   syncTargetMembers: [],
@@ -2968,15 +2968,18 @@ function deviceAdminDetails(device, target, preview, inventory, isGroup) {
   const ownerControl = isGroup ? `<span>${escapeHtml(target.group?.owner_display_name || target.group?.owner_username || ownership.label)}</span>` : `<select id="device-owner"><option value="">Unassigned</option>${state.users.filter((user) => user.active && (user.roles || [user.role]).some((role) => ["member", "admin"].includes(role))).map((user) => `<option value="${user.id}" ${Number(device.owner_user_id) === Number(user.id) ? "selected" : ""}>${escapeHtml(user.display_name)} (${escapeHtml(user.username)})</option>`).join("")}</select>`;
   const readyAction = !isGroup && device.delivery_mode !== "download"
     ? `<button class="button secondary small" type="button" data-device-sync-ready ${!device.owner_user_id ? "disabled" : ""}>${device.syncthing_ready_at ? "Mark setup pending" : "Mark Syncthing ready"}</button>` : "";
+  const storageMetrics = preview.storage_inspected
+    ? `${deviceMetric(preview.hardlinked, isGroup ? "hardlinked across group" : "hardlinked", "Files that share storage with the canonical library.")}
+      ${deviceMetric(preview.copied, isGroup ? "copied across group" : "copied", "Managed files stored as independent copies.")}
+      ${preview.missing ? deviceMetric(preview.missing, "managed files missing", "Recorded deployments no longer present in the device directory.") : ""}
+      ${preview.unknown ? deviceMetric(preview.unknown, "storage states unknown", "Storage identity could not be inspected.") : ""}`
+    : `${deviceMetric(preview.managed_files, isGroup ? "managed across group" : "managed files", "Files recorded as deployed by ROMmates.")}`;
   return `<details class="device-admin-details"><summary>Technical details</summary><div class="device-admin-details-body">
     <label class="field"><span>Owner</span>${ownerControl}</label>
     <div class="device-admin-metrics">
-      ${deviceMetric(preview.hardlinked, isGroup ? "hardlinked across group" : "hardlinked", "Files that share storage with the canonical library.")}
-      ${deviceMetric(preview.copied, isGroup ? "copied across group" : "copied", "Managed files stored as independent copies.")}
+      ${storageMetrics}
       ${!isGroup ? deviceMetric(inventory.present_games, "currently on device", "Library bundles matched to files in this device directory.") : ""}
-      ${preview.missing ? deviceMetric(preview.missing, "managed files missing", "Recorded deployments no longer present in the device directory.") : ""}
-      ${preview.unknown ? deviceMetric(preview.unknown, "storage states unknown", "Storage identity could not be inspected.") : ""}
-    </div>${readyAction}
+    </div><div class="device-admin-actions">${!isGroup ? '<button class="button secondary small" type="button" data-device-storage-inspect>Inspect hardlink storage</button>' : ""}${readyAction}</div>
   </div></details>`;
 }
 
@@ -3124,16 +3127,17 @@ async function renderDevices() {
   state.deviceId = device.id;
   const homeScope = isGroup ? "selected" : "on_device";
   if (![homeScope, "all"].includes(state.deviceScope)) state.deviceScope = homeScope;
+  // Syncthing is an external service and may be offline or slow. Its status
+  // should enrich the page after first paint, never hold the device roster up.
   const syncStatusesPromise = Promise.all(
     target.members.map((member) => api(`/api/devices/${member.id}/sync-status`)),
-  );
+  ).catch(() => []);
   const refreshDeviceInventory = state.deviceInventoryRefreshRequested;
   state.deviceInventoryRefreshRequested = false;
   const gamesPromise = getGames(device.id, state.deviceScope, refreshDeviceInventory);
-  const [response, memberPreviews, syncStatuses] = await Promise.all([
+  const [response, memberPreviews] = await Promise.all([
     gamesPromise,
-    Promise.all(target.members.map((member) => navigationApi(`/api/devices/${member.id}/preview`))),
-    syncStatusesPromise,
+    Promise.all(target.members.map((member) => navigationApi(`/api/devices/${member.id}/summary`))),
   ]);
   const preview = isGroup ? {
     games: Number(memberPreviews[0]?.games || 0),
@@ -3143,8 +3147,10 @@ async function renderDevices() {
     conversions: memberPreviews.reduce((sum, item) => sum + Number(item.conversions || 0), 0),
     hardlinked: memberPreviews.reduce((sum, item) => sum + Number(item.hardlinked || 0), 0),
     copied: memberPreviews.reduce((sum, item) => sum + Number(item.copied || 0), 0),
+    managed_files: memberPreviews.reduce((sum, item) => sum + Number(item.managed_files || 0), 0),
     missing: memberPreviews.reduce((sum, item) => sum + Number(item.missing || 0), 0),
     unknown: memberPreviews.reduce((sum, item) => sum + Number(item.unknown || 0), 0),
+    storage_inspected: memberPreviews.every((item) => item.storage_inspected),
   } : memberPreviews[0];
   if (!pageRenderIsCurrent(renderVersion, "devices")) return;
   const key = `devices\u001f${device.id}\u001f${state.deviceScope}\u001f${state.search}\u001f${state.platform}\u001f${state.sort}`;
@@ -3167,7 +3173,7 @@ async function renderDevices() {
   }
   setViewHtml(`
     ${createdDevicePanel()}
-    ${deviceWorkspaceControls(device, target, preview, memberPreviews, inventory, syncStatuses, isGroup)}
+    ${deviceWorkspaceControls(device, target, preview, memberPreviews, inventory, [], isGroup)}
     <section class="device-game-section" aria-labelledby="device-game-list-title">
       <h2 class="sr-only" id="device-game-list-title">${state.deviceScope === "all" ? "ROMs available to add" : isGroup ? "ROMs selected for this group" : "ROMs on this device"}</h2>
       ${isAdmin() && !isGroup && inventory.unmatched_files ? `<p class="device-inventory-note">${deviceMetric(inventory.unmatched_files, inventory.unmatched_files === 1 ? "unmatched file" : "unmatched files", "Physical files that ROMmates cannot associate with the current library index.")}</p>` : ""}
@@ -3175,7 +3181,12 @@ async function renderDevices() {
     </section>
     ${isGroup ? deviceGroupPanel(target, memberPreviews) : ""}
     ${deviceAdminDetails(device, target, preview, inventory, isGroup)}`);
-  scheduleDeviceSyncRefresh(target.members, syncStatuses);
+  void syncStatusesPromise.then((syncStatuses) => {
+    if (!pageRenderIsCurrent(renderVersion, "devices")) return;
+    const summary = view.querySelector("[data-device-sync-summary]");
+    if (summary) summary.innerHTML = deviceSyncSummaryMarkup(deviceSyncSummary(syncStatuses));
+    scheduleDeviceSyncRefresh(target.members, syncStatuses);
+  });
   bindFilters(renderDevices);
   bindDeviceOnboarding();
   bindDeviceGroupCreation();
@@ -3194,7 +3205,6 @@ async function renderDevices() {
     state.deviceId = Number(event.target.value);
     const selected = state.devices.find((item) => item.id === state.deviceId);
     state.deviceScope = selected?.roster_group_id ? "selected" : "on_device";
-    state.deviceInventoryRefreshRequested = true;
     state.offset = 0;
     renderDevices();
   });
@@ -3228,6 +3238,52 @@ async function renderDevices() {
       await renderDevices();
     } catch (error) {
       button.disabled = false;
+      toast(error.message, "error");
+    }
+  });
+  view.querySelector("[data-device-storage-inspect]")?.addEventListener("click", async (event) => {
+    const pendingReview = view.querySelector("#apply-device");
+    if (pendingReview) {
+      pendingReview.click();
+      return;
+    }
+    const button = event.currentTarget;
+    const originalLabel = button.textContent;
+    button.disabled = true;
+    button.textContent = "Inspecting…";
+    let plan;
+    try {
+      plan = await api(`/api/devices/${device.id}/preview`);
+    } catch (error) {
+      toast(`Could not inspect managed storage: ${error.message}`, "error");
+      button.disabled = false;
+      button.textContent = originalLabel;
+      return;
+    }
+    button.disabled = false;
+    button.textContent = originalLabel;
+    if (!Number(plan.conversions || 0)) {
+      const hardlinked = Number(plan.hardlinked || 0);
+      const copied = Number(plan.copied || 0);
+      const exceptions = Number(plan.missing || 0) + Number(plan.unknown || 0);
+      toast(`${hardlinked.toLocaleString()} hardlinked · ${copied.toLocaleString()} copied${exceptions ? ` · ${exceptions.toLocaleString()} could not be confirmed` : ""}`);
+      return;
+    }
+    const confirmed = await confirmAction({
+      title: `Convert ${Number(plan.conversions).toLocaleString()} files to hardlinks?`,
+      content: `<p class="warning-copy">ROMmates inspected the managed files on ${escapeHtml(device.name)}. Applying will replace matching copies with hardlinks and request a Syncthing rescan.</p>${devicePlanReview(plan, device.name, true)}`,
+      confirmLabel: "Convert to hardlinks",
+      cancelLabel: "Not now",
+      danger: false,
+      wide: true,
+    });
+    if (!confirmed) return;
+    try {
+      await requestJob(`/api/devices/${device.id}/apply`, { method: "POST" }, `Applying ${device.name}`);
+      toast(`Converted managed storage for ${device.name}`);
+      await loadReferenceData();
+      await renderDevices();
+    } catch (error) {
       toast(error.message, "error");
     }
   });
@@ -3437,8 +3493,24 @@ async function renderDevices() {
       await renderDevices();
     } catch (error) { checkbox.checked = !checkbox.checked; checkbox.disabled = false; toast(error.message, "error"); }
   });
-  view.querySelector("#apply-device")?.addEventListener("click", async () => {
-    const plans = isGroup ? memberPreviews : [memberPreviews[0]];
+  view.querySelector("#apply-device")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    const originalLabel = button.textContent;
+    button.disabled = true;
+    button.textContent = "Inspecting device files…";
+    let plans;
+    try {
+      plans = await Promise.all(
+        target.members.map((member) => api(`/api/devices/${member.id}/preview`)),
+      );
+    } catch (error) {
+      toast(`Could not inspect device changes: ${error.message}`, "error");
+      button.disabled = false;
+      button.textContent = originalLabel;
+      return;
+    }
+    button.disabled = false;
+    button.textContent = originalLabel;
     const discardable = plans.reduce(
       (total, item) => total + Number(item.additions || 0) + Number(item.removals || 0),
       0,
@@ -4706,7 +4778,6 @@ function navigateTo(viewName, options = {}, historyMode = "push") {
     state.jobIssueOffset = 0;
   }
   if (options.deviceId) state.deviceId = options.deviceId;
-  if (viewName === "devices") state.deviceInventoryRefreshRequested = true;
   if (options.saveTab) state.saveTab = options.saveTab;
   state.selectedRows.clear();
   state.editingId = null;

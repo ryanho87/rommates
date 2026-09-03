@@ -1433,6 +1433,30 @@ class ApiIntegrationTests(unittest.TestCase):
             {"additions", "conversions", "removals"},
         )
 
+    def test_device_summary_does_not_inspect_the_filesystem(self):
+        created = self.client.post(
+            "/api/devices",
+            headers=self.headers,
+            json={"name": "zz-summary-device", "deployment_mode": "hardlink"},
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        device = created.json()
+        with patch.object(
+            self.main.library,
+            "device_storage_inspection",
+            side_effect=AssertionError("summary must not inspect deployed files"),
+        ):
+            response = self.client.get(
+                f"/api/devices/{device['id']}/summary", headers=self.headers
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+        summary = response.json()
+        self.assertFalse(summary["storage_inspected"])
+        self.assertIsNone(summary["hardlinked"])
+        self.assertIsNone(summary["copied"])
+        self.assertIn("managed_files", summary)
+        self.assertNotIn("changes", summary)
+
     def test_device_preview_lists_affected_roms(self):
         scan = self.client.post("/api/scan", headers=self.headers)
         self.assertEqual(self.wait_for_job(scan.json()["job_id"])["status"], "complete")

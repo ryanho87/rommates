@@ -781,6 +781,7 @@ input[type="checkbox"] { width: 15px; height: 15px; margin: 0; accent-color: var
 .device-admin-details > summary { width: fit-content; margin-bottom: 10px; color: var(--text-faint); font-size: 0.7rem; cursor: pointer; }
 .device-admin-details-body { display: grid; grid-template-columns: minmax(220px, .65fr) minmax(0, 1.35fr) auto; gap: 14px; align-items: end; padding: 0 0 14px; }
 .device-admin-metrics { display: flex; flex-wrap: wrap; gap: 8px 16px; padding-bottom: 7px; color: var(--text-muted); font-size: 0.72rem; }
+.device-admin-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .device-game-section { min-width: 0; }
 .device-game-heading { display: flex; align-items: end; justify-content: space-between; gap: 16px; margin: 0 0 10px; }
 .device-game-heading h2 { margin: 0; font-size: 1rem; }
