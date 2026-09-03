@@ -231,6 +231,9 @@ class SyncthingServiceTests(unittest.TestCase):
                 "completion": 100,
                 "needBytes": 0,
                 "needItems": 0,
+                "needDeletes": 0,
+                "remoteState": "valid",
+                "sequence": 42,
             },
             "/rest/db/status?folder=odin-roms": {
                 "state": "idle",
@@ -254,6 +257,14 @@ class SyncthingServiceTests(unittest.TestCase):
         self.assertTrue(status["linked"])
         self.assertEqual(status["status"], "Up to date")
         self.assertEqual(status["last_sync"], "2026-09-02T12:00:00Z")
+        self.assertEqual(status["sequence"], 42)
+        self.assertEqual(status["remote_state"], "valid")
+
+    def test_folder_sequence_reads_local_index_checkpoint(self):
+        service = SyncthingService(self.settings())
+        with patch.object(service, "_get", return_value={"sequence": 73}) as get:
+            self.assertEqual(service.folder_sequence("odin-roms"), 73)
+        get.assert_called_once_with("/rest/db/status?folder=odin-roms")
 
 
 if __name__ == "__main__":

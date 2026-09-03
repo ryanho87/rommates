@@ -329,7 +329,12 @@ class SyncthingService:
                 folder_status = folder_status_future.result()
             percentage = float(completion.get("completion") or 0) if isinstance(completion, dict) else 0.0
             connected = bool(remote.get("connected"))
-            synced = percentage >= 99.999
+            need_bytes = int(completion.get("needBytes") or 0) if isinstance(completion, dict) else 0
+            need_items = int(completion.get("needItems") or 0) if isinstance(completion, dict) else 0
+            need_deletes = int(completion.get("needDeletes") or 0) if isinstance(completion, dict) else 0
+            remote_state = str(completion.get("remoteState") or "") if isinstance(completion, dict) else ""
+            sequence = int(completion.get("sequence") or 0) if isinstance(completion, dict) else 0
+            synced = percentage >= 99.999 and not (need_bytes or need_items or need_deletes)
             status_label = "Up to date" if synced else f"Syncing · {percentage:.0f}%" if connected else "Offline"
             last_sync = None
             if synced and isinstance(folder_status, dict):
@@ -341,13 +346,27 @@ class SyncthingService:
                 "folder_id": str(folder.get("id") or ""),
                 "connected": connected,
                 "completion": percentage,
-                "need_bytes": int(completion.get("needBytes") or 0) if isinstance(completion, dict) else 0,
-                "need_items": int(completion.get("needItems") or 0) if isinstance(completion, dict) else 0,
+                "need_bytes": need_bytes,
+                "need_items": need_items,
+                "need_deletes": need_deletes,
+                "remote_state": remote_state,
+                "sequence": sequence,
+                "folder_state": str(folder_status.get("state") or "") if isinstance(folder_status, dict) else "",
                 "status": status_label,
                 "last_sync": last_sync,
             }
         except (HTTPError, URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError):
             return {"configured": True, "linked": False, "status": "Status unavailable", "last_sync": None}
+
+    def folder_sequence(self, folder_id: str) -> int:
+        """Return the local index sequence that a remote device must acknowledge."""
+        if not self.configured or not folder_id:
+            return 0
+        try:
+            status = self._get(f"/rest/db/status?{urlencode({'folder': folder_id})}")
+            return int(status.get("sequence") or 0) if isinstance(status, dict) else 0
+        except (HTTPError, URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError):
+            return 0
 
     @staticmethod
     def _connection_type(connection: dict[str, Any]) -> str:

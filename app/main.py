@@ -20,6 +20,7 @@ from .artwork_cache import ArtworkThumbnailCache, THUMBNAIL_CACHE_VERSION
 from .auth import AuthService, PASSWORD_MIN_LENGTH, Principal, ROLES
 from .config import Settings
 from .db import Database
+from .device_sync import DeviceSyncMonitor
 from .library import JobCancelled, LibraryError, LibraryService
 from .mcp_server import RommatesMCPService, create_mcp_server
 from .naming import NamingService
@@ -71,6 +72,12 @@ ranking_service = RankingService(settings, db)
 transfers = TransferService(settings, db, library)
 syncthing = SyncthingService(settings)
 notifications = NotificationService(settings, db)
+device_syncs = DeviceSyncMonitor(
+    db,
+    syncthing,
+    notifications,
+    poll_seconds=max(3, settings.syncthing_cache_seconds),
+)
 auth = AuthService(db)
 job_cancellations: dict[int, threading.Event] = {}
 job_cancellations_lock = threading.Lock()
@@ -163,6 +170,9 @@ def job_result_detail(kind: str, result: object, fallback: str) -> str:
                 summary += "; requested Syncthing rescan"
             elif rescan.get("error"):
                 summary += f"; Syncthing rescan skipped: {rescan['error']}"
+        sync_run = result.get("device_sync")
+        if isinstance(sync_run, dict):
+            summary += "; tracking delivery to the remote device"
         return summary
     if kind == "save_snapshot":
         if result.get("unchanged"):
@@ -347,6 +357,30 @@ def run_job(
                     db.activity("ranking", f"Ranking matches could not be refreshed: {exc}")
             if kind in {"artwork_scrape", "artwork_bulk"} and isinstance(result, dict):
                 job_issues.extend(str(issue) for issue in result.get("issues", []))
+            if kind == "device_apply" and isinstance(result, dict):
+                rescan = result.get("syncthing_rescan")
+                transferred = int(result.get("linked") or 0) + int(result.get("copied") or 0)
+                removed = int(result.get("removed") or 0)
+                if isinstance(rescan, dict) and rescan.get("requested") and (transferred or removed):
+                    with db.connect() as connection:
+                        request_row = connection.execute(
+                            "SELECT requested_by FROM jobs WHERE id=?", (job_id,)
+                        ).fetchone()
+                    try:
+                        sync_run = device_syncs.track(
+                            int(args[0]),
+                            job_id,
+                            request_row["requested_by"] if request_row else None,
+                            added=transferred,
+                            removed=removed,
+                        )
+                        if sync_run:
+                            result["device_sync"] = sync_run
+                    except Exception as exc:
+                        # The local apply is already committed. A monitoring
+                        # problem must be visible without falsely failing it.
+                        result["device_sync_error"] = str(exc)
+                        db.activity("device_sync", f"Could not track device job {job_id}: {exc}")
             # Cooperative operations check cancellation before their final commit. A
             # stop request arriving after the operation returns must not relabel a
             # successfully committed filesystem change as cancelled.
@@ -601,6 +635,7 @@ async def lifespan(_: FastAPI):
     transfers.initialize()
     notifications.initialize()
     auth.initialize()
+    device_syncs.start()
     scheduler_stop = threading.Event()
     scheduler_thread = threading.Thread(target=save_scheduler, args=(scheduler_stop,), daemon=True)
     scheduler_thread.start()
@@ -623,6 +658,7 @@ async def lifespan(_: FastAPI):
         scheduler_stop.set()
         scheduler_thread.join(timeout=2)
         artwork_thumbnails.close()
+        device_syncs.close()
         notifications.close()
 
 
@@ -2473,20 +2509,42 @@ def update_device_syncthing_ready(
 
 
 @app.get("/api/devices/{device_id}/sync-status")
-def device_syncthing_status(device_id: int, request: Request):
+def device_syncthing_status(
+    device_id: int,
+    request: Request,
+    tracked_only: bool = Query(False),
+):
     device = require_device_access(device_id, request_principal(request))
+    sync_run = device_syncs.latest(device_id)
+    if tracked_only and sync_run:
+        state = str(sync_run["state"])
+        return {
+            "configured": syncthing.configured,
+            "linked": True,
+            "connected": state != "offline",
+            "completion": sync_run["completion"],
+            "need_bytes": sync_run["need_bytes"],
+            "need_items": sync_run["need_items"],
+            "need_deletes": sync_run["need_deletes"],
+            "status": sync_run["detail"],
+            "last_sync": sync_run["completed_at"],
+            "sync_run": sync_run,
+        }
     if device["delivery_mode"] != "syncthing":
         return {
             "configured": syncthing.configured,
             "linked": False,
             "status": "Manual download",
             "last_sync": None,
+            "sync_run": sync_run,
         }
-    return syncthing.device_sync_status(
+    result = dict(syncthing.device_sync_status(
         str(device["name"]),
         remote_device_id=str(device["syncthing_device_id"] or ""),
         folder_id=str(device["syncthing_folder_id"] or ""),
-    )
+    ))
+    result["sync_run"] = sync_run
+    return result
 
 
 @app.post("/api/devices/{device_id}/syncthing-share")

@@ -10,6 +10,7 @@ from typing import Iterator
 
 JOB_HISTORY_LIMIT = 500
 ACTIVITY_HISTORY_LIMIT = 1000
+DEVICE_SYNC_HISTORY_LIMIT = 500
 
 SCHEMA = """
 PRAGMA journal_mode=WAL;
@@ -217,6 +218,31 @@ CREATE TABLE IF NOT EXISTS deployments (
     PRIMARY KEY(device_id, game_id, relpath)
 );
 CREATE INDEX IF NOT EXISTS idx_deployments_game ON deployments(game_id, device_id);
+
+CREATE TABLE IF NOT EXISTS device_sync_runs (
+    id INTEGER PRIMARY KEY,
+    device_id INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    job_id INTEGER REFERENCES jobs(id) ON DELETE SET NULL,
+    requested_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    folder_id TEXT NOT NULL,
+    remote_device_id TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','syncing','offline','complete','superseded')),
+    completion REAL NOT NULL DEFAULT 0,
+    need_bytes INTEGER NOT NULL DEFAULT 0,
+    need_items INTEGER NOT NULL DEFAULT 0,
+    need_deletes INTEGER NOT NULL DEFAULT 0,
+    target_sequence INTEGER NOT NULL DEFAULT 0,
+    live_sequence INTEGER NOT NULL DEFAULT 0,
+    added_count INTEGER NOT NULL DEFAULT 0,
+    removed_count INTEGER NOT NULL DEFAULT 0,
+    detail TEXT NOT NULL DEFAULT '',
+    started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    completed_at TEXT,
+    UNIQUE(device_id,job_id)
+);
+CREATE INDEX IF NOT EXISTS idx_device_sync_runs_active
+ON device_sync_runs(status,device_id,id);
 
 CREATE TABLE IF NOT EXISTS device_inventory_files (
     device_id INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
@@ -820,6 +846,28 @@ class Database:
                     "ALTER TABLE device_inventory_files ADD COLUMN size INTEGER NOT NULL DEFAULT 0"
                 )
             connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(31)")
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS device_sync_runs ("
+                "id INTEGER PRIMARY KEY,"
+                "device_id INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,"
+                "job_id INTEGER REFERENCES jobs(id) ON DELETE SET NULL,"
+                "requested_by INTEGER REFERENCES users(id) ON DELETE SET NULL,"
+                "folder_id TEXT NOT NULL,remote_device_id TEXT NOT NULL,"
+                "status TEXT NOT NULL DEFAULT 'pending' "
+                "CHECK(status IN ('pending','syncing','offline','complete','superseded')),"
+                "completion REAL NOT NULL DEFAULT 0,need_bytes INTEGER NOT NULL DEFAULT 0,"
+                "need_items INTEGER NOT NULL DEFAULT 0,need_deletes INTEGER NOT NULL DEFAULT 0,"
+                "target_sequence INTEGER NOT NULL DEFAULT 0,live_sequence INTEGER NOT NULL DEFAULT 0,"
+                "added_count INTEGER NOT NULL DEFAULT 0,removed_count INTEGER NOT NULL DEFAULT 0,"
+                "detail TEXT NOT NULL DEFAULT '',started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+                "updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,completed_at TEXT,"
+                "UNIQUE(device_id,job_id))"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_device_sync_runs_active "
+                "ON device_sync_runs(status,device_id,id)"
+            )
+            connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(32)")
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
@@ -848,11 +896,16 @@ class Database:
                 (action, detail),
             )
 
-    def prune_history(self, keep_jobs: int = JOB_HISTORY_LIMIT, keep_activity: int = ACTIVITY_HISTORY_LIMIT) -> None:
+    def prune_history(
+        self,
+        keep_jobs: int = JOB_HISTORY_LIMIT,
+        keep_activity: int = ACTIVITY_HISTORY_LIMIT,
+        keep_device_syncs: int = DEVICE_SYNC_HISTORY_LIMIT,
+    ) -> None:
         """Trim the jobs and activity logs so they cannot grow without bound.
 
-        Both tables are append-only and the UI only ever shows the newest 100 rows,
-        so anything past the retention window is unreachable history.
+        These tables are append-only and the UI only needs recent history, so
+        terminal records past the retention window are safely unreachable.
         """
         with self.write() as connection:
             connection.execute(
@@ -862,4 +915,9 @@ class Database:
             connection.execute(
                 "DELETE FROM activity WHERE id NOT IN (SELECT id FROM activity ORDER BY id DESC LIMIT ?)",
                 (keep_activity,),
+            )
+            connection.execute(
+                "DELETE FROM device_sync_runs WHERE status NOT IN ('pending','syncing','offline') "
+                "AND id NOT IN (SELECT id FROM device_sync_runs ORDER BY id DESC LIMIT ?)",
+                (keep_device_syncs,),
             )

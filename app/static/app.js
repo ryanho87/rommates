@@ -65,6 +65,7 @@ const state = {
   syncTargetMembers: [],
   createdDevice: null,
   refreshTimer: null,
+  deviceSyncTimer: null,
   gamesController: null,
   // Job ids already surfaced to the user, so the poller and an awaited job do not
   // both report the same outcome.
@@ -510,6 +511,8 @@ function bindInfiniteScroll(data, callback, offsetSetter = (offset) => { state.o
 }
 
 function beginPageRender() {
+  clearTimeout(state.deviceSyncTimer);
+  state.deviceSyncTimer = null;
   state.renderVersion += 1;
   return state.renderVersion;
 }
@@ -2763,21 +2766,78 @@ function deviceGroupPanel(target, previews) {
 
 function deviceSyncSummary(statuses) {
   const usable = statuses.filter(Boolean);
-  if (!usable.length) return { label: "Checking…", tone: "muted", lastSync: "Not available" };
-  if (usable.every((item) => !item.configured)) return { label: "Syncthing not configured", tone: "warning", lastSync: "Not available" };
-  if (usable.some((item) => !item.linked)) return { label: "Setup needed", tone: "warning", lastSync: "Never" };
+  if (!usable.length) return { label: "Checking…", tone: "muted", detail: "", lastSync: "Not available", active: false };
+  if (usable.every((item) => !item.configured)) return { label: "Syncthing not configured", tone: "warning", detail: "", lastSync: "Not available", active: false };
+  const runs = usable.map((item) => item.sync_run).filter(Boolean);
+  const activeRuns = runs.filter((run) => ["pending", "syncing", "offline"].includes(run.state));
+  if (activeRuns.length) {
+    const offline = activeRuns.filter((run) => run.state === "offline").length;
+    const completion = Math.round(activeRuns.reduce((sum, run) => sum + Number(run.completion || 0), 0) / activeRuns.length);
+    const remainingBytes = activeRuns.reduce((sum, run) => sum + Number(run.need_bytes || 0), 0);
+    const remainingItems = activeRuns.reduce((sum, run) => sum + Number(run.need_items || 0) + Number(run.need_deletes || 0), 0);
+    const label = offline === activeRuns.length
+      ? "Waiting for device"
+      : activeRuns.length === 1 ? `Syncing · ${completion}%` : `${activeRuns.length} devices syncing · ${completion}%`;
+    const detail = remainingItems || remainingBytes
+      ? `${remainingItems.toLocaleString()} ${remainingItems === 1 ? "item" : "items"} · ${formatBytes(remainingBytes)} remaining`
+      : offline ? `${offline.toLocaleString()} ${offline === 1 ? "device is" : "devices are"} offline` : "Confirming remote completion";
+    const completedTimes = runs.map((run) => run.completed_at).filter(Boolean).sort();
+    return {
+      label,
+      tone: offline === activeRuns.length ? "warning" : "active",
+      detail,
+      lastSync: completedTimes.length ? new Date(completedTimes.at(-1)).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : "Not yet recorded",
+      active: true,
+    };
+  }
+  if (usable.some((item) => !item.linked)) return { label: "Setup needed", tone: "warning", detail: "", lastSync: "Never", active: false };
   const connected = usable.filter((item) => item.connected).length;
   const complete = usable.filter((item) => Number(item.completion || 0) >= 99.999).length;
   const label = complete === usable.length
     ? "Up to date"
     : connected ? `${connected} online · ${complete}/${usable.length} up to date` : "Offline";
-  const timestamps = usable.map((item) => item.last_sync).filter(Boolean).sort();
+  const timestamps = [
+    ...usable.map((item) => item.last_sync),
+    ...runs.map((run) => run.completed_at),
+  ].filter(Boolean).sort();
   const latest = timestamps.at(-1);
   return {
     label,
     tone: complete === usable.length ? "success" : connected ? "active" : "muted",
+    detail: "",
     lastSync: latest ? new Date(latest).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : "Not yet recorded",
+    active: complete !== usable.length && connected > 0,
   };
+}
+
+function deviceSyncSummaryMarkup(sync) {
+  return `<span class="device-fact-label">Sync status</span>
+    <strong class="sync-tone-${sync.tone}">${escapeHtml(sync.label)}</strong>
+    ${sync.detail ? `<span class="device-sync-progress-detail">${escapeHtml(sync.detail)}</span>` : ""}
+    <span class="device-sync-last">Last sync · ${escapeHtml(sync.lastSync)}</span>`;
+}
+
+function scheduleDeviceSyncRefresh(members, currentStatuses) {
+  clearTimeout(state.deviceSyncTimer);
+  const initial = deviceSyncSummary(currentStatuses);
+  if (!initial.active || state.view !== "devices") return;
+  const selectedId = Number(state.deviceId);
+  state.deviceSyncTimer = setTimeout(async () => {
+    if (state.view !== "devices" || Number(state.deviceId) !== selectedId) return;
+    try {
+      const statuses = await Promise.all(
+        members.map((member) => api(`/api/devices/${member.id}/sync-status?tracked_only=true&fresh=${Date.now()}`)),
+      );
+      if (state.view !== "devices" || Number(state.deviceId) !== selectedId) return;
+      const sync = deviceSyncSummary(statuses);
+      const summary = view.querySelector("[data-device-sync-summary]");
+      if (summary) summary.innerHTML = deviceSyncSummaryMarkup(sync);
+      if (initial.active && !sync.active) await loadInbox();
+      scheduleDeviceSyncRefresh(members, statuses);
+    } catch {
+      scheduleDeviceSyncRefresh(members, currentStatuses);
+    }
+  }, 5000);
 }
 
 function deviceStorageRow(preview, label, showLabel) {
@@ -2851,11 +2911,7 @@ function deviceWorkspaceControls(device, target, preview, memberPreviews, invent
     <section class="device-at-a-glance" aria-label="Device storage and sync status">
       ${deviceStorageSummary(target, memberPreviews)}
       <div class="device-platform-summary"><span class="device-fact-label">${isGroup ? "Shared roster by platform" : "On-device storage by platform"}</span><div>${platformSummary}</div></div>
-      <div class="device-sync-summary">
-        <span class="device-fact-label">Sync status</span>
-        <strong class="sync-tone-${sync.tone}">${escapeHtml(sync.label)}</strong>
-        <span>Last sync · ${escapeHtml(sync.lastSync)}</span>
-      </div>
+      <div class="device-sync-summary" data-device-sync-summary>${deviceSyncSummaryMarkup(sync)}</div>
     </section>
     <div class="device-mode-row">
       <div class="device-mode-toggle" role="group" aria-label="ROM list">
@@ -3040,7 +3096,7 @@ async function renderDevices() {
   const homeScope = isGroup ? "selected" : "on_device";
   if (![homeScope, "all"].includes(state.deviceScope)) state.deviceScope = homeScope;
   const syncStatusesPromise = Promise.all(
-    target.members.map((member) => navigationApi(`/api/devices/${member.id}/sync-status`)),
+    target.members.map((member) => api(`/api/devices/${member.id}/sync-status`)),
   );
   const refreshDeviceInventory = state.deviceInventoryRefreshRequested;
   state.deviceInventoryRefreshRequested = false;
@@ -3090,6 +3146,7 @@ async function renderDevices() {
     </section>
     ${isGroup ? deviceGroupPanel(target, memberPreviews) : ""}
     ${deviceAdminDetails(device, target, preview, inventory, isGroup)}`);
+  scheduleDeviceSyncRefresh(target.members, syncStatuses);
   bindFilters(renderDevices);
   bindDeviceOnboarding();
   bindDeviceGroupCreation();
