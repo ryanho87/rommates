@@ -59,6 +59,7 @@ const state = {
   bulkAssignmentDeviceIds: new Set(),
   deviceId: null,
   deviceScope: "on_device",
+  deviceInventoryRefreshRequested: viewFromLocation() === "devices",
   deviceOnboarding: false,
   deviceGroupCreating: false,
   syncTargetMembers: [],
@@ -819,7 +820,7 @@ function deviceSummary(game, interactive) {
   return `<button class="count-button" data-assign-devices="${game.id}" aria-label="Choose devices for ${escapeHtml(game.display_name)}" title="${escapeHtml(fullLabel)}">${tags}</button>`;
 }
 
-async function getGames(deviceId = null, deviceScope = "all") {
+async function getGames(deviceId = null, deviceScope = "all", refreshDeviceInventory = false) {
   state.gamesController?.abort();
   state.gamesController = new AbortController();
   const params = new URLSearchParams({
@@ -832,6 +833,7 @@ async function getGames(deviceId = null, deviceScope = "all") {
   });
   if (deviceId) params.set("device_id", deviceId);
   if (deviceId) params.set("device_scope", deviceScope);
+  if (deviceId && refreshDeviceInventory) params.set("refresh_device_inventory", "true");
   return navigationApi(`/api/games?${params}`, { signal: state.gamesController.signal });
 }
 
@@ -2992,6 +2994,23 @@ function deviceRosterPanel(device) {
   </section>`;
 }
 
+function showDeviceScopeLoading(scope, isGroup) {
+  view.querySelectorAll("[data-device-scope]").forEach((button) => {
+    const active = button.dataset.deviceScope === scope;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
+  });
+  const section = view.querySelector(".device-game-section");
+  if (!section) return;
+  const label = scope === "all"
+    ? "Loading ROMs available to add"
+    : isGroup ? "Loading ROMs selected for this group" : "Loading ROMs on this device";
+  section.setAttribute("aria-busy", "true");
+  section.innerHTML = `<div class="navigation-loading device-list-loading" role="status" aria-label="${label}">
+    <span></span><span></span><span></span><span></span>
+  </div>`;
+}
+
 async function renderDevices() {
   const renderVersion = beginPageRender();
   setHeading("Devices", "Choose a device or group, then manage its ROMs.");
@@ -3011,10 +3030,11 @@ async function renderDevices() {
   const syncStatusesPromise = Promise.all(
     target.members.map((member) => navigationApi(`/api/devices/${member.id}/sync-status`)),
   );
-  // Refresh the selected device's physical inventory before calculating its
-  // storage projection so newly added or unmanaged ROM files are included.
-  const response = await getGames(device.id, state.deviceScope);
-  const [memberPreviews, syncStatuses] = await Promise.all([
+  const refreshDeviceInventory = state.deviceInventoryRefreshRequested;
+  state.deviceInventoryRefreshRequested = false;
+  const gamesPromise = getGames(device.id, state.deviceScope, refreshDeviceInventory);
+  const [response, memberPreviews, syncStatuses] = await Promise.all([
+    gamesPromise,
     Promise.all(target.members.map((member) => navigationApi(`/api/devices/${member.id}/preview`))),
     syncStatusesPromise,
   ]);
@@ -3076,6 +3096,7 @@ async function renderDevices() {
     state.deviceId = Number(event.target.value);
     const selected = state.devices.find((item) => item.id === state.deviceId);
     state.deviceScope = selected?.roster_group_id ? "selected" : "on_device";
+    state.deviceInventoryRefreshRequested = true;
     state.offset = 0;
     renderDevices();
   });
@@ -3282,10 +3303,17 @@ async function renderDevices() {
       button.disabled = false;
     }
   });
-  view.querySelectorAll("[data-device-scope]").forEach((button) => button.addEventListener("click", () => {
-    state.deviceScope = button.dataset.deviceScope;
+  view.querySelectorAll("[data-device-scope]").forEach((button) => button.addEventListener("click", async () => {
+    const nextScope = button.dataset.deviceScope;
+    if (state.deviceScope === nextScope) return;
+    state.deviceScope = nextScope;
     state.offset = 0;
-    renderDevices();
+    showDeviceScopeLoading(nextScope, isGroup);
+    try {
+      await renderDevices();
+    } catch (error) {
+      if (error.name !== "AbortError") toast(error.message, "error");
+    }
   }));
   view.querySelector("[data-device-empty-browse]")?.addEventListener("click", () => {
     state.deviceScope = "all";
@@ -4580,6 +4608,7 @@ function navigateTo(viewName, options = {}, historyMode = "push") {
     state.jobIssueOffset = 0;
   }
   if (options.deviceId) state.deviceId = options.deviceId;
+  if (viewName === "devices") state.deviceInventoryRefreshRequested = true;
   if (options.saveTab) state.saveTab = options.saveTab;
   state.selectedRows.clear();
   state.editingId = null;
@@ -4656,7 +4685,13 @@ deviceFlowDialog.addEventListener("close", () => { deviceFlowContent.innerHTML =
 scanButton.addEventListener("click", () => startScan());
 stopJobButton.addEventListener("click", () => cancelJob(Number(stopJobButton.dataset.jobId), stopJobButton));
 refreshButton.addEventListener("click", async () => {
-  try { clearNavigationCache(); await refreshStatus(); await loadReferenceData(); await renderCurrentView(); }
+  try {
+    clearNavigationCache();
+    if (state.view === "devices") state.deviceInventoryRefreshRequested = true;
+    await refreshStatus();
+    await loadReferenceData();
+    await renderCurrentView();
+  }
   catch (error) { toast(error.message, "error"); }
 });
 

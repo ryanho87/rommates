@@ -1252,7 +1252,8 @@ class ApiIntegrationTests(unittest.TestCase):
             # presence. General Library reads reuse that inventory without walking
             # every device directory in the request path.
             response = self.client.get(
-                f"/api/games?device_id={device['id']}&device_scope=on_device",
+                f"/api/games?device_id={device['id']}&device_scope=on_device"
+                "&refresh_device_inventory=true",
                 headers=self.headers,
             )
             self.assertEqual(response.status_code, 200)
@@ -1292,10 +1293,16 @@ class ApiIntegrationTests(unittest.TestCase):
                 json={"game_id": game["id"], "selected": True},
             )
             self.assertEqual(selected.status_code, 200)
-            updated = self.client.get(
-                f"/api/games?device_id={device['id']}&device_scope=on_device",
-                headers=self.headers,
-            ).json()
+            with patch.object(
+                self.main.library,
+                "device_inventory",
+                wraps=self.main.library.device_inventory,
+            ) as inventory:
+                updated = self.client.get(
+                    f"/api/games?device_id={device['id']}&device_scope=on_device",
+                    headers=self.headers,
+                ).json()
+            inventory.assert_called_once_with(device["id"], refresh=False)
             self.assertEqual(updated["items"][0]["device_state"], "pending_update")
             self.assertEqual(updated["device_inventory"]["changes"], 1)
             pending = self.client.get(
@@ -1433,7 +1440,8 @@ class ApiIntegrationTests(unittest.TestCase):
         unknown.write_bytes(b"unknown-rom")
         try:
             inventory = self.client.get(
-                f"/api/games?device_id={device['id']}&device_scope=all",
+                f"/api/games?device_id={device['id']}&device_scope=all"
+                "&refresh_device_inventory=true",
                 headers=self.headers,
             )
             self.assertEqual(inventory.status_code, 200, inventory.text)

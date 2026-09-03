@@ -1558,6 +1558,7 @@ def games(
     duplicate: str = Query("all", pattern="^(all|exact|possible|unique)$"),
     device_id: int | None = None,
     device_scope: str = Query("all", pattern="^(all|selected|on_device|changes)$"),
+    refresh_device_inventory: bool = False,
     sort: str = Query(
         "name_asc",
         pattern="^(name_asc|name_desc|rank_asc|rating_desc|rating_asc|size_desc|size_asc)$",
@@ -1579,7 +1580,10 @@ def games(
             return f"{alias}.owner_user_id={int(principal.id)}"
         return "0=1"
     present_relpaths = (
-        library.device_inventory(device_id, refresh=offset == 0)
+        library.device_inventory(
+            device_id,
+            refresh=refresh_device_inventory and offset == 0,
+        )
         if device_id is not None
         else set()
     )
