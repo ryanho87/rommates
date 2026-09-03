@@ -2706,12 +2706,12 @@ def device_summary_payload(device_id: int) -> dict[str, object]:
         ).fetchone()["bytes"]
         retained_unmanaged_bytes = connection.execute(
             "SELECT COALESCE(SUM(dif.size),0) AS bytes FROM device_inventory_files dif "
-            "WHERE dif.device_id=? AND NOT EXISTS("
-            "SELECT 1 FROM deployments dp WHERE dp.device_id=dif.device_id AND dp.relpath=dif.relpath) "
-            "AND NOT EXISTS(SELECT 1 FROM device_selections ds JOIN game_files gf "
-            "ON gf.game_id=ds.game_id WHERE ds.device_id=dif.device_id "
-            "AND gf.device_relpath=dif.relpath)",
-            (device_id,),
+            "LEFT JOIN (SELECT relpath FROM deployments WHERE device_id=? UNION "
+            "SELECT gf.device_relpath AS relpath FROM device_selections ds "
+            "JOIN game_files gf ON gf.game_id=ds.game_id WHERE ds.device_id=?) accounted "
+            "ON accounted.relpath=dif.relpath "
+            "WHERE dif.device_id=? AND accounted.relpath IS NULL",
+            (device_id, device_id, device_id),
         ).fetchone()["bytes"]
         additions = connection.execute(
             "SELECT COUNT(*) AS count FROM device_selections ds JOIN game_files gf ON gf.game_id=ds.game_id "
