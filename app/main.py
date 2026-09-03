@@ -1624,14 +1624,12 @@ def games(
         if principal.has_role("member") and principal.id is not None:
             return f"{alias}.owner_user_id={int(principal.id)}"
         return "0=1"
-    present_relpaths = (
-        library.device_inventory(
-            device_id,
-            refresh=refresh_device_inventory and offset == 0,
-        )
-        if device_id is not None
-        else set()
-    )
+    # A requested refresh walks the filesystem once and publishes its result to
+    # device_inventory_files. Normal reads consume that table directly instead
+    # of pulling thousands of paths into Python and inserting them back into a
+    # temporary table one row at a time.
+    if device_id is not None and refresh_device_inventory and offset == 0:
+        library.device_inventory(device_id, refresh=True)
     where = ["1=1"]
     params: list[object] = []
     if search.strip():
@@ -1694,9 +1692,10 @@ def games(
             connection.execute("CREATE TEMP TABLE device_present(relpath TEXT PRIMARY KEY)")
             connection.execute("CREATE TEMP TABLE device_selected(game_id INTEGER PRIMARY KEY)")
             connection.execute("CREATE TEMP TABLE device_managed(game_id INTEGER,relpath TEXT,PRIMARY KEY(game_id,relpath))")
-            connection.executemany(
-                "INSERT OR IGNORE INTO device_present(relpath) VALUES(?)",
-                ((relpath,) for relpath in present_relpaths),
+            connection.execute(
+                "INSERT OR IGNORE INTO device_present(relpath) "
+                "SELECT relpath FROM device_inventory_files WHERE device_id=?",
+                (device_id,),
             )
             connection.execute(
                 "INSERT INTO device_selected(game_id) SELECT game_id FROM device_selections WHERE device_id=?",
@@ -1799,17 +1798,18 @@ def games(
                 "SELECT COUNT(*) AS count FROM device_present df WHERE NOT EXISTS("
                 "SELECT 1 FROM game_files gf WHERE gf.device_relpath=df.relpath)"
             ).fetchone()["count"]
-            inventory_bytes = connection.execute(
-                "SELECT COALESCE(SUM(size),0) AS bytes FROM device_inventory_files "
+            inventory_stats = connection.execute(
+                "SELECT COUNT(*) AS files,COALESCE(SUM(size),0) AS bytes "
+                "FROM device_inventory_files "
                 "WHERE device_id=?",
                 (device_id,),
-            ).fetchone()["bytes"]
+            ).fetchone()
             device_inventory = {
                 "present_games": present_games,
                 "changes": changes,
                 "unmatched_files": unmatched_files,
-                "files": len(present_relpaths),
-                "bytes": int(inventory_bytes or 0),
+                "files": int(inventory_stats["files"] or 0),
+                "bytes": int(inventory_stats["bytes"] or 0),
                 "platforms": [
                     dict(row)
                     for row in connection.execute(

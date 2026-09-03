@@ -1304,7 +1304,7 @@ class ApiIntegrationTests(unittest.TestCase):
                     f"/api/games?device_id={device['id']}&device_scope=on_device",
                     headers=self.headers,
                 ).json()
-            inventory.assert_called_once_with(device["id"], refresh=False)
+            inventory.assert_not_called()
             self.assertEqual(updated["items"][0]["device_state"], "pending_update")
             self.assertEqual(updated["device_inventory"]["changes"], 1)
             pending = self.client.get(
