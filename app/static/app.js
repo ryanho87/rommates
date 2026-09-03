@@ -2768,15 +2768,20 @@ function deviceSyncSummary(statuses) {
   const usable = statuses.filter(Boolean);
   if (!usable.length) return { label: "Checking…", tone: "muted", detail: "", lastSync: "Not available", active: false };
   if (usable.every((item) => !item.configured)) return { label: "Syncthing not configured", tone: "warning", detail: "", lastSync: "Not available", active: false };
+  const isComplete = (item) => Number(item.completion || 0) >= 99.999
+    && Number(item.need_bytes || 0) === 0
+    && Number(item.need_items || 0) === 0
+    && Number(item.need_deletes || 0) === 0;
+  const visiblePercent = (value) => Math.min(99, Math.max(0, Math.floor(Number(value || 0))));
   const runs = usable.map((item) => item.sync_run).filter(Boolean);
   const activeRuns = runs.filter((run) => ["pending", "syncing", "offline"].includes(run.state));
   if (activeRuns.length) {
     const offline = activeRuns.filter((run) => run.state === "offline").length;
-    const completion = Math.round(activeRuns.reduce((sum, run) => sum + Number(run.completion || 0), 0) / activeRuns.length);
+    const completion = visiblePercent(activeRuns.reduce((sum, run) => sum + Number(run.completion || 0), 0) / activeRuns.length);
     const remainingBytes = activeRuns.reduce((sum, run) => sum + Number(run.need_bytes || 0), 0);
     const remainingItems = activeRuns.reduce((sum, run) => sum + Number(run.need_items || 0) + Number(run.need_deletes || 0), 0);
     const label = offline === activeRuns.length
-      ? "Waiting for device"
+      ? `Waiting for device · ${completion}%`
       : activeRuns.length === 1 ? `Syncing · ${completion}%` : `${activeRuns.length} devices syncing · ${completion}%`;
     const detail = remainingItems || remainingBytes
       ? `${remainingItems.toLocaleString()} ${remainingItems === 1 ? "item" : "items"} · ${formatBytes(remainingBytes)} remaining`
@@ -2788,31 +2793,55 @@ function deviceSyncSummary(statuses) {
       detail,
       lastSync: completedTimes.length ? new Date(completedTimes.at(-1)).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : "Not yet recorded",
       active: true,
+      progress: completion,
     };
   }
   if (usable.some((item) => !item.linked)) return { label: "Setup needed", tone: "warning", detail: "", lastSync: "Never", active: false };
-  const connected = usable.filter((item) => item.connected).length;
-  const complete = usable.filter((item) => Number(item.completion || 0) >= 99.999).length;
-  const label = complete === usable.length
-    ? "Up to date"
-    : connected ? `${connected} online · ${complete}/${usable.length} up to date` : "Offline";
   const timestamps = [
     ...usable.map((item) => item.last_sync),
     ...runs.map((run) => run.completed_at),
   ].filter(Boolean).sort();
   const latest = timestamps.at(-1);
+  const incomplete = usable.filter((item) => !isComplete(item));
+  if (incomplete.length) {
+    const connected = incomplete.filter((item) => item.connected).length;
+    const completion = visiblePercent(
+      incomplete.reduce((sum, item) => sum + Number(item.completion || 0), 0) / incomplete.length,
+    );
+    const remainingBytes = incomplete.reduce((sum, item) => sum + Number(item.need_bytes || 0), 0);
+    const remainingItems = incomplete.reduce(
+      (sum, item) => sum + Number(item.need_items || 0) + Number(item.need_deletes || 0),
+      0,
+    );
+    const subject = incomplete.length === 1 ? "device" : `${incomplete.length} devices`;
+    const label = connected
+      ? incomplete.length === 1 ? `Syncing · ${completion}%` : `${subject} syncing · ${completion}%`
+      : incomplete.length === 1 ? `Waiting for device · ${completion}%` : `${subject} waiting · ${completion}%`;
+    const detail = remainingItems || remainingBytes
+      ? `${remainingItems.toLocaleString()} ${remainingItems === 1 ? "item" : "items"} · ${formatBytes(remainingBytes)} remaining`
+      : "Confirming remote completion";
+    return {
+      label,
+      tone: connected ? "active" : "warning",
+      detail,
+      lastSync: latest ? new Date(latest).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : "Not yet recorded",
+      active: true,
+      progress: completion,
+    };
+  }
   return {
-    label,
-    tone: complete === usable.length ? "success" : connected ? "active" : "muted",
+    label: "Up to date",
+    tone: "success",
     detail: "",
     lastSync: latest ? new Date(latest).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : "Not yet recorded",
-    active: complete !== usable.length && connected > 0,
+    active: false,
   };
 }
 
 function deviceSyncSummaryMarkup(sync) {
   return `<span class="device-fact-label">Sync status</span>
     <strong class="sync-tone-${sync.tone}">${escapeHtml(sync.label)}</strong>
+    ${Number.isFinite(sync.progress) ? `<progress class="device-sync-meter" max="100" value="${sync.progress}" aria-label="Syncthing delivery progress"></progress>` : ""}
     ${sync.detail ? `<span class="device-sync-progress-detail">${escapeHtml(sync.detail)}</span>` : ""}
     <span class="device-sync-last">Last sync · ${escapeHtml(sync.lastSync)}</span>`;
 }

@@ -1364,6 +1364,54 @@ class ApiIntegrationTests(unittest.TestCase):
                     (device["id"],),
                 )
 
+    def test_device_sync_status_backfills_an_inferred_syncthing_link(self):
+        device = self.client.get("/api/devices", headers=self.headers).json()[0]
+        live = {
+            "configured": True,
+            "linked": True,
+            "connected": True,
+            "completion": 42,
+            "need_bytes": 5800,
+            "need_items": 2,
+            "need_deletes": 0,
+            "device_id": "INFERRED-DEVICE-ID",
+            "folder_id": "inferred-folder-id",
+            "status": "Syncing · 42%",
+            "last_sync": None,
+        }
+        try:
+            with self.main.db.write() as connection:
+                connection.execute(
+                    "UPDATE devices SET syncthing_device_id='',syncthing_folder_id='',"
+                    "syncthing_ready_at=NULL WHERE id=?",
+                    (device["id"],),
+                )
+            with patch.object(
+                self.main.syncthing, "device_sync_status", return_value=live
+            ):
+                response = self.client.get(
+                    f"/api/devices/{device['id']}/sync-status?tracked_only=true",
+                    headers=self.headers,
+                )
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(response.json()["completion"], 42)
+            with self.main.db.connect() as connection:
+                stored = connection.execute(
+                    "SELECT syncthing_device_id,syncthing_folder_id,syncthing_ready_at "
+                    "FROM devices WHERE id=?",
+                    (device["id"],),
+                ).fetchone()
+            self.assertEqual(stored["syncthing_device_id"], "INFERRED-DEVICE-ID")
+            self.assertEqual(stored["syncthing_folder_id"], "inferred-folder-id")
+            self.assertIsNotNone(stored["syncthing_ready_at"])
+        finally:
+            with self.main.db.write() as connection:
+                connection.execute(
+                    "UPDATE devices SET syncthing_device_id='',syncthing_folder_id='',"
+                    "syncthing_ready_at=NULL WHERE id=?",
+                    (device["id"],),
+                )
+
     def test_device_deployment_mode_is_always_hardlink(self):
         device = self.client.get("/api/devices", headers=self.headers).json()[0]
         rejected = self.client.put(

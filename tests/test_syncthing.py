@@ -260,6 +260,43 @@ class SyncthingServiceTests(unittest.TestCase):
         self.assertEqual(status["sequence"], 42)
         self.assertEqual(status["remote_state"], "valid")
 
+    def test_device_sync_status_never_rounds_incomplete_work_to_100_percent(self):
+        remote_id = "REMOTE-ID"
+        service = SyncthingService(self.settings())
+        payloads = {
+            "/rest/config/folders": [{
+                "id": "odin-roms",
+                "path": "/devices/odin/roms",
+                "devices": [{"deviceID": "NUC-ID"}, {"deviceID": remote_id}],
+            }],
+            f"/rest/db/completion?folder=odin-roms&device={remote_id}": {
+                "completion": 99.9999,
+                "needBytes": 23,
+                "needItems": 1,
+                "needDeletes": 0,
+                "remoteState": "valid",
+                "sequence": 42,
+            },
+            "/rest/db/status?folder=odin-roms": {
+                "state": "idle",
+                "stateChanged": "2026-09-02T12:00:00Z",
+            },
+        }
+
+        with patch.object(service, "_get", side_effect=lambda path: payloads[path]), patch.object(
+            service,
+            "status",
+            return_value={
+                "local_device_id": "NUC-ID",
+                "devices": [{"device_id": remote_id, "connected": True}],
+            },
+        ):
+            status = service.device_sync_status("odin")
+
+        self.assertEqual(status["status"], "Syncing · 99%")
+        self.assertEqual(status["need_items"], 1)
+        self.assertEqual(status["need_bytes"], 23)
+
     def test_folder_sequence_reads_local_index_checkpoint(self):
         service = SyncthingService(self.settings())
         with patch.object(service, "_get", return_value={"sequence": 73}) as get:

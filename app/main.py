@@ -362,6 +362,14 @@ def run_job(
                 transferred = int(result.get("linked") or 0) + int(result.get("copied") or 0)
                 removed = int(result.get("removed") or 0)
                 if isinstance(rescan, dict) and rescan.get("requested") and (transferred or removed):
+                    folder_id = next(
+                        (
+                            str(item.get("folder_id") or "")
+                            for item in rescan.get("folders", [])
+                            if isinstance(item, dict) and item.get("folder_id")
+                        ),
+                        "",
+                    )
                     with db.connect() as connection:
                         request_row = connection.execute(
                             "SELECT requested_by FROM jobs WHERE id=?", (job_id,)
@@ -373,6 +381,7 @@ def run_job(
                             request_row["requested_by"] if request_row else None,
                             added=transferred,
                             removed=removed,
+                            folder_id=folder_id,
                         )
                         if sync_run:
                             result["device_sync"] = sync_run
@@ -2516,7 +2525,7 @@ def device_syncthing_status(
 ):
     device = require_device_access(device_id, request_principal(request))
     sync_run = device_syncs.latest(device_id)
-    if tracked_only and sync_run:
+    if tracked_only and sync_run and str(sync_run["state"]) in {"pending", "syncing", "offline"}:
         state = str(sync_run["state"])
         return {
             "configured": syncthing.configured,
@@ -2543,6 +2552,8 @@ def device_syncthing_status(
         remote_device_id=str(device["syncthing_device_id"] or ""),
         folder_id=str(device["syncthing_folder_id"] or ""),
     ))
+    if result.get("linked"):
+        device_syncs.remember_link(device_id, result)
     result["sync_run"] = sync_run
     return result
 

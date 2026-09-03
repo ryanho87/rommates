@@ -118,6 +118,55 @@ class DeviceSyncMonitorTests(unittest.TestCase):
         self.assertEqual(monitor.check_once(), 0)
         self.assertEqual(monitor.latest(self.device_id)["state"], "offline")
 
+    def test_tracking_infers_and_persists_a_legacy_syncthing_link(self):
+        with self.db.write() as connection:
+            connection.execute(
+                "UPDATE devices SET syncthing_device_id='',syncthing_folder_id='',"
+                "syncthing_ready_at=NULL WHERE id=?",
+                (self.device_id,),
+            )
+        syncthing = FakeSyncthing([{
+            "configured": True,
+            "linked": True,
+            "connected": False,
+            "completion": 25,
+            "need_bytes": 7500,
+            "need_items": 3,
+            "need_deletes": 0,
+            "remote_state": "unknown",
+            "sequence": 5,
+            "folder_id": "legacy-roms",
+            "device_id": "INFERRED-REMOTE-ID",
+        }])
+        monitor = DeviceSyncMonitor(self.db, syncthing, FakeNotifications())
+
+        created = monitor.track(
+            self.device_id,
+            self.job_id,
+            self.user_id,
+            added=2,
+            removed=0,
+            folder_id="legacy-roms",
+        )
+
+        self.assertIsNotNone(created)
+        self.assertEqual(created["state"], "pending")
+        with self.db.connect() as connection:
+            device = connection.execute(
+                "SELECT syncthing_device_id,syncthing_folder_id,syncthing_ready_at "
+                "FROM devices WHERE id=?",
+                (self.device_id,),
+            ).fetchone()
+            run = connection.execute(
+                "SELECT folder_id,remote_device_id FROM device_sync_runs WHERE device_id=?",
+                (self.device_id,),
+            ).fetchone()
+        self.assertEqual(device["syncthing_device_id"], "INFERRED-REMOTE-ID")
+        self.assertEqual(device["syncthing_folder_id"], "legacy-roms")
+        self.assertIsNotNone(device["syncthing_ready_at"])
+        self.assertEqual(run["folder_id"], "legacy-roms")
+        self.assertEqual(run["remote_device_id"], "INFERRED-REMOTE-ID")
+
 
 if __name__ == "__main__":
     unittest.main()

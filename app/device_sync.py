@@ -89,6 +89,24 @@ class DeviceSyncMonitor:
             ).fetchone()
         return self._payload(row)
 
+    def remember_link(self, device_id: int, live: dict[str, object]) -> bool:
+        """Persist a Syncthing link that was inferred from the device folder path."""
+        if not live.get("linked"):
+            return False
+        folder_id = str(live.get("folder_id") or "").strip()
+        remote_device_id = str(live.get("device_id") or "").strip()
+        if not folder_id or not remote_device_id:
+            return False
+        with self.db.write() as connection:
+            cursor = connection.execute(
+                "UPDATE devices SET syncthing_folder_id=?,syncthing_device_id=?,"
+                "syncthing_ready_at=COALESCE(syncthing_ready_at,CURRENT_TIMESTAMP) "
+                "WHERE id=? AND (COALESCE(syncthing_folder_id,'')<>? "
+                "OR COALESCE(syncthing_device_id,'')<>? OR syncthing_ready_at IS NULL)",
+                (folder_id, remote_device_id, device_id, folder_id, remote_device_id),
+            )
+        return bool(cursor.rowcount)
+
     def track(
         self,
         device_id: int,
@@ -97,6 +115,8 @@ class DeviceSyncMonitor:
         *,
         added: int,
         removed: int,
+        folder_id: str = "",
+        remote_device_id: str = "",
     ) -> dict[str, object] | None:
         """Start tracking the remote folder after a successful local rescan request."""
         if added <= 0 and removed <= 0:
@@ -107,15 +127,24 @@ class DeviceSyncMonitor:
                 "FROM devices WHERE id=?",
                 (device_id,),
             ).fetchone()
-        if (
-            not device
-            or device["delivery_mode"] != "syncthing"
-            or not device["syncthing_device_id"]
-            or not device["syncthing_folder_id"]
-        ):
+        if not device or device["delivery_mode"] != "syncthing":
             return None
+        resolved_folder_id = str(folder_id or device["syncthing_folder_id"] or "").strip()
+        resolved_device_id = str(
+            remote_device_id or device["syncthing_device_id"] or ""
+        ).strip()
+        if not resolved_folder_id:
+            return None
+        if not resolved_device_id:
+            live = self.syncthing.device_sync_status(
+                str(device["name"]), folder_id=resolved_folder_id
+            )
+            if live.get("linked"):
+                resolved_folder_id = str(live.get("folder_id") or resolved_folder_id)
+                resolved_device_id = str(live.get("device_id") or "")
+                self.remember_link(device_id, live)
         recipient = requested_by or device["owner_user_id"]
-        target_sequence = self.syncthing.folder_sequence(str(device["syncthing_folder_id"]))
+        target_sequence = self.syncthing.folder_sequence(resolved_folder_id)
         with self.db.write() as connection:
             connection.execute(
                 "UPDATE device_sync_runs SET status='superseded',detail='Replaced by a newer device sync',"
@@ -131,8 +160,8 @@ class DeviceSyncMonitor:
                     device_id,
                     job_id,
                     recipient,
-                    str(device["syncthing_folder_id"]),
-                    str(device["syncthing_device_id"]),
+                    resolved_folder_id,
+                    resolved_device_id,
                     target_sequence,
                     max(0, int(added)),
                     max(0, int(removed)),
@@ -172,6 +201,19 @@ class DeviceSyncMonitor:
                         (f"Syncthing status temporarily unavailable: {exc}", row["id"]),
                     )
                 continue
+            live_folder_id = str(live.get("folder_id") or "")
+            live_device_id = str(live.get("device_id") or "")
+            if live.get("linked") and live_folder_id and live_device_id:
+                if (
+                    live_folder_id != str(row["current_folder_id"] or row["folder_id"])
+                    or live_device_id != str(row["current_device_id"] or row["remote_device_id"])
+                ):
+                    self.remember_link(int(row["device_id"]), live)
+                    with self.db.write() as connection:
+                        connection.execute(
+                            "UPDATE device_sync_runs SET folder_id=?,remote_device_id=? WHERE id=?",
+                            (live_folder_id, live_device_id, row["id"]),
+                        )
             completion = float(live.get("completion") or 0)
             need_bytes = int(live.get("need_bytes") or 0)
             need_items = int(live.get("need_items") or 0)

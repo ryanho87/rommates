@@ -335,7 +335,14 @@ class SyncthingService:
             remote_state = str(completion.get("remoteState") or "") if isinstance(completion, dict) else ""
             sequence = int(completion.get("sequence") or 0) if isinstance(completion, dict) else 0
             synced = percentage >= 99.999 and not (need_bytes or need_items or need_deletes)
-            status_label = "Up to date" if synced else f"Syncing · {percentage:.0f}%" if connected else "Offline"
+            visible_percentage = min(99, max(0, int(percentage)))
+            status_label = (
+                "Up to date"
+                if synced
+                else f"Syncing · {visible_percentage}%"
+                if connected
+                else f"Waiting for device · {visible_percentage}%"
+            )
             last_sync = None
             if synced and isinstance(folder_status, dict):
                 last_sync = folder_status.get("stateChanged")

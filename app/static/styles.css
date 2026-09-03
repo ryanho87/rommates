@@ -746,6 +746,7 @@ input[type="checkbox"] { width: 15px; height: 15px; margin: 0; accent-color: var
 .device-platform-stat span, .device-platform-empty { color: var(--text-muted); font-size: 0.69rem; white-space: nowrap; }
 .device-sync-summary { display: grid; min-width: 180px; gap: 4px; align-content: center; }
 .device-sync-summary strong { font-size: 0.8rem; }
+.device-sync-meter { width: 100%; height: 6px; accent-color: var(--accent); }
 .device-sync-progress-detail, .device-sync-last { color: var(--text-muted); font-size: 0.68rem; overflow-wrap: anywhere; }
 .device-sync-progress-detail { color: var(--text); }
 .sync-tone-success { color: var(--success); }
