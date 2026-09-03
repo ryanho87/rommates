@@ -1581,9 +1581,21 @@ function dashboardDate(value) {
   }).format(date);
 }
 
+function metricBar(value, total, { className = "", label = "", decorative = false } = {}) {
+  const numericValue = Math.max(0, Number(value) || 0);
+  const numericTotal = Math.max(0, Number(total) || 0);
+  const scale = 1000;
+  const fill = numericTotal > 0 ? Math.min(scale, numericValue * scale / numericTotal) : 0;
+  const svgNumber = (number) => number.toFixed(3).replace(/\.?0+$/, "");
+  const accessibility = decorative
+    ? 'aria-hidden="true"'
+    : `role="progressbar" aria-label="${escapeHtml(label)}" aria-valuemin="0" aria-valuemax="${svgNumber(numericTotal)}" aria-valuenow="${svgNumber(Math.min(numericValue, numericTotal))}"`;
+  return `<svg class="metric-bar ${className}" viewBox="0 0 ${scale} 8" preserveAspectRatio="none" ${accessibility}><rect class="metric-bar-track" x="0" y="0" width="${scale}" height="8" rx="4"></rect><rect class="metric-bar-fill" x="0" y="0" width="${svgNumber(fill)}" height="8" rx="4"></rect></svg>`;
+}
+
 function coverageBar(value, total, label) {
   const percent = total ? Math.round(value * 100 / total) : 0;
-  return `<div class="coverage-row"><div><span>${escapeHtml(label)}</span><strong>${value.toLocaleString()} of ${total.toLocaleString()}</strong></div><div class="coverage-track" role="progressbar" aria-label="${escapeHtml(label)}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent}"><span style="width:${percent}%"></span></div><small>${percent}%</small></div>`;
+  return `<div class="coverage-row"><div><span>${escapeHtml(label)}</span><strong>${value.toLocaleString()} of ${total.toLocaleString()}</strong></div>${metricBar(value, total, { className: "coverage-track", label })}<small>${percent}%</small></div>`;
 }
 
 function dashboardJobBadge(job) {
@@ -1600,7 +1612,7 @@ async function renderOverview() {
   const largestPlatform = Math.max(...data.platforms.map((item) => item.games), 1);
   const visiblePlatforms = data.platforms.slice(0, 10);
   const otherPlatforms = data.platforms.slice(10);
-  const platformRows = visiblePlatforms.map((item) => `<button class="platform-row" data-dashboard-view="library" data-dashboard-platform="${escapeHtml(item.platform)}"><span class="platform-name">${escapeHtml(item.platform)}</span><span class="platform-bar"><i style="width:${Math.max(2, item.games * 100 / largestPlatform)}%"></i></span><strong>${item.games.toLocaleString()}</strong><small>${formatBytes(item.bytes)}</small></button>`).join("");
+  const platformRows = visiblePlatforms.map((item) => `<button class="platform-row" data-dashboard-view="library" data-dashboard-platform="${escapeHtml(item.platform)}"><span class="platform-name">${escapeHtml(item.platform)}</span>${metricBar(item.games, largestPlatform, { className: "platform-bar", decorative: true })}<strong>${item.games.toLocaleString()}</strong><small>${formatBytes(item.bytes)}</small></button>`).join("");
   const otherSummary = otherPlatforms.length
     ? `<div class="platform-rest"><span>${otherPlatforms.length} more platforms</span><strong>${otherPlatforms.reduce((sum, item) => sum + item.games, 0).toLocaleString()} games</strong></div>`
     : "";
@@ -1731,7 +1743,7 @@ function artworkCurrentRun(run) {
   const status = ACTIVE_JOB_STATUSES.includes(run.job_status) ? run.job_status : run.status;
   return `<section class="artwork-current" aria-labelledby="artwork-current-title">
     <div class="artwork-current-head"><div><span class="badge ${status === "paused" ? "possible" : "unique"}">${escapeHtml(status)}</span><h2 id="artwork-current-title">${escapeHtml(run.scope_label)}</h2><p>${run.asset_mode === "cover" ? "Covers" : "Covers, screenshots, and logos"} · ${processed.toLocaleString()} of ${total.toLocaleString()} ROMs processed</p></div><div class="bulk-actions"><button class="button secondary" data-artwork-job="${run.job_id || ""}" ${run.job_id ? "" : "disabled"}>View report</button><button class="button danger-subtle" data-stop-artwork="${run.job_id || ""}" ${!run.job_id || status === "cancelling" ? "disabled" : ""}>${status === "cancelling" ? "Stopping…" : "Stop scan"}</button></div></div>
-    <div class="coverage-track artwork-progress" role="progressbar" aria-label="Artwork scan progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${progress}"><span style="width:${progress}%"></span></div>
+    ${metricBar(progress, 100, { className: "coverage-track artwork-progress", label: "Artwork scan progress" })}
     <div class="artwork-current-facts"><span>${progress}% complete</span><span>${Number(run.matched_games || 0).toLocaleString()} matched</span><span>${Number(run.downloaded_assets || 0).toLocaleString()} assets downloaded</span><span>${Number(run.skipped_games || 0).toLocaleString()} skipped</span></div>
     ${run.last_error ? `<p class="issue-warning">${escapeHtml(run.last_error)}</p>` : ""}
   </section>`;
@@ -4198,7 +4210,7 @@ function renderScanTelemetry(telemetry) {
     : "";
   const platformRows = platforms.map(([name, item]) => `<tr${name === current.platform ? ' class="selected-row"' : ""}><td><strong>${escapeHtml(name)}</strong></td><td class="meta">${(item.processed_files || 0).toLocaleString()} / ${(item.total_files || 0).toLocaleString()}</td><td class="meta">${(item.processed_hash_files || 0).toLocaleString()} / ${(item.hash_files || 0).toLocaleString()}</td><td class="meta">${(item.processed_cached_files || 0).toLocaleString()} / ${(item.cached_files || 0).toLocaleString()}</td><td class="meta">${(item.processed_metadata_files || 0).toLocaleString()} / ${(item.metadata_files || 0).toLocaleString()}</td><td class="meta">${formatBytes(item.read_bytes || 0)} / ${formatBytes(item.hash_bytes || 0)}</td></tr>`).join("");
   const slowRows = (telemetry.slow_files || []).map((item) => `<tr><td class="name-cell"><code title="${escapeHtml(item.relpath)}">${escapeHtml(item.relpath)}</code></td><td>${escapeHtml(item.platform)}</td><td class="meta">${formatBytes(item.size)}</td><td class="meta">${formatElapsed(item.seconds)}</td><td class="meta">${formatBytes(item.rate)}/s</td></tr>`).join("");
-  return `<div class="report-section scan-diagnostics"><div class="report-section-head"><div><h3>Live scan diagnostics</h3><p>Metadata-only files are walked and inspected, but their contents are not read. Physical read shows the actual hashing I/O.</p></div></div><dl class="report-grid scan-facts"><div><dt>Physical read</dt><dd>${formatBytes(telemetry.bytes_read || 0)} / ${formatBytes(telemetry.bytes_to_hash || 0)}</dd></div><div><dt>Current throughput</dt><dd>${currentRate ? `${formatBytes(currentRate)}/s` : "Not reading"}</dd></div><div><dt>Fully hashed</dt><dd>${(telemetry.hashed_files || 0).toLocaleString()} files</dd></div><div><dt>Cache hits</dt><dd>${(telemetry.cached_files || 0).toLocaleString()} files, ${formatBytes(telemetry.cached_bytes || 0)}</dd></div><div><dt>Metadata-only</dt><dd>${(telemetry.metadata_files || 0).toLocaleString()} files, ${formatBytes(telemetry.metadata_bytes || 0)}</dd></div></dl><div class="scan-read-progress" aria-label="${Math.round(hashPercent)} percent of required file contents read"><i style="width:${hashPercent}%"></i></div>${currentFile}${platformRows ? `<div class="table-wrap scan-platforms"><table><thead><tr><th>Platform</th><th>Files processed</th><th>Full hash</th><th>Cache</th><th>Metadata-only</th><th>Physical read</th></tr></thead><tbody>${platformRows}</tbody></table></div>` : ""}${slowRows ? `<details class="scan-slowest"><summary>Slowest completed reads</summary><div class="table-wrap"><table><thead><tr><th>File</th><th>Platform</th><th>Size</th><th>Time</th><th>Rate</th></tr></thead><tbody>${slowRows}</tbody></table></div></details>` : ""}</div>`;
+  return `<div class="report-section scan-diagnostics"><div class="report-section-head"><div><h3>Live scan diagnostics</h3><p>Metadata-only files are walked and inspected, but their contents are not read. Physical read shows the actual hashing I/O.</p></div></div><dl class="report-grid scan-facts"><div><dt>Physical read</dt><dd>${formatBytes(telemetry.bytes_read || 0)} / ${formatBytes(telemetry.bytes_to_hash || 0)}</dd></div><div><dt>Current throughput</dt><dd>${currentRate ? `${formatBytes(currentRate)}/s` : "Not reading"}</dd></div><div><dt>Fully hashed</dt><dd>${(telemetry.hashed_files || 0).toLocaleString()} files</dd></div><div><dt>Cache hits</dt><dd>${(telemetry.cached_files || 0).toLocaleString()} files, ${formatBytes(telemetry.cached_bytes || 0)}</dd></div><div><dt>Metadata-only</dt><dd>${(telemetry.metadata_files || 0).toLocaleString()} files, ${formatBytes(telemetry.metadata_bytes || 0)}</dd></div></dl>${metricBar(hashPercent, 100, { className: "scan-read-progress", label: "Required file contents read" })}${currentFile}${platformRows ? `<div class="table-wrap scan-platforms"><table><thead><tr><th>Platform</th><th>Files processed</th><th>Full hash</th><th>Cache</th><th>Metadata-only</th><th>Physical read</th></tr></thead><tbody>${platformRows}</tbody></table></div>` : ""}${slowRows ? `<details class="scan-slowest"><summary>Slowest completed reads</summary><div class="table-wrap"><table><thead><tr><th>File</th><th>Platform</th><th>Size</th><th>Time</th><th>Rate</th></tr></thead><tbody>${slowRows}</tbody></table></div></details>` : ""}</div>`;
 }
 
 function renderJobReport(job, issues) {
@@ -4519,7 +4531,7 @@ async function renderAccount() {
     : `<div class="empty-state compact"><div><h3>No devices assigned to you</h3><p>Create a device or ask an administrator to assign an existing one to your account.</p></div></div>`;
   const maxPlatform = Math.max(1, ...summary.platforms.map((item) => Number(item.synced_roms)));
   const platformStats = summary.platforms.length
-    ? `<div class="account-platform-list">${summary.platforms.map((item) => `<div class="account-platform-row"><span class="mobile-platform platform-tone-${platformTone(item.platform)}">${escapeHtml(item.platform)}</span><span class="account-platform-track" aria-hidden="true"><span style="width:${Math.max(4, Number(item.synced_roms) * 100 / maxPlatform)}%"></span></span><strong>${Number(item.synced_roms).toLocaleString()}</strong></div>`).join("")}</div>`
+    ? `<div class="account-platform-list">${summary.platforms.map((item) => `<div class="account-platform-row"><span class="mobile-platform platform-tone-${platformTone(item.platform)}">${escapeHtml(item.platform)}</span>${metricBar(item.synced_roms, maxPlatform, { className: "account-platform-track", decorative: true })}<strong>${Number(item.synced_roms).toLocaleString()}</strong></div>`).join("")}</div>`
     : `<p class="meta">Apply games to one of your devices to build this breakdown.</p>`;
   setViewHtml(`<div class="account-page">
     ${identity}${security}

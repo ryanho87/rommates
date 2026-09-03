@@ -513,8 +513,10 @@ input[type="checkbox"] { width: 15px; height: 15px; margin: 0; accent-color: var
 .platform-row { display: grid; grid-template-columns: minmax(90px, 0.8fr) minmax(120px, 2fr) 52px 70px; align-items: center; gap: 10px; min-height: 31px; padding: 0 13px; border: 0; background: transparent; cursor: pointer; text-align: left; }
 .platform-row:hover { background: var(--accent-soft); }
 .platform-name { overflow: hidden; font-weight: 590; text-overflow: ellipsis; white-space: nowrap; }
-.platform-bar { display: block; height: 5px; overflow: hidden; border-radius: var(--radius-pill); background: var(--sidebar); }
-.platform-bar i { display: block; height: 100%; border-radius: inherit; background: var(--accent); }
+.metric-bar { display: block; width: 100%; overflow: visible; }
+.metric-bar-track { fill: var(--sidebar); }
+.metric-bar-fill { fill: var(--accent); }
+.platform-bar { height: 5px; }
 .platform-row strong, .platform-row small { text-align: right; font-variant-numeric: tabular-nums; }
 .platform-row small { color: var(--text-faint); }
 .platform-rest { display: flex; justify-content: space-between; margin: 5px 13px 2px; padding-top: 8px; border-top: 1px solid var(--border); color: var(--text-muted); font-size: 0.7rem; }
@@ -553,8 +555,8 @@ input[type="checkbox"] { width: 15px; height: 15px; margin: 0; accent-color: var
 .coverage-row > div:first-child { display: flex; justify-content: space-between; gap: 10px; font-size: 0.72rem; }
 .coverage-row > div:first-child span { color: var(--text-muted); }
 .coverage-row > div:first-child strong { white-space: nowrap; }
-.coverage-track { height: 7px; overflow: hidden; border-radius: var(--radius-pill); background: var(--sidebar); }
-.coverage-track span { display: block; height: 100%; border-radius: inherit; background: var(--success); }
+.coverage-track { height: 7px; }
+.coverage-track .metric-bar-fill { fill: var(--success); }
 .coverage-row small { color: var(--text-faint); text-align: right; font-variant-numeric: tabular-nums; }
 .coverage-facts { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 10px 13px 7px; padding-top: 10px; border-top: 1px solid var(--border); }
 .coverage-facts div { display: grid; gap: 2px; }
@@ -1117,8 +1119,8 @@ input[type="checkbox"] { width: 15px; height: 15px; margin: 0; accent-color: var
 .report-section-head p, .report-empty { margin: 2px 0 8px; color: var(--text-muted); font-size: 0.75rem; }
 .scan-diagnostics { padding-bottom: 14px; border-bottom: 1px solid var(--border); }
 .scan-facts { grid-template-columns: repeat(5, minmax(130px, 1fr)); margin-top: 10px; }
-.scan-read-progress { height: 5px; margin: 12px 0; overflow: hidden; border-radius: var(--radius-pill); background: var(--surface-raised); }
-.scan-read-progress i { display: block; height: 100%; border-radius: inherit; background: var(--accent); transition: width 180ms cubic-bezier(0.22, 1, 0.36, 1); }
+.scan-read-progress { height: 5px; margin: 12px 0; }
+.scan-read-progress .metric-bar-track { fill: var(--surface-raised); }
 .scan-current { display: grid; grid-template-columns: auto minmax(180px, 1fr) auto; align-items: center; gap: 10px; min-height: 38px; padding: 7px 9px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-raised); }
 .scan-current > span { color: var(--text-muted); font-size: 0.7rem; font-weight: 650; }
 .scan-current code { overflow: hidden; color: var(--text); font-size: 0.74rem; text-overflow: ellipsis; white-space: nowrap; }
@@ -1305,8 +1307,7 @@ dialog.wide #dialog-content { min-height: 0; padding-right: 4px; overflow-y: aut
 .account-platform-list { display: grid; gap: 10px; }
 .account-platform-row { display: grid; grid-template-columns: minmax(72px, auto) minmax(100px, 1fr) minmax(32px, auto); align-items: center; gap: 10px; }
 .account-platform-row .mobile-platform { justify-self: start; padding: 3px 8px; border: 1px solid color-mix(in oklch, var(--accent) 45%, var(--border)); border-radius: var(--radius-pill); color: var(--accent); background: var(--accent-soft); font-size: 0.64rem; font-weight: 780; letter-spacing: .045em; text-transform: uppercase; }
-.account-platform-track { height: 7px; overflow: hidden; border-radius: var(--radius-pill); background: var(--sidebar); }
-.account-platform-track span { display: block; height: 100%; border-radius: inherit; background: var(--accent); }
+.account-platform-track { height: 7px; }
 .account-platform-row > strong { text-align: right; font-size: 0.74rem; font-variant-numeric: tabular-nums; }
 .account-stat-total { display: grid; flex: 0 0 auto; justify-items: end; }
 .account-stat-total strong { font-size: 1.1rem; font-variant-numeric: tabular-nums; }

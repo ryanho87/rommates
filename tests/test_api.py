@@ -255,6 +255,8 @@ class ApiIntegrationTests(unittest.TestCase):
         static = self.client.get("/static/app.js")
         self.assertEqual(static.status_code, 200)
         self.assertEqual(static.headers["cache-control"], "no-cache")
+        self.assertNotIn('style="width:', static.text)
+        self.assertIn('class="metric-bar ', static.text)
 
     def test_notification_preferences_are_private_and_test_requires_webhook(self):
         self.assertEqual(self.client.get("/api/notifications").status_code, 401)
