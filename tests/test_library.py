@@ -749,6 +749,60 @@ class LibraryServiceTests(unittest.TestCase):
         self.assertTrue((self.devices / "handheld/roms/gba/Keep Deployed.gba").exists())
         self.assertFalse((self.devices / "handheld/roms/gba/Discard Addition.gba").exists())
 
+    def test_inventory_adopts_recognized_files_and_preserves_staged_removal(self):
+        source = self.write("gba/Filesystem State.gba", b"filesystem-state")
+        device_id = self.service.create_device("filesystem-handheld")["id"]
+        target = self.devices / "filesystem-handheld/roms/gba/Filesystem State.gba"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        self.service.scan()
+        game_id = self.game_id("Filesystem State")
+        target.write_bytes(source.read_bytes())
+
+        self.service.device_inventory(device_id, refresh=True)
+
+        with self.db.connect() as connection:
+            self.assertTrue(connection.execute(
+                "SELECT 1 FROM device_selections WHERE device_id=? AND game_id=?",
+                (device_id, game_id),
+            ).fetchone())
+            self.assertTrue(connection.execute(
+                "SELECT 1 FROM deployments WHERE device_id=? AND game_id=?",
+                (device_id, game_id),
+            ).fetchone())
+
+        self.service.set_selection(device_id, game_id, False)
+        self.service.device_inventory(device_id, refresh=True)
+
+        with self.db.connect() as connection:
+            self.assertFalse(connection.execute(
+                "SELECT 1 FROM device_selections WHERE device_id=? AND game_id=?",
+                (device_id, game_id),
+            ).fetchone())
+            self.assertTrue(connection.execute(
+                "SELECT 1 FROM deployments WHERE device_id=? AND game_id=?",
+                (device_id, game_id),
+            ).fetchone())
+
+    def test_inventory_keeps_unknown_files_out_of_derived_device_state(self):
+        self.write("gba/Known.gba", b"known")
+        device_id = self.service.create_device("unknown-handheld")["id"]
+        unknown = self.devices / "unknown-handheld/roms/gba/Unknown.gba"
+        unknown.parent.mkdir(parents=True, exist_ok=True)
+        unknown.write_bytes(b"unknown")
+        self.service.scan()
+
+        self.service.device_inventory(device_id, refresh=True)
+
+        with self.db.connect() as connection:
+            self.assertEqual(connection.execute(
+                "SELECT COUNT(*) AS count FROM device_selections WHERE device_id=?",
+                (device_id,),
+            ).fetchone()["count"], 0)
+            self.assertEqual(connection.execute(
+                "SELECT COUNT(*) AS count FROM deployments WHERE device_id=?",
+                (device_id,),
+            ).fetchone()["count"], 0)
+
     def test_hardlink_device_deploys_without_duplicate_storage(self):
         source = self.write("gba/Zero Copy.gba", b"linked-rom")
         device_roms = self.devices / "handheld" / "roms"

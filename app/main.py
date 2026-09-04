@@ -1946,7 +1946,8 @@ def games(
         selected_expr = "EXISTS(SELECT 1 FROM device_selected ds WHERE ds.game_id=g.id)"
         present_expr = (
             "EXISTS(SELECT 1 FROM game_files dgf JOIN device_present df ON df.relpath=dgf.device_relpath "
-            "WHERE dgf.game_id=g.id)"
+            "WHERE dgf.game_id=g.id AND (SELECT COUNT(DISTINCT ugf.game_id) FROM game_files ugf "
+            "WHERE ugf.device_relpath=dgf.device_relpath)=1)"
         )
         managed_expr = "EXISTS(SELECT 1 FROM device_managed dm WHERE dm.game_id=g.id)"
         synced_expr = (
@@ -2053,8 +2054,7 @@ def games(
                     item["device_state"] = (
                         "on_device" if item["on_device"] and item["selected"] and item["synced"]
                         else "pending_update" if item["on_device"] and item["selected"]
-                        else "pending_remove" if item["on_device"] and item["managed"]
-                        else "unmanaged" if item["on_device"]
+                        else "pending_remove" if item["on_device"]
                         else "pending_add" if item["selected"]
                         else "available"
                     )
@@ -2067,6 +2067,8 @@ def games(
                         "ON dif.relpath=gf.device_relpath "
                         "JOIN devices d ON d.id=dif.device_id "
                         f"WHERE gf.game_id IN ({placeholders}) AND {visible_device('d')} "
+                        "AND (SELECT COUNT(DISTINCT ugf.game_id) FROM game_files ugf "
+                        "WHERE ugf.device_relpath=gf.device_relpath)=1 "
                         "ORDER BY d.name COLLATE NOCASE",
                         game_ids,
                     )
@@ -2086,8 +2088,9 @@ def games(
                 f"SELECT COUNT(*) AS count FROM games g WHERE ({selected_expr}) != ({synced_expr})"
             ).fetchone()["count"]
             unmatched_files = connection.execute(
-                "SELECT COUNT(*) AS count FROM device_present df WHERE NOT EXISTS("
-                "SELECT 1 FROM game_files gf WHERE gf.device_relpath=df.relpath)"
+                "SELECT COUNT(*) AS count FROM device_present df WHERE ("
+                "SELECT COUNT(DISTINCT gf.game_id) FROM game_files gf "
+                "WHERE gf.device_relpath=df.relpath)!=1"
             ).fetchone()["count"]
             inventory_stats = connection.execute(
                 "SELECT COUNT(*) AS files,COALESCE(SUM(size),0) AS bytes "
@@ -3000,7 +3003,7 @@ def device_summary_payload(device_id: int) -> dict[str, object]:
             "SELECT COALESCE(SUM(size),0) AS bytes FROM device_inventory_files WHERE device_id=?",
             (device_id,),
         ).fetchone()["bytes"]
-        retained_unmanaged_bytes = connection.execute(
+        retained_unrecognized_bytes = connection.execute(
             "SELECT COALESCE(SUM(dif.size),0) AS bytes FROM device_inventory_files dif "
             "LEFT JOIN (SELECT relpath FROM deployments WHERE device_id=? UNION "
             "SELECT gf.device_relpath AS relpath FROM device_selections ds "
@@ -3020,8 +3023,8 @@ def device_summary_payload(device_id: int) -> dict[str, object]:
             (device_id,),
         ).fetchone()["count"]
     current_rom_bytes = max(int(managed["bytes"] or 0), int(inventory_bytes or 0))
-    unmanaged_rom_bytes = int(retained_unmanaged_bytes or 0)
-    projected_rom_bytes = int(desired["bytes"] or 0) + unmanaged_rom_bytes
+    unrecognized_rom_bytes = int(retained_unrecognized_bytes or 0)
+    projected_rom_bytes = int(desired["bytes"] or 0) + unrecognized_rom_bytes
     storage_capacity_bytes = int(device["storage_capacity_bytes"] or 0)
     return {
         "device": dict(device),
@@ -3031,7 +3034,9 @@ def device_summary_payload(device_id: int) -> dict[str, object]:
         "current_rom_bytes": current_rom_bytes,
         "desired_rom_bytes": int(desired["bytes"] or 0),
         "projected_rom_bytes": projected_rom_bytes,
-        "unmanaged_rom_bytes": unmanaged_rom_bytes,
+        "unrecognized_rom_bytes": unrecognized_rom_bytes,
+        # Deprecated compatibility alias for older web/native builds.
+        "unmanaged_rom_bytes": unrecognized_rom_bytes,
         "storage_capacity_bytes": storage_capacity_bytes,
         "over_capacity": bool(
             storage_capacity_bytes and projected_rom_bytes > storage_capacity_bytes

@@ -264,14 +264,15 @@ version, paused devices, and the last recorded connection time.
 
 ## How device reconciliation works
 
-Selections represent the desired managed set for a device. Each device can use independent
+The NUC filesystem is the source of truth for what is currently on a device. Selections are
+only the staged desired state used to calculate the next apply. Each device can use independent
 copies or prefer hardlinks. Applying changes:
 
 1. Deploys missing or changed files from `/emulation/roms` to `/emulation/devices/{device}/roms`.
    Hardlink-preferred devices use a zero-additional-storage hardlink when the source and
    target are on the same underlying filesystem, with a safe copy fallback.
-2. Removes previously managed files whose games were unselected.
-3. Leaves unrelated, unmanaged files alone.
+2. Removes recognized files whose games were explicitly unselected.
+3. Leaves unknown or ambiguous filesystem paths alone.
 4. Removes Finder metadata and interrupted ROMmates temp files from the target device ROM tree.
 
 Missing system directories are created automatically. ROMmates translates unambiguous
@@ -279,7 +280,11 @@ human-readable library folders to ES-DE's canonical, case-sensitive paths (for e
 `Nintendo Game Boy` to `gb` and `PlayStation` to `psx`) and preserves every nested bundle
 path below them. Unknown or custom platform folders are preserved instead of guessed.
 
-Each deployment is recorded as it lands, so an apply that fails or is interrupted partway leaves every file it already wrote under management. That record is an ownership boundary—not a cached claim that a file is a copy or hardlink. ROMmates derives the storage relationship from the source and destination inodes whenever it renders the device preview. Re-running the apply finishes the job, and unselecting a game still removes what was deployed.
+Deployment rows are a derived index of recognized files on the device, retained so an interrupted
+apply can resume efficiently. They are reconciled from the filesystem whenever a device is opened
+or applied and are never an ownership boundary. ROMmates derives the storage relationship from
+the source and destination inodes whenever it renders the device preview. Re-running an interrupted
+apply finishes the job, and explicitly unselecting a recognized game stages its removal.
 
 Opening a device reconciles its actual ROM directory and publishes that inventory to the
 database. Library and duplicate pages reuse the persisted inventory instead of recursively
@@ -394,7 +399,9 @@ remaining queue without removing completed assets. Ambiguous name matches and un
 platforms are skipped and listed in the job report rather than guessed. Library artwork
 tiles display cached media and link unmatched ROMs into the scoped Artwork workflow.
 
-On the first run, existing files in a device directory are considered unmanaged and will not be deleted. Select matching games in the UI to bring them under management.
+On the first inventory, existing files whose canonical paths match exactly one library game are
+adopted automatically and shown as selected. Files that do not map unambiguously to the library
+remain unrecognized and are never deleted by an apply.
 
 You can build the desired set in either direction:
 

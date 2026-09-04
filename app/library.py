@@ -1742,7 +1742,7 @@ class LibraryService:
         return device_ids
 
     def device_inventory(self, device_id: int, *, refresh: bool = False) -> set[str]:
-        """Return actual device ROM paths without treating them as managed copies."""
+        """Return actual device ROM paths and reconcile derived device state."""
         cached = self._device_inventory_cache.get(device_id)
         if not refresh and cached and cached[0] > time.monotonic():
             return set(cached[1])
@@ -1769,25 +1769,36 @@ class LibraryService:
             self.settings.devices_root,
             self.settings.devices_root / device["path"] / "roms",
         )
-        if not device_root.is_dir():
-            return set()
         inventory: dict[str, int] = {}
-        try:
-            paths = device_root.rglob("*")
-            for path in paths:
-                try:
-                    if path.is_symlink() or not path.is_file():
+        if device_root.is_dir():
+            try:
+                paths = device_root.rglob("*")
+                for path in paths:
+                    try:
+                        if path.is_symlink() or not path.is_file():
+                            continue
+                        if path.name.startswith("._") or path.name == ".DS_Store":
+                            continue
+                        if path.name.endswith((COPY_SUFFIX, LEGACY_COPY_SUFFIX)):
+                            continue
+                        inventory[path.relative_to(device_root).as_posix()] = path.stat().st_size
+                    except OSError:
                         continue
-                    if path.name.startswith("._") or path.name == ".DS_Store":
-                        continue
-                    if path.name.endswith((COPY_SUFFIX, LEGACY_COPY_SUFFIX)):
-                        continue
-                    inventory[path.relative_to(device_root).as_posix()] = path.stat().st_size
-                except OSError:
-                    continue
-        except OSError:
-            pass
+            except OSError:
+                pass
         with self.db.write() as connection:
+            roster_device_ids = self._roster_device_ids(connection, device_id)
+            roster_placeholders = ",".join("?" for _ in roster_device_ids)
+            # A deployment row is a derived index of a recognized file, not an
+            # ownership boundary. Remember previously recognized games only so
+            # an explicit staged removal survives an inventory refresh.
+            known_game_ids = {
+                row["game_id"]
+                for row in connection.execute(
+                    f"SELECT DISTINCT game_id FROM deployments WHERE device_id IN ({roster_placeholders})",
+                    roster_device_ids,
+                )
+            }
             connection.execute("DELETE FROM device_inventory_files WHERE device_id=?", (device_id,))
             connection.executemany(
                 "INSERT INTO device_inventory_files(device_id,relpath,size) VALUES(?,?,?)",
@@ -1795,6 +1806,33 @@ class LibraryService:
                     (device_id, relpath, size)
                     for relpath, size in sorted(inventory.items())
                 ),
+            )
+            # Only adopt paths that identify exactly one library game. Ambiguous
+            # and unknown files remain visible as unrecognized filesystem data.
+            recognized = connection.execute(
+                "SELECT DISTINCT gf.game_id,gf.device_relpath AS relpath "
+                "FROM game_files gf JOIN device_inventory_files dif "
+                "ON dif.relpath=gf.device_relpath "
+                "WHERE dif.device_id=? AND gf.device_relpath IN ("
+                "SELECT gf2.device_relpath FROM game_files gf2 "
+                "GROUP BY gf2.device_relpath HAVING COUNT(DISTINCT gf2.game_id)=1)",
+                (device_id,),
+            ).fetchall()
+            present_game_ids = {row["game_id"] for row in recognized}
+            adopted_game_ids = sorted(present_game_ids - known_game_ids)
+            if adopted_game_ids:
+                connection.executemany(
+                    "INSERT OR IGNORE INTO device_selections(device_id,game_id) VALUES(?,?)",
+                    (
+                        (member_id, game_id)
+                        for member_id in roster_device_ids
+                        for game_id in adopted_game_ids
+                    ),
+                )
+            connection.execute("DELETE FROM deployments WHERE device_id=?", (device_id,))
+            connection.executemany(
+                "INSERT INTO deployments(device_id,game_id,relpath) VALUES(?,?,?)",
+                ((device_id, row["game_id"], row["relpath"]) for row in recognized),
             )
         self._device_inventory_cache[device_id] = (
             time.monotonic() + DEVICE_INVENTORY_CACHE_SECONDS,
@@ -2186,6 +2224,10 @@ class LibraryService:
         self, device_id: int, cancel_check: CancelCheck | None = None
     ) -> dict[str, int]:
         with self._operation_lock:
+            # The NUC filesystem is authoritative. Refresh immediately before
+            # planning so external additions/removals cannot be hidden by stale
+            # database state.
+            self.device_inventory(device_id, refresh=True)
             with self.db.connect() as connection:
                 device = connection.execute("SELECT * FROM devices WHERE id=?", (device_id,)).fetchone()
                 if not device:
@@ -2260,9 +2302,9 @@ class LibraryService:
                 raise LibraryError(
                     f"Device needs {required_bytes} bytes but only {free_bytes} bytes are available"
                 )
-            # Record every deployment as it lands. Batching this until the end would leave
-            # files on the device that no deployment row claims, making them permanently
-            # unmanaged if the job fails or the container stops partway through.
+            # Record every deployment as it lands so interrupted applies can
+            # resume efficiently. The next inventory refresh derives these rows
+            # from the filesystem again.
             for game_id, relpath, source, target, existing_matches in deploy_plan:
                 if cancel_check:
                     cancel_check()

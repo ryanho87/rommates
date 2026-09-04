@@ -1262,7 +1262,6 @@ function deviceTargetState(game) {
     pending_add: ["naming-strong", "Pending addition"],
     pending_update: ["naming-strong", "On device · pending update"],
     pending_remove: ["possible", "Pending removal"],
-    unmanaged: ["cancelled", "On device · unmanaged"],
     available: ["cancelled", "Not selected"],
   };
   const [badge, label] = states[game.device_state] || states.available;

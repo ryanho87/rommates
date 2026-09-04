@@ -1590,11 +1590,13 @@ class ApiIntegrationTests(unittest.TestCase):
             inventory.assert_not_called()
             self.assertEqual(
                 library_game["devices"],
-                [{"id": device["id"], "name": device["name"], "state": "present"}],
+                [{"id": device["id"], "name": device["name"], "state": "synced"}],
             )
             self.assertEqual(data["total"], 1)
-            self.assertEqual(data["items"][0]["device_state"], "unmanaged")
+            self.assertEqual(data["items"][0]["device_state"], "on_device")
+            self.assertEqual(data["items"][0]["selected"], 1)
             self.assertEqual(data["device_inventory"]["present_games"], 1)
+            self.assertEqual(data["device_inventory"]["changes"], 0)
             self.assertEqual(data["device_inventory"]["unmatched_files"], 1)
             self.assertEqual(
                 data["device_inventory"]["platforms"],
@@ -1608,7 +1610,7 @@ class ApiIntegrationTests(unittest.TestCase):
             selected = self.client.put(
                 f"/api/devices/{device['id']}/selection",
                 headers=self.headers,
-                json={"game_id": game["id"], "selected": True},
+                json={"game_id": game["id"], "selected": False},
             )
             self.assertEqual(selected.status_code, 200)
             with patch.object(
@@ -1621,7 +1623,7 @@ class ApiIntegrationTests(unittest.TestCase):
                     headers=self.headers,
                 ).json()
             inventory.assert_not_called()
-            self.assertEqual(updated["items"][0]["device_state"], "pending_update")
+            self.assertEqual(updated["items"][0]["device_state"], "pending_remove")
             self.assertEqual(updated["device_inventory"]["changes"], 1)
             pending = self.client.get(
                 f"/api/games?device_id={device['id']}&device_scope=changes",
