@@ -158,6 +158,7 @@ class SyncthingServiceTests(unittest.TestCase):
                             "id": "retroid-roms",
                             "label": "Retroid Pocket 5 ROMs",
                             "path": "/media/Emulation/devices/retroid-pocket-5/roms",
+                            "type": "sendreceive",
                             "devices": [{"deviceID": "NUC-ID"}],
                         }
                     ],
@@ -179,6 +180,8 @@ class SyncthingServiceTests(unittest.TestCase):
         self.assertEqual(result["folder_id"], "retroid-roms")
         folder_write = next(item for item in writes if item[1] == "/rest/config/folders")
         self.assertIn({"deviceID": remote_id}, folder_write[2]["devices"])
+        self.assertEqual(folder_write[2]["type"], "sendonly")
+        self.assertEqual(result["folder_type"], "sendonly")
         self.assertTrue(any(item[1].startswith("/rest/db/scan?") for item in writes))
 
     def test_share_device_folder_creates_folder_in_inferred_syncthing_namespace(self):
@@ -217,6 +220,8 @@ class SyncthingServiceTests(unittest.TestCase):
         folder_write = next(payload for path, payload in writes if path == "/rest/config/folders")
         self.assertEqual(folder_write["id"], "rommates-device-12")
         self.assertEqual(folder_write["label"], "New Handheld ROMs")
+        self.assertEqual(folder_write["type"], "sendonly")
+        self.assertEqual(result["folder_type"], "sendonly")
         self.assertIn({"deviceID": remote_id}, folder_write["devices"])
 
     def test_device_sync_status_reports_completion_and_last_sync(self):

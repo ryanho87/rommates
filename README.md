@@ -247,7 +247,9 @@ if no folder matches or Syncthing is unavailable, the completed deployment remai
 and the job result explains why the rescan was skipped. Device owners can also enter their
 handheld's Syncthing device ID from the Devices page. ROMmates then adds the remote device,
 creates or reuses the device ROM folder, shares it, and requests a scan. Folder paths are derived
-from the owned ROMmates device; browser clients cannot provide arbitrary server paths.
+from the owned ROMmates device; browser clients cannot provide arbitrary server paths. ROMmates
+always configures the NUC side of a managed ROM share as **Send Only**, so a handheld configured
+as Send & Receive still cannot push ROM edits or deletions back into the server roster.
 
 Create or copy an API key from **Syncthing > Actions > Settings > General > API Key**, then
 set these values in ROMmates' `.env`:

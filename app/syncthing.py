@@ -267,6 +267,10 @@ class SyncthingService:
             if not any(str(item.get("deviceID") or "") == normalized_id for item in folder_devices):
                 folder_devices.append({"deviceID": normalized_id})
             folder["devices"] = folder_devices
+            # The NUC is authoritative for managed ROM rosters. Enforce this
+            # locally even when the handheld accepts the share as send/receive,
+            # so remote edits and deletions cannot modify the server copy.
+            folder["type"] = "sendonly"
             self._send_json("/rest/config/folders", folder)
             self._post(f"/rest/db/scan?{urlencode({'folder': str(folder['id'])})}")
             with self._lock:
@@ -276,6 +280,7 @@ class SyncthingService:
                 "device_id": normalized_id,
                 "folder_id": str(folder["id"]),
                 "folder_path": str(folder.get("path") or ""),
+                "folder_type": str(folder.get("type") or ""),
                 "created": created,
             }
         except HTTPError as exc:
