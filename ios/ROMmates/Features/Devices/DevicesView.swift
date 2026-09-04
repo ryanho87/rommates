@@ -596,8 +596,9 @@ private struct DeviceDetailView: View {
                             Button {
                                 showingSyncthingSetup = true
                             } label: {
-                                Label("Set Up Syncthing", systemImage: "link.badge.plus")
-                                    .frame(maxWidth: .infinity, alignment: .center)
+                                Text("Set Up Syncthing")
+                                    .font(.headline)
+                                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .center)
                             }
                             .buttonStyle(.borderedProminent)
                             .tint(ROMTheme.violet)
