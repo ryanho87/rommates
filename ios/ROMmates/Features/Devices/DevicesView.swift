@@ -65,7 +65,11 @@ struct DevicesView: View {
                 }
             }
             .navigationTitle("Devices")
-            .navigationDestination(for: Device.self) { DeviceDetailView(device: $0) }
+            .navigationDestination(for: Device.self) { device in
+                DeviceDetailView(device: device) {
+                    Task { await load(fresh: true) }
+                }
+            }
             .toolbar {
                 Menu {
                     Button { showingCreateDevice = true } label: {
@@ -221,6 +225,7 @@ private struct DeviceRow: View {
 private struct DeviceDetailView: View {
     @EnvironmentObject private var model: AppModel
     let device: Device
+    let didUpdate: () -> Void
     @State private var games: [Game] = []
     @State private var inventory: DeviceInventory?
     @State private var summary: DeviceSummary?
@@ -237,6 +242,7 @@ private struct DeviceDetailView: View {
     @State private var downloading = false
     @State private var downloadStatus = ""
     @State private var downloadedFile: URL?
+    @State private var showingSyncthingSetup = false
 
     private var selectedBytes: Int64 {
         summary?.desiredRomBytes
@@ -258,6 +264,9 @@ private struct DeviceDetailView: View {
     }
     private var platformMetrics: [DeviceInventory.Platform] {
         inventory?.presentPlatforms ?? []
+    }
+    private var syncthingIsReady: Bool {
+        sync?.linked ?? (device.syncthingReadyAt != nil)
     }
 
     var body: some View {
@@ -330,6 +339,27 @@ private struct DeviceDetailView: View {
                                     DevicePlatformMetric(metric: metric)
                                 }
                             }
+                        }
+                    }
+                    if device.deliveryMode == "syncthing" {
+                        if !syncthingIsReady {
+                            Divider()
+                            Button {
+                                showingSyncthingSetup = true
+                            } label: {
+                                Label("Set Up Syncthing", systemImage: "link.badge.plus")
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .tint(ROMTheme.violet)
+                            .disabled(sync?.configured == false)
+                        }
+                        if sync?.configured == false {
+                            StatusLabel(
+                                text: "Syncthing is unavailable on the ROMmates server",
+                                icon: "exclamationmark.triangle.fill",
+                                color: ROMTheme.warning
+                            )
                         }
                     }
                 }
@@ -431,6 +461,14 @@ private struct DeviceDetailView: View {
             Button("Cancel", role: .cancel) { }
         } message: {
             Text("ROMmates will validate \(selectedGameCount.formatted()) games and prepare a \(ROMTheme.bytes(selectedBytes)) ZIP. Keep the app open while this large download completes.")
+        }
+        .sheet(isPresented: $showingSyncthingSetup) {
+            SyncthingSetupView(device: device) {
+                Task {
+                    await loadSync()
+                    didUpdate()
+                }
+            }
         }
         .task(id: queryID) { await load() }
         .task(id: hasLoadedGames) {
@@ -761,6 +799,111 @@ private struct DeviceGamesEmptyState: View {
     }
 }
 
+private struct SyncthingSetupView: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    let device: Device
+    let didComplete: () -> Void
+    @State private var syncthingDeviceId = ""
+    @State private var busy = false
+    @State private var result: SyncthingShareResult?
+
+    private var normalizedId: String {
+        syncthingDeviceId.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                if let result {
+                    Section {
+                        Label("Syncthing share ready", systemImage: "checkmark.circle.fill")
+                            .font(.headline)
+                            .foregroundStyle(ROMTheme.success)
+                        LabeledContent("Device") {
+                            Text(device.name)
+                        }
+                        LabeledContent("Syncthing ID") {
+                            Text(result.deviceId)
+                                .font(.caption.monospaced())
+                                .multilineTextAlignment(.trailing)
+                                .textSelection(.enabled)
+                        }
+                        LabeledContent("Folder") {
+                            Text(result.folderId)
+                                .font(.caption.monospaced())
+                                .textSelection(.enabled)
+                        }
+                    } footer: {
+                        Text(result.created
+                            ? "ROMmates created the folder, shared it with the handheld, and requested a scan. Accept the folder on the handheld if Syncthing asks."
+                            : "ROMmates reused the existing folder, confirmed the share, and requested a scan.")
+                    }
+                } else {
+                    Section {
+                        TextField("XXXXXXX-XXXXXXX-…", text: $syncthingDeviceId, axis: .vertical)
+                            .font(.body.monospaced())
+                            .textInputAutocapitalization(.characters)
+                            .autocorrectionDisabled()
+                            .lineLimit(2...3)
+                    } header: {
+                        Text("Handheld device ID")
+                    } footer: {
+                        Text("On the handheld, open Syncthing and choose Actions, then Show ID. Paste that Device ID here.")
+                    }
+
+                    Section {
+                        Label("Add this handheld to the NUC’s Syncthing", systemImage: "plus.circle")
+                        Label("Create or reuse \(device.name)’s ROM folder", systemImage: "folder")
+                        Label("Share the folder and request a scan", systemImage: "arrow.triangle.2.circlepath")
+                    } header: {
+                        Text("ROMmates will")
+                    } footer: {
+                        Text("Only the Syncthing Device ID is accepted. ROMmates derives the server folder path from this device and does not allow a custom path.")
+                    }
+
+                }
+            }
+            .navigationTitle(result == nil ? "Set Up Syncthing" : "Syncthing Ready")
+            .navigationBarTitleDisplayMode(.inline)
+            .interactiveDismissDisabled(busy)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(result == nil ? "Cancel" : "Done") { dismiss() }
+                        .disabled(busy)
+                }
+                if result == nil {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button(busy ? "Creating…" : "Create Share") {
+                            Task { await createShare() }
+                        }
+                        .disabled(normalizedId.count < 7 || busy)
+                    }
+                }
+            }
+        }
+    }
+
+    private func createShare() async {
+        guard normalizedId.count >= 7 else { return }
+        busy = true
+        defer { busy = false }
+        do {
+            let body = try JSONEncoder.rommates.encode(
+                SyncthingShareBody(deviceId: normalizedId)
+            )
+            result = try await model.request(
+                "/api/devices/\(device.id)/syncthing-share",
+                method: "POST",
+                body: body
+            )
+            didComplete()
+        } catch {
+            model.report(error, prefix: "Syncthing setup")
+        }
+    }
+}
+
 private struct CreateDeviceGroupView: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.dismiss) private var dismiss
@@ -903,7 +1046,7 @@ private struct CreateDeviceView: View {
                 }
                 Section {
                     Text(delivery == "syncthing" ?
-                        "An administrator must complete the Syncthing share before the first delivery." :
+                        "After creating the device, open it and enter the handheld’s Syncthing Device ID to create the share." :
                         "ROMmates will build a downloadable ZIP after you apply selections.")
                 }
             }
@@ -958,4 +1101,15 @@ private struct CreatedDeviceGroup: Decodable, Sendable {
     let name: String
     let devices: Int
     let games: Int
+}
+
+private struct SyncthingShareBody: Encodable {
+    let deviceId: String
+}
+
+private struct SyncthingShareResult: Decodable, Sendable {
+    let deviceId: String
+    let folderId: String
+    let folderPath: String
+    let created: Bool
 }
