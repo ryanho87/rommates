@@ -1,5 +1,29 @@
 import SwiftUI
 
+private enum LibrarySort: String, CaseIterable, Identifiable {
+    case nameAscending = "name_asc"
+    case nameDescending = "name_desc"
+    case topRanked = "rank_asc"
+    case ratingDescending = "rating_desc"
+    case ratingAscending = "rating_asc"
+    case sizeDescending = "size_desc"
+    case sizeAscending = "size_asc"
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .nameAscending: return "Title A–Z"
+        case .nameDescending: return "Title Z–A"
+        case .topRanked: return "Top 100 rank"
+        case .ratingDescending: return "Highest rated"
+        case .ratingAscending: return "Lowest rated"
+        case .sizeDescending: return "Largest size"
+        case .sizeAscending: return "Smallest size"
+        }
+    }
+}
+
 struct LibraryView: View {
     @EnvironmentObject private var model: AppModel
     @State private var games: [Game] = []
@@ -7,76 +31,69 @@ struct LibraryView: View {
     @State private var total = 0
     @State private var search = ""
     @State private var platform = ""
-    @State private var sort = "name_asc"
+    @State private var sort: LibrarySort = .nameAscending
     @State private var loading = true
     @State private var loadingMore = false
     @State private var error: String?
 
     private static let pageSize = 80
-    private var queryID: String { "\(search)|\(platform)|\(sort)" }
+    private var queryID: String { "\(search)|\(platform)|\(sort.rawValue)" }
 
     var body: some View {
         NavigationStack {
-            Group {
-                if loading && games.isEmpty {
-                    List(0..<8, id: \.self) { _ in LibraryRowPlaceholder() }
-                        .listStyle(.plain)
-                } else if let error, games.isEmpty {
-                    ContentUnavailableView {
-                        Label("Library unavailable", systemImage: "exclamationmark.triangle")
-                    } description: {
-                        Text(error)
-                    } actions: {
-                        Button("Try Again") { Task { await load(reset: true, fresh: true) } }
-                    }
-                } else if games.isEmpty {
-                    EmptyState(
-                        icon: "books.vertical",
-                        title: "No games found",
-                        message: search.isEmpty ? "Your indexed library will appear here." : "Try a different search or platform."
-                    )
-                } else {
-                    List {
-                        ForEach(games) { game in
-                            NavigationLink(value: game) { GameRow(game: game) }
+            VStack(spacing: 0) {
+                LibraryCriteriaBar(
+                    search: $search,
+                    platform: $platform,
+                    sort: $sort,
+                    platforms: platforms,
+                    total: total,
+                    loading: loading
+                )
+                Divider()
+                Group {
+                    if loading && games.isEmpty {
+                        List(0..<8, id: \.self) { _ in LibraryRowPlaceholder() }
+                            .listStyle(.plain)
+                    } else if let error, games.isEmpty {
+                        ContentUnavailableView {
+                            Label("Library unavailable", systemImage: "exclamationmark.triangle")
+                        } description: {
+                            Text(error)
+                        } actions: {
+                            Button("Try Again") { Task { await load(reset: true, fresh: true) } }
                         }
-                        if games.count < total {
-                            HStack {
-                                Spacer()
-                                ProgressView()
-                                Spacer()
+                    } else if games.isEmpty {
+                        EmptyState(
+                            icon: "books.vertical",
+                            title: "No games found",
+                            message: search.isEmpty && platform.isEmpty
+                                ? "Your indexed library will appear here."
+                                : "Try a different search or platform."
+                        )
+                    } else {
+                        List {
+                            ForEach(games) { game in
+                                NavigationLink(value: game) { GameRow(game: game) }
                             }
-                            .listRowSeparator(.hidden)
-                            .task(id: games.count) { await loadMore() }
+                            if games.count < total {
+                                HStack {
+                                    Spacer()
+                                    ProgressView()
+                                    Spacer()
+                                }
+                                .listRowSeparator(.hidden)
+                                .task(id: games.count) { await loadMore() }
+                            }
                         }
+                        .listStyle(.plain)
+                        .refreshable { await load(reset: true, fresh: true) }
                     }
-                    .listStyle(.plain)
-                    .refreshable { await load(reset: true, fresh: true) }
                 }
             }
             .navigationTitle("Library")
             .navigationDestination(for: Game.self) { GameDetailView(game: $0) }
             .searchable(text: $search, prompt: "Search \(total.formatted()) games")
-            .toolbar {
-                ToolbarItemGroup(placement: .topBarTrailing) {
-                    Menu {
-                        Picker("Platform", selection: $platform) {
-                            Text("All platforms").tag("")
-                            ForEach(platforms) { Text($0.platform).tag($0.platform) }
-                        }
-                    } label: {
-                        Label(platform.isEmpty ? "Platform" : platform, systemImage: "line.3.horizontal.decrease.circle")
-                    }
-                    Menu {
-                        Picker("Sort", selection: $sort) {
-                            Text("Name").tag("name_asc")
-                            Text("Top ranked").tag("rank_asc")
-                            Text("Highest rated").tag("rating_desc")
-                            Text("Largest first").tag("size_desc")
-                        }
-                    } label: { Label("Sort", systemImage: "arrow.up.arrow.down") }
-                }
-            }
             .task { await loadPlatforms() }
             .task(id: queryID) {
                 if !search.isEmpty {
@@ -107,7 +124,7 @@ struct LibraryView: View {
                 query: [
                     .init(name: "search", value: search),
                     .init(name: "platform", value: platform),
-                    .init(name: "sort", value: sort),
+                    .init(name: "sort", value: sort.rawValue),
                     .init(name: "limit", value: String(Self.pageSize)),
                     .init(name: "offset", value: String(offset)),
                 ],
@@ -131,6 +148,111 @@ struct LibraryView: View {
     private func loadMore() async {
         guard !loading, !loadingMore, games.count < total else { return }
         await load(reset: false)
+    }
+}
+
+private struct LibraryCriteriaBar: View {
+    @Binding var search: String
+    @Binding var platform: String
+    @Binding var sort: LibrarySort
+    let platforms: [PlatformSummary]
+    let total: Int
+    let loading: Bool
+
+    private var platformLabel: String {
+        platform.isEmpty ? "All platforms" : platform.uppercased()
+    }
+
+    private var hasCustomCriteria: Bool {
+        !search.isEmpty || !platform.isEmpty || sort != .nameAscending
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 9) {
+                criteriaMenu(title: "FILTER BY", value: platformLabel, icon: "line.3.horizontal.decrease") {
+                    Picker("Platform", selection: $platform) {
+                        Text("All platforms").tag("")
+                        ForEach(platforms) { item in
+                            Text("\(item.platform.uppercased()) (\(item.count.formatted()))")
+                                .tag(item.platform)
+                        }
+                    }
+                }
+                criteriaMenu(title: "SORT BY", value: sort.title, icon: "arrow.up.arrow.down") {
+                    Picker("Sort games", selection: $sort) {
+                        ForEach(LibrarySort.allCases) { option in
+                            Text(option.title).tag(option)
+                        }
+                    }
+                }
+            }
+            HStack(spacing: 8) {
+                Text(loading && total == 0
+                    ? "Loading games"
+                    : "\(total.formatted()) games · \(platformLabel) · \(sort.title)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .accessibilityLabel(loading && total == 0
+                        ? "Loading games"
+                        : "\(total.formatted()) games, filtered by \(platformLabel), sorted by \(sort.title)")
+                Spacer(minLength: 4)
+                if hasCustomCriteria {
+                    Button("Reset") {
+                        search = ""
+                        platform = ""
+                        sort = .nameAscending
+                    }
+                    .font(.caption.weight(.semibold))
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 8)
+        .padding(.bottom, 10)
+        .background(Color(.systemBackground))
+    }
+
+    private func criteriaMenu<Content: View>(
+        title: String,
+        value: String,
+        icon: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        Menu(content: content) {
+            HStack(spacing: 10) {
+                Image(systemName: icon)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(ROMTheme.violet)
+                    .frame(width: 20)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.caption2.weight(.bold))
+                        .tracking(0.6)
+                        .foregroundStyle(.secondary)
+                    Text(value)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 4)
+                Image(systemName: "chevron.down")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 12)
+            .frame(maxWidth: .infinity, minHeight: 48)
+            .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 11))
+            .overlay {
+                RoundedRectangle(cornerRadius: 11)
+                    .stroke(Color.primary.opacity(0.1), lineWidth: 0.5)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .frame(maxWidth: .infinity)
+        .accessibilityLabel("\(title.lowercased()), \(value)")
     }
 }
 
@@ -168,22 +290,16 @@ private struct GameRow: View {
                     Text(game.platform)
                     Text("·")
                     Text(ROMTheme.bytes(game.size))
-                    if let rating = game.rating {
-                        Text("·")
-                        Label(rating.formatted(.number.precision(.fractionLength(1))), systemImage: "star.fill")
-                            .labelStyle(.titleAndIcon)
-                    }
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                GameRatingAndRankings(game: game)
                 if let device = game.devices.first {
                     StatusLabel(
                         text: deviceLabel(device),
                         icon: deviceIcon(device.state),
                         color: deviceColor(device.state)
                     )
-                } else if let rank = game.rawgRank ?? game.platformRank {
-                    StatusLabel(text: "#\(rank) on \(game.platform)", icon: "chart.bar.fill")
                 }
             }
         }
@@ -206,6 +322,36 @@ private struct GameRow: View {
 
     private func deviceColor(_ state: String) -> Color {
         state == "pending_remove" ? .orange : ROMTheme.violet
+    }
+}
+
+private struct GameRatingAndRankings: View {
+    let game: Game
+
+    var body: some View {
+        HStack(spacing: 10) {
+            if let rating = game.rating {
+                Label {
+                    Text("\(rating.formatted(.number.precision(.fractionLength(1))))/20")
+                } icon: {
+                    Image(systemName: "star.fill")
+                }
+                .accessibilityLabel("Community rating \(rating.formatted()) out of 20")
+            } else {
+                Label("Not rated", systemImage: "star")
+            }
+            if let rank = game.platformRank {
+                Label("#\(rank) on \(game.platform.uppercased())", systemImage: "chart.bar.fill")
+                    .accessibilityLabel("Ranked \(rank) on \(game.platform) by community rating")
+            }
+            if let rank = game.rawgRank {
+                Text("#\(rank) Top 100")
+                    .accessibilityLabel("Number \(rank) in the platform top 100")
+            }
+        }
+        .font(.caption2.weight(.medium))
+        .foregroundStyle(.secondary)
+        .lineLimit(1)
     }
 }
 
@@ -418,11 +564,7 @@ private struct GameDetailHeader: View {
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
-            if let rating = game.rating {
-                Label(rating.formatted(.number.precision(.fractionLength(1))), systemImage: "star.fill")
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(ROMTheme.violet)
-            }
+            GameRatingAndRankings(game: game)
         }
     }
 }

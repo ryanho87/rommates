@@ -28,7 +28,7 @@ enum GuidedTourCatalog {
                 tab: .library,
                 icon: "magnifyingglass",
                 title: "Find your next game",
-                message: "Search by title, filter by platform, and open a game to see details or choose where it belongs."
+                message: "Search by title, filter by platform, sort by ranking or rating, and open a game to see where it belongs."
             )
         ]
         if permissions.manageDevices {
