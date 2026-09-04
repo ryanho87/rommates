@@ -641,18 +641,30 @@ private struct DeviceDetailView: View {
                             get: { game.selected != 0 },
                             set: { selected in Task { await select(game, selected: selected) } }
                         )) {
-                            VStack(alignment: .leading, spacing: 5) {
-                                Text(game.displayName).lineLimit(2)
-                                HStack(spacing: 7) {
-                                    PlatformBadge(platform: game.platform)
-                                    Text(ROMTheme.bytes(game.size))
-                                    if let state = game.deviceState, state != "on_device" {
-                                        DeviceStateBadge(state: state)
+                            HStack(spacing: 12) {
+                                AuthenticatedArtwork(
+                                    assetId: game.coverAssetId,
+                                    version: game.coverAssetVersion
+                                )
+                                .frame(width: 52, height: 52)
+                                .accessibilityHidden(true)
+
+                                VStack(alignment: .leading, spacing: 5) {
+                                    Text(game.displayName)
+                                        .lineLimit(2)
+                                    HStack(spacing: 7) {
+                                        PlatformBadge(platform: game.platform)
+                                        Text(ROMTheme.bytes(game.size))
+                                        if let state = game.deviceState, state != "on_device" {
+                                            DeviceStateBadge(state: state)
+                                        }
                                     }
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
                                 }
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                                .layoutPriority(1)
                             }
+                            .padding(.vertical, 3)
                         }
                     }
                 }
@@ -1026,11 +1038,17 @@ private struct DevicePlatformMetric: View {
 private struct DeviceGamePlaceholder: View {
     var body: some View {
         Toggle(isOn: .constant(false)) {
-            VStack(alignment: .leading, spacing: 5) {
-                Text("Game title placeholder").font(.body)
-                Text("platform · file size · device state").font(.caption)
+            HStack(spacing: 12) {
+                RoundedRectangle(cornerRadius: 7)
+                    .fill(Color(.secondarySystemFill))
+                    .frame(width: 52, height: 52)
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("Game title placeholder").font(.body)
+                    Text("platform · file size · device state").font(.caption)
+                }
             }
             .redacted(reason: .placeholder)
+            .padding(.vertical, 3)
         }
         .disabled(true)
         .accessibilityHidden(true)

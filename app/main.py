@@ -1123,11 +1123,12 @@ def mobile_public_route_allowed(method: str, path: str) -> bool:
             rf"/api/artwork/thumbnails/\d+",
             rf"/api/devices/\d+/summary",
             rf"/api/devices/\d+/sync-status",
+            rf"/api/jobs/\d+",
         ),
         "POST": (
             rf"/api/games/\d+/download-ticket",
             rf"/api/device-groups/\d+/apply",
-            rf"/api/devices/\d+/(?:apply|discard-changes)",
+            rf"/api/devices/\d+/(?:apply|discard-changes|export-ticket|syncthing-share)",
             rf"/api/uploads/{_MOBILE_ID}/finalize",
             rf"/api/inbox/\d+/read",
         ),
