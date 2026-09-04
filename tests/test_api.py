@@ -204,7 +204,29 @@ class ApiIntegrationTests(unittest.TestCase):
             self.client.get("/api/device-groups", headers=bearer).status_code,
             200,
         )
+        tour = self.client.get(
+            "/api/onboarding",
+            headers=bearer,
+            params={"tour_key": "getting-started-ios-member"},
+        )
+        self.assertEqual(tour.status_code, 200, tour.text)
+        self.assertFalse(tour.json()["completed"])
+        saved_tour = self.client.patch(
+            "/api/onboarding",
+            headers=bearer,
+            json={
+                "tour_key": "getting-started-ios-member",
+                "tour_version": 1,
+                "current_step": 2,
+                "dismissed": False,
+                "completed": True,
+            },
+        )
+        self.assertEqual(saved_tour.status_code, 200, saved_tour.text)
+        self.assertTrue(saved_tour.json()["completed"])
         for method, path in (
+            ("GET", "/api/onboarding"),
+            ("PATCH", "/api/onboarding"),
             ("GET", "/api/device-groups"),
             ("POST", "/api/device-groups"),
             ("PUT", "/api/device-groups/42"),

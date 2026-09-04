@@ -1102,6 +1102,8 @@ def mobile_public_route_allowed(method: str, path: str) -> bool:
         ("POST", "/api/auth/password"),
         ("PATCH", "/api/auth/profile"),
         ("GET", "/api/account/summary"),
+        ("GET", "/api/onboarding"),
+        ("PATCH", "/api/onboarding"),
         ("GET", "/api/platforms"),
         ("GET", "/api/games"),
         ("GET", "/api/devices"),

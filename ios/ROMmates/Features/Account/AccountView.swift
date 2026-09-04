@@ -36,6 +36,13 @@ struct AccountView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
+                Section("Help") {
+                    Button {
+                        model.startGuidedTour()
+                    } label: {
+                        Label("Take the Guided Tour", systemImage: "sparkles.rectangle.stack")
+                    }
+                }
                 if let summary {
                     Section("Your library") {
                         LabeledContent("Unique synced ROMs", value: summary.uniqueSyncedRoms.formatted())

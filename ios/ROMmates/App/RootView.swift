@@ -69,6 +69,23 @@ private struct MainTabView: View {
             }
         }
         .animation(.snappy, value: model.updateAvailable)
+        .overlay(alignment: .bottom) {
+            if let step = model.activeGuidedTourStep,
+               let index = model.guidedTourIndex {
+                GuidedTourCard(
+                    step: step,
+                    index: index,
+                    count: model.guidedTourSteps.count,
+                    back: model.goBackInGuidedTour,
+                    next: model.advanceGuidedTour,
+                    skip: model.skipGuidedTour
+                )
+                .padding(.horizontal, 16)
+                .padding(.bottom, 76)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .animation(.snappy, value: model.guidedTourIndex)
     }
 }
 

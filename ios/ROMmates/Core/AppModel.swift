@@ -3,7 +3,7 @@ import Foundation
 import UIKit
 import UserNotifications
 
-enum AppTab: Hashable {
+enum AppTab: Hashable, Sendable {
     case library
     case devices
     case uploads
@@ -33,6 +33,8 @@ final class AppModel: ObservableObject {
     @Published var presentedRelease: MobileRelease?
     @Published var inboxUnread = 0
     @Published var selectedTab: AppTab = .library
+    @Published private(set) var guidedTourSteps: [GuidedTourStep] = []
+    @Published private(set) var guidedTourIndex: Int?
     @Published var isBusy = false
     @Published var errorMessage: String?
 
@@ -118,6 +120,7 @@ final class AppModel: ObservableObject {
             await syncPushAuthorization(requestIfNeeded: response.push.configured)
             await checkForUpdates()
             await refreshInboxUnread()
+            await loadGuidedTour()
         } catch let error as APIError where error.statusCode == 401 {
             clearSession()
         } catch {
@@ -225,6 +228,45 @@ final class AppModel: ObservableObject {
         inboxUnread = max(0, count)
     }
 
+    var activeGuidedTourStep: GuidedTourStep? {
+        guard let guidedTourIndex, guidedTourSteps.indices.contains(guidedTourIndex) else {
+            return nil
+        }
+        return guidedTourSteps[guidedTourIndex]
+    }
+
+    func startGuidedTour() {
+        guard let permissions else { return }
+        guidedTourSteps = GuidedTourCatalog.steps(for: permissions)
+        showGuidedTourStep(0)
+        persistGuidedTour(step: 0, dismissed: false, completed: false)
+    }
+
+    func goBackInGuidedTour() {
+        guard let guidedTourIndex, guidedTourIndex > 0 else { return }
+        let previous = guidedTourIndex - 1
+        showGuidedTourStep(previous)
+        persistGuidedTour(step: previous, dismissed: false, completed: false)
+    }
+
+    func advanceGuidedTour() {
+        guard let guidedTourIndex else { return }
+        let next = guidedTourIndex + 1
+        if guidedTourSteps.indices.contains(next) {
+            showGuidedTourStep(next)
+            persistGuidedTour(step: next, dismissed: false, completed: false)
+        } else {
+            self.guidedTourIndex = nil
+            persistGuidedTour(step: guidedTourIndex, dismissed: false, completed: true)
+        }
+    }
+
+    func skipGuidedTour() {
+        let step = guidedTourIndex ?? 0
+        guidedTourIndex = nil
+        persistGuidedTour(step: step, dismissed: true, completed: false)
+    }
+
     func checkForUpdates() async {
         guard client != nil else { return }
         do {
@@ -292,7 +334,69 @@ final class AppModel: ObservableObject {
         updateAvailable = nil
         presentedRelease = nil
         inboxUnread = 0
+        guidedTourSteps = []
+        guidedTourIndex = nil
         sessionState = .signedOut
+    }
+
+    private func loadGuidedTour() async {
+        guard let permissions else { return }
+        let steps = GuidedTourCatalog.steps(for: permissions)
+        let key = GuidedTourCatalog.key(for: permissions)
+        guidedTourSteps = steps
+        do {
+            let progress: OnboardingProgress = try await request(
+                "/api/onboarding",
+                query: [.init(name: "tour_key", value: key)],
+                fresh: true
+            )
+            guard progress.tourVersion == GuidedTourCatalog.version else {
+                showGuidedTourStep(0)
+                await saveGuidedTour(step: 0, dismissed: false, completed: false)
+                return
+            }
+            guard !progress.dismissed, !progress.completed else {
+                guidedTourIndex = nil
+                return
+            }
+            showGuidedTourStep(min(max(progress.currentStep, 0), max(steps.count - 1, 0)))
+        } catch {
+            // The tour is optional. Older servers can still use every core app feature.
+            guidedTourIndex = nil
+        }
+    }
+
+    private func showGuidedTourStep(_ index: Int) {
+        guard guidedTourSteps.indices.contains(index) else {
+            guidedTourIndex = nil
+            return
+        }
+        guidedTourIndex = index
+        selectedTab = guidedTourSteps[index].tab
+    }
+
+    private func persistGuidedTour(step: Int, dismissed: Bool, completed: Bool) {
+        Task { await saveGuidedTour(step: step, dismissed: dismissed, completed: completed) }
+    }
+
+    private func saveGuidedTour(step: Int, dismissed: Bool, completed: Bool) async {
+        guard let permissions else { return }
+        do {
+            let body = try JSONEncoder.rommates.encode(
+                OnboardingUpdateBody(
+                    tourKey: GuidedTourCatalog.key(for: permissions),
+                    tourVersion: GuidedTourCatalog.version,
+                    currentStep: step,
+                    dismissed: dismissed,
+                    completed: completed
+                )
+            )
+            let _: OnboardingProgress = try await request(
+                "/api/onboarding", method: "PATCH", body: body
+            )
+        } catch {
+            // Saving guidance must never interrupt the task the user came to do.
+        }
     }
 
     private func syncPushAuthorization(requestIfNeeded: Bool) async {
@@ -397,6 +501,13 @@ private struct PushInstallationBody: Encodable {
 }
 
 private struct PushPreferencesBody: Encodable { let events: [String: Bool] }
+private struct OnboardingUpdateBody: Encodable {
+    let tourKey: String
+    let tourVersion: Int
+    let currentStep: Int
+    let dismissed: Bool
+    let completed: Bool
+}
 private struct PushPreferencesResponse: Decodable, Sendable { let events: [String: Bool] }
 private struct UserResponse: Decodable, Sendable { let user: User }
 private struct SignedOutResponse: Decodable, Sendable { let signedOut: Bool }

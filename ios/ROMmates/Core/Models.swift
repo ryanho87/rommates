@@ -50,6 +50,15 @@ struct MobileReleaseManifest: Codable, Sendable {
     let current: MobileRelease?
 }
 
+struct OnboardingProgress: Codable, Sendable {
+    let tourKey: String
+    let tourVersion: Int
+    let currentStep: Int
+    let dismissed: Bool
+    let completed: Bool
+    let persistent: Bool
+}
+
 struct PlatformSummary: Codable, Identifiable, Hashable, Sendable {
     var id: String { platform }
     let platform: String

@@ -167,6 +167,10 @@ Keychain. When `ROMMATES_MOBILE_PUBLIC_HOSTS` is empty, no hostname is treated a
 restricted public mobile surface. See the [iOS server launch checklist](docs/IOS_SERVER_LAUNCH_CHECKLIST.md)
 before publishing a hostname.
 
+The native client includes a role-aware guided tour for Library, Devices, Uploads,
+Inbox, and Account. Progress is stored per account through `/api/onboarding`, and the
+tour can be restarted from Account at any time.
+
 The save vault is read from `${EMULATION_ROOT}/saves` through the existing `/emulation`
 mount. The account selected by `PUID` and `PGID` needs read/write access to both the
 Emulation directory and `ROMMATES_DATA_ROOT`. Snapshot blobs are stored beneath that data
