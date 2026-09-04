@@ -633,10 +633,14 @@ After the repository has a remote, clone it on the NUC once. For later updates:
 
 ```bash
 git pull --ff-only
-docker compose up -d --build
+docker compose -f docker-compose.yaml up -d --build
 ```
 
-Keep `.env`, `data/`, and the ROM library outside Git. Database migrations run automatically when the updated container starts.
+The production NUC uses its local, untracked `docker-compose.yaml`. Do not use the
+tracked `compose.yaml` there; that file is the GitHub reference configuration and does
+not contain the production routing, mounts, and APNs setup. Keep `.env`,
+`docker-compose.yaml`, `data/`, and the ROM library outside Git. Database migrations run
+automatically when the updated container starts.
 
 ## Upgrading from ROM Manager
 
@@ -648,7 +652,8 @@ For the rename release, update the remote and remove the old Compose service onc
 git remote set-url origin https://github.com/ryanho87/rommates.git
 git pull --ff-only
 docker compose -p rommanager down --remove-orphans
-docker compose up -d --build
+docker compose -f docker-compose.yaml up -d --build
 ```
 
-Later releases only need the normal `git pull` and `docker compose up` commands.
+Later NUC releases only need `git pull --ff-only` and
+`docker compose -f docker-compose.yaml up -d --build`.
