@@ -170,11 +170,14 @@ struct AuthenticatedArtwork: View {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFill()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .clipped()
             } else {
                 Image(systemName: "gamecontroller.fill")
                     .foregroundStyle(.tertiary)
             }
         }
+        .clipped()
         .clipShape(RoundedRectangle(cornerRadius: 7))
         .task(id: assetId) {
             guard let assetId else { return }
@@ -195,19 +198,7 @@ private struct GameDetailView: View {
     var body: some View {
         List {
             Section {
-                HStack(alignment: .top, spacing: 18) {
-                    AuthenticatedArtwork(assetId: game.coverAssetId, version: game.coverAssetVersion)
-                        .frame(width: 104, height: 142)
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(game.displayName).font(.title2.bold())
-                        Text(game.platform).foregroundStyle(.secondary)
-                        Text(ROMTheme.bytes(game.size)).font(.subheadline).foregroundStyle(.secondary)
-                        if let rating = game.rating {
-                            Label(rating.formatted(.number.precision(.fractionLength(1))), systemImage: "star.fill")
-                                .foregroundStyle(ROMTheme.violet)
-                        }
-                    }
-                }
+                GameDetailHeader(game: game)
                 .padding(.vertical, 8)
             }
             if let metadata = detail?.artwork.metadata {
@@ -291,6 +282,57 @@ private struct GameDetailView: View {
                 try FileManager.default.moveItem(at: temporary, to: destination)
                 downloadedFile = destination
             } catch { model.errorMessage = error.localizedDescription }
+        }
+    }
+}
+
+private struct GameDetailHeader: View {
+    let game: Game
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .top, spacing: 16) {
+                artwork
+                metadata
+                    .frame(minWidth: 150, maxWidth: .infinity, alignment: .leading)
+                    .layoutPriority(1)
+            }
+            VStack(alignment: .leading, spacing: 14) {
+                artwork
+                metadata
+            }
+        }
+    }
+
+    private var artwork: some View {
+        AuthenticatedArtwork(assetId: game.coverAssetId, version: game.coverAssetVersion)
+            .frame(width: 104, height: 142)
+            .clipped()
+            .accessibilityLabel("Cover art for \(game.displayName)")
+    }
+
+    private var metadata: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Text(game.displayName)
+                .font(.title3.bold())
+                .lineLimit(3)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 8) {
+                Text(game.platform.uppercased())
+                    .font(.caption2.weight(.semibold))
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background(ROMTheme.softViolet, in: Capsule())
+                    .foregroundStyle(ROMTheme.ink)
+                Text(ROMTheme.bytes(game.size))
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            if let rating = game.rating {
+                Label(rating.formatted(.number.precision(.fractionLength(1))), systemImage: "star.fill")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(ROMTheme.violet)
+            }
         }
     }
 }

@@ -1,3 +1,4 @@
+import Foundation
 import SwiftUI
 
 struct DevicesView: View {
@@ -86,7 +87,11 @@ private struct DeviceDetailView: View {
     @State private var games: [Game] = []
     @State private var inventory: DeviceInventory?
     @State private var sync: DeviceSyncStatus?
-    @State private var scope = "changes"
+    @State private var scope = "on_device"
+    @State private var platform = ""
+    @State private var loadingGames = true
+    @State private var hasLoadedGames = false
+    @State private var didRefreshInventory = false
     @State private var applying = false
 
     private var selectedBytes: Int64 {
@@ -94,6 +99,12 @@ private struct DeviceDetailView: View {
             ?? games.filter { $0.selected != 0 }.reduce(0) { $0 + $1.size }
     }
     private var changes: Int { inventory?.changes ?? 0 }
+    private var queryID: String { "\(scope)|\(platform)" }
+    private var platformOptions: [String] {
+        var values = inventory?.platforms.map(\.platform) ?? []
+        if !platform.isEmpty && !values.contains(platform) { values.append(platform) }
+        return values
+    }
 
     var body: some View {
         List {
@@ -126,27 +137,32 @@ private struct DeviceDetailView: View {
             Section {
                 Picker("View", selection: $scope) {
                     Text("Changes").tag("changes")
-                    Text("Selected").tag("selected")
                     Text("On device").tag("on_device")
-                    Text("All").tag("all")
+                    Text("Library").tag("all")
                 }
                 .pickerStyle(.segmented)
-                ForEach(games) { game in
-                    Toggle(isOn: Binding(
-                        get: { game.selected != 0 },
-                        set: { selected in Task { await select(game, selected: selected) } }
-                    )) {
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(game.displayName).lineLimit(1)
-                            HStack {
-                                Text(game.platform)
-                                Text("·")
-                                Text(ROMTheme.bytes(game.size))
-                                if let state = game.deviceState {
-                                    Text("· \(state.replacingOccurrences(of: "_", with: " "))")
+                if loadingGames && games.isEmpty {
+                    ForEach(0..<6, id: \.self) { _ in DeviceGamePlaceholder() }
+                } else if games.isEmpty {
+                    DeviceGamesEmptyState(scope: scope, platform: platform)
+                } else {
+                    ForEach(games) { game in
+                        Toggle(isOn: Binding(
+                            get: { game.selected != 0 },
+                            set: { selected in Task { await select(game, selected: selected) } }
+                        )) {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(game.displayName).lineLimit(1)
+                                HStack {
+                                    Text(game.platform)
+                                    Text("·")
+                                    Text(ROMTheme.bytes(game.size))
+                                    if let state = game.deviceState {
+                                        Text("· \(state.replacingOccurrences(of: "_", with: " "))")
+                                    }
                                 }
+                                .font(.caption).foregroundStyle(.secondary)
                             }
-                            .font(.caption).foregroundStyle(.secondary)
                         }
                     }
                 }
@@ -168,8 +184,33 @@ private struct DeviceDetailView: View {
         }
         .navigationTitle(device.name)
         .navigationBarTitleDisplayMode(.inline)
-        .refreshable { await load(); await loadSync() }
-        .task(id: scope) { await load() }
+        .toolbar {
+            Menu {
+                Picker("Platform", selection: $platform) {
+                    Text("All platforms").tag("")
+                    ForEach(platformOptions, id: \.self) { value in
+                        Text(value).tag(value)
+                    }
+                }
+            } label: {
+                Label(
+                    platform.isEmpty ? "Platform" : platform,
+                    systemImage: platform.isEmpty ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill"
+                )
+            }
+            .accessibilityLabel(platform.isEmpty ? "Filter by platform" : "Platform: \(platform)")
+        }
+        .refreshable {
+            didRefreshInventory = true
+            await load(refreshDeviceInventory: true)
+            await loadSync()
+        }
+        .task(id: queryID) { await load() }
+        .task(id: hasLoadedGames) {
+            guard hasLoadedGames, !didRefreshInventory else { return }
+            didRefreshInventory = true
+            await load(refreshDeviceInventory: true)
+        }
         .task {
             while !Task.isCancelled {
                 await loadSync()
@@ -183,19 +224,32 @@ private struct DeviceDetailView: View {
         return sync?.status ?? (device.deliveryMode == "syncthing" ? "Checking delivery status…" : "Build a package after applying changes.")
     }
 
-    private func load() async {
+    private func load(refreshDeviceInventory: Bool = false) async {
+        let requestedScope = scope
+        let requestedPlatform = platform
+        if games.isEmpty && !refreshDeviceInventory { loadingGames = true }
+        defer {
+            if requestedScope == scope && requestedPlatform == platform {
+                loadingGames = false
+            }
+        }
         do {
             let response: GameList = try await model.request(
                 "/api/games",
                 query: [
                     .init(name: "device_id", value: String(device.id)),
-                    .init(name: "device_scope", value: scope),
-                    .init(name: "refresh_device_inventory", value: "true"),
+                    .init(name: "device_scope", value: requestedScope),
+                    .init(name: "platform", value: requestedPlatform),
+                    .init(name: "refresh_device_inventory", value: String(refreshDeviceInventory)),
                     .init(name: "limit", value: "500"),
                 ]
             )
+            guard requestedScope == scope, requestedPlatform == platform else { return }
             games = response.items
             inventory = response.deviceInventory
+            hasLoadedGames = true
+        } catch let error as URLError where error.code == .cancelled {
+        } catch is CancellationError {
         } catch { model.errorMessage = error.localizedDescription }
     }
 
@@ -211,6 +265,8 @@ private struct DeviceDetailView: View {
                 "/api/devices/\(device.id)/selection", method: "PUT", body: body
             )
             await load()
+        } catch let error as URLError where error.code == .cancelled {
+        } catch is CancellationError {
         } catch { model.errorMessage = error.localizedDescription }
     }
 
@@ -231,6 +287,51 @@ private struct DeviceDetailView: View {
             )
             await load()
         } catch { model.errorMessage = error.localizedDescription }
+    }
+}
+
+private struct DeviceGamePlaceholder: View {
+    var body: some View {
+        Toggle(isOn: .constant(false)) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text("Game title placeholder").font(.body)
+                Text("platform · file size · device state").font(.caption)
+            }
+            .redacted(reason: .placeholder)
+        }
+        .disabled(true)
+        .accessibilityHidden(true)
+    }
+}
+
+private struct DeviceGamesEmptyState: View {
+    let scope: String
+    let platform: String
+
+    var body: some View {
+        ContentUnavailableView {
+            Label(title, systemImage: "gamecontroller")
+        } description: {
+            Text(message)
+        }
+    }
+
+    private var title: String {
+        if !platform.isEmpty { return "No \(platform) games" }
+        switch scope {
+        case "changes": return "No staged changes"
+        case "on_device": return "No games on this device"
+        default: return "No games available"
+        }
+    }
+
+    private var message: String {
+        if !platform.isEmpty { return "Choose another platform or clear the filter." }
+        switch scope {
+        case "changes": return "Your staged collection matches the device."
+        case "on_device": return "Use Library to choose games for this device."
+        default: return "The indexed library will appear here."
+        }
     }
 }
 

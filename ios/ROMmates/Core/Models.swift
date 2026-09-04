@@ -92,6 +92,7 @@ struct DeviceInventory: Codable, Sendable {
     let changes: Int
     let files: Int
     let bytes: Int64
+    let platforms: [Platform]
     let selectedPlatforms: [Platform]
 }
 
