@@ -76,14 +76,16 @@ internal group, publish the matching metadata through the full administrator hos
 curl --fail-with-body --request POST https://rommates.example.com/api/mobile/releases \
   --header 'Authorization: Bearer YOUR_ROMMATES_ACCESS_TOKEN' \
   --header 'Content-Type: application/json' \
-  --data '{"build":4,"version":"1.0","notes":"Release notes for this build."}'
+  --data '{"build":5,"version":"1.0","notes":"Release notes for this build."}'
 ```
 
-Publishing a build for the first time creates one Inbox item per active native user and
-fans the announcement out through the existing durable APNs queue. Re-publishing the same
-build can correct its notes without notifying everyone again. The app checks at sign-in
-and whenever it returns to the foreground. Keep the complete notes in `ios/releases/` and
-use the same copy for TestFlight’s **What to Test** field.
+Publishing a build for the first time fans one announcement per active native user through
+the existing durable APNs queue. New-build announcements stay out of Inbox: tapping the push
+or an in-app update banner opens TestFlight, and the complete release notes appear once after
+the new build is installed. Re-publishing the same build can correct its notes without
+notifying everyone again. The app checks at sign-in and whenever it returns to the foreground.
+Keep the complete notes in `ios/releases/` and use the same copy for TestFlight’s
+**What to Test** field.
 
 OAuth/OIDC remains a later migration. The client talks through a small session layer,
 so Authorization Code with PKCE can replace password session creation without changing

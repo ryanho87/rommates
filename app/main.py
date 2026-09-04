@@ -1106,6 +1106,8 @@ def mobile_public_route_allowed(method: str, path: str) -> bool:
         ("GET", "/api/games"),
         ("GET", "/api/devices"),
         ("POST", "/api/devices"),
+        ("GET", "/api/device-groups"),
+        ("POST", "/api/device-groups"),
         ("GET", "/api/uploads"),
         ("POST", "/api/uploads"),
         ("GET", "/api/inbox"),
@@ -1121,15 +1123,18 @@ def mobile_public_route_allowed(method: str, path: str) -> bool:
         ),
         "POST": (
             rf"/api/games/\d+/download-ticket",
+            rf"/api/device-groups/\d+/apply",
             rf"/api/devices/\d+/(?:apply|discard-changes)",
             rf"/api/uploads/{_MOBILE_ID}/finalize",
             rf"/api/inbox/\d+/read",
         ),
         "PUT": (
+            rf"/api/device-groups/\d+",
             rf"/api/devices/\d+/selection",
             rf"/api/uploads/{_MOBILE_ID}/files/\d+",
         ),
         "DELETE": (
+            rf"/api/device-groups/\d+",
             rf"/api/v1/mobile/push-installation/{_MOBILE_ID}",
         ),
     }
@@ -1637,10 +1642,11 @@ def user_inbox(request: Request, limit: int = Query(30, ge=1, le=100)):
     with db.connect() as connection:
         items = [dict(row) for row in connection.execute(
             "SELECT id,kind,title,detail,path,read_at,created_at FROM user_notifications "
-            "WHERE user_id=? ORDER BY id DESC LIMIT ?", (principal.id, limit)
+            "WHERE user_id=? AND kind<>'new_build' ORDER BY id DESC LIMIT ?", (principal.id, limit)
         )]
         unread = connection.execute(
-            "SELECT COUNT(*) AS count FROM user_notifications WHERE user_id=? AND read_at IS NULL",
+            "SELECT COUNT(*) AS count FROM user_notifications "
+            "WHERE user_id=? AND kind<>'new_build' AND read_at IS NULL",
             (principal.id,),
         ).fetchone()["count"]
     return {"items": items, "unread": unread}
@@ -1673,7 +1679,7 @@ def read_all_user_notifications(request: Request):
     with db.write() as connection:
         cursor = connection.execute(
             "UPDATE user_notifications SET read_at=CURRENT_TIMESTAMP "
-            "WHERE user_id=? AND read_at IS NULL", (principal.id,)
+            "WHERE user_id=? AND kind<>'new_build' AND read_at IS NULL", (principal.id,)
         )
     return {"updated": cursor.rowcount}
 

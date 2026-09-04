@@ -6,6 +6,8 @@ struct DevicesView: View {
     @State private var devices: [Device] = []
     @State private var groups: [DeviceGroup] = []
     @State private var loading = true
+    @State private var error: String?
+    @State private var groupsError: String?
     @State private var showingCreateDevice = false
     @State private var showingCreateGroup = false
 
@@ -18,6 +20,14 @@ struct DevicesView: View {
             Group {
                 if loading && devices.isEmpty {
                     List(0..<5, id: \.self) { _ in DeviceRowPlaceholder() }
+                } else if let error, devices.isEmpty {
+                    ContentUnavailableView {
+                        Label("Devices unavailable", systemImage: "exclamationmark.triangle")
+                    } description: {
+                        Text(error)
+                    } actions: {
+                        Button("Try Again") { Task { await load(fresh: true) } }
+                    }
                 } else if devices.isEmpty {
                     EmptyState(
                         icon: "gamecontroller",
@@ -26,6 +36,16 @@ struct DevicesView: View {
                     )
                 } else {
                     List {
+                        if let groupsError {
+                            Section {
+                                LabeledContent {
+                                    Button("Try Again") { Task { await load(fresh: true) } }
+                                } label: {
+                                    Label(groupsError, systemImage: "exclamationmark.triangle")
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
                         if !groups.isEmpty {
                             Section("Device groups") {
                                 ForEach(groups) { group in
@@ -77,11 +97,22 @@ struct DevicesView: View {
     private func load(fresh: Bool = false) async {
         loading = true
         defer { loading = false }
+        async let loadedDevices: [Device] = model.request("/api/devices", fresh: fresh)
+        async let loadedGroups: [DeviceGroup] = model.request("/api/device-groups", fresh: fresh)
         do {
-            async let loadedDevices: [Device] = model.request("/api/devices", fresh: fresh)
-            async let loadedGroups: [DeviceGroup] = model.request("/api/device-groups", fresh: fresh)
-            (devices, groups) = try await (loadedDevices, loadedGroups)
-        } catch { model.report(error) }
+            devices = try await loadedDevices
+            error = nil
+        } catch {
+            self.error = error.localizedDescription
+            _ = try? await loadedGroups
+            return
+        }
+        do {
+            groups = try await loadedGroups
+            groupsError = nil
+        } catch {
+            groupsError = "Device groups couldn’t load"
+        }
     }
 }
 

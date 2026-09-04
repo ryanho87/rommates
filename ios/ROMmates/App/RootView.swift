@@ -77,7 +77,7 @@ private struct ReleaseAnnouncementBanner: View {
     let release: MobileRelease
 
     var body: some View {
-        Button { model.showReleaseNotes(release) } label: {
+        Button { model.openTestFlight() } label: {
             HStack(spacing: 12) {
                 Image(systemName: "sparkles")
                     .font(.headline)
@@ -87,7 +87,7 @@ private struct ReleaseAnnouncementBanner: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Build \(release.build) is ready")
                         .font(.subheadline.weight(.semibold))
-                    Text("See what’s new in ROMmates \(release.version)")
+                    Text("Update in TestFlight")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -102,7 +102,7 @@ private struct ReleaseAnnouncementBanner: View {
         }
         .buttonStyle(.plain)
         .background(.regularMaterial)
-        .accessibilityHint("Shows release notes and a TestFlight update button")
+        .accessibilityHint("Opens TestFlight to install the update")
     }
 }
 

@@ -139,7 +139,7 @@ private struct LibraryRowPlaceholder: View {
         HStack(spacing: 12) {
             RoundedRectangle(cornerRadius: 7)
                 .fill(Color(.secondarySystemFill))
-                .frame(width: 44, height: 58)
+                .frame(width: 58, height: 58)
             VStack(alignment: .leading, spacing: 7) {
                 Text("Game title placeholder")
                 Text("platform · file size")
@@ -158,7 +158,8 @@ private struct GameRow: View {
     var body: some View {
         HStack(spacing: 12) {
             AuthenticatedArtwork(assetId: game.coverAssetId, version: game.coverAssetVersion)
-                .frame(width: 44, height: 58)
+                .frame(width: 58, height: 58)
+                .clipped()
             VStack(alignment: .leading, spacing: 4) {
                 Text(game.displayName)
                     .font(.body.weight(.medium))
@@ -221,22 +222,24 @@ struct AuthenticatedArtwork: View {
     }
 
     var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 7)
-                .fill(Color(.secondarySystemFill))
-            if let image {
-                Image(uiImage: image)
-                    .resizable()
-                    .scaledToFill()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .clipped()
-            } else {
-                Image(systemName: "gamecontroller.fill")
-                    .foregroundStyle(.tertiary)
+        GeometryReader { proxy in
+            ZStack {
+                RoundedRectangle(cornerRadius: 7)
+                    .fill(Color(.secondarySystemFill))
+                if let image {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: proxy.size.width, height: proxy.size.height)
+                } else {
+                    Image(systemName: "gamecontroller.fill")
+                        .foregroundStyle(.tertiary)
+                }
             }
+            .frame(width: proxy.size.width, height: proxy.size.height)
+            .clipped()
+            .clipShape(RoundedRectangle(cornerRadius: 7))
         }
-        .clipped()
-        .clipShape(RoundedRectangle(cornerRadius: 7))
         .task(id: cacheKey) {
             image = nil
             guard let assetId, let cacheKey else { return }

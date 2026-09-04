@@ -258,10 +258,6 @@ final class AppModel: ObservableObject {
         await refreshInboxUnread()
     }
 
-    func showReleaseNotes(_ release: MobileRelease? = nil) {
-        presentedRelease = release ?? currentRelease ?? latestRelease
-    }
-
     func openTestFlight() {
         guard let url = URL(string: "itms-beta://") else { return }
         UIApplication.shared.open(url)
@@ -355,7 +351,7 @@ final class AppModel: ObservableObject {
 
     private func openPushPath(_ path: String) {
         if path.hasPrefix("release") {
-            showReleaseNotes(latestRelease)
+            openTestFlight()
         }
         else if path.hasPrefix("devices") { selectedTab = .devices }
         else if path.hasPrefix("transfers") { selectedTab = .uploads }

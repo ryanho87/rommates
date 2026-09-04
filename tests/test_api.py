@@ -200,6 +200,18 @@ class ApiIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(changed.status_code, 200, changed.text)
         self.assertEqual(self.client.get("/api/games", headers=bearer).status_code, 200)
+        self.assertEqual(
+            self.client.get("/api/device-groups", headers=bearer).status_code,
+            200,
+        )
+        for method, path in (
+            ("GET", "/api/device-groups"),
+            ("POST", "/api/device-groups"),
+            ("PUT", "/api/device-groups/42"),
+            ("DELETE", "/api/device-groups/42"),
+            ("POST", "/api/device-groups/42/apply"),
+        ):
+            self.assertTrue(self.main.mobile_public_route_allowed(method, path))
         self.assertEqual(self.client.get("/api/status", headers=bearer).status_code, 404)
         self.assertEqual(self.client.get("/", headers=bearer).status_code, 404)
         self.assertEqual(
@@ -789,8 +801,22 @@ class ApiIntegrationTests(unittest.TestCase):
             json={"ready": True},
         )
         self.assertEqual(ready.status_code, 200, ready.text)
+        with self.main.db.write() as connection:
+            connection.execute(
+                "INSERT INTO user_notifications(user_id,kind,title,detail,path,dedupe_key) "
+                "VALUES(?,?,?,?,?,?)",
+                (
+                    member_id,
+                    "new_build",
+                    "ROMmates build 99 is ready",
+                    "Test release notes",
+                    "release?build=99",
+                    "mobile-release:99",
+                ),
+            )
         inbox = self.client.get("/api/inbox").json()
         self.assertEqual(inbox["unread"], 1)
+        self.assertNotIn("new_build", {item["kind"] for item in inbox["items"]})
         self.assertEqual(inbox["items"][0]["kind"], "device_ready")
         self.assertIn("member-handheld", inbox["items"][0]["title"])
         marked = self.client.post(f"/api/inbox/{inbox['items'][0]['id']}/read")

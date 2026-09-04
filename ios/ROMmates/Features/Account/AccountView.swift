@@ -28,17 +28,12 @@ struct AccountView: View {
                 Section("About") {
                     LabeledContent("Version", value: AppModel.appVersion)
                     if let update = model.updateAvailable {
-                        Button { model.showReleaseNotes(update) } label: {
+                        Button { model.openTestFlight() } label: {
                             Label("Build \(update.build) is ready", systemImage: "arrow.down.circle.fill")
                         }
                     } else {
                         Label("You’re on the latest build", systemImage: "checkmark.circle.fill")
                             .foregroundStyle(.secondary)
-                    }
-                    if model.currentRelease != nil || model.latestRelease != nil {
-                        Button { model.showReleaseNotes() } label: {
-                            Label("Release Notes", systemImage: "doc.text")
-                        }
                     }
                 }
                 if let summary {
