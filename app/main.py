@@ -1121,6 +1121,7 @@ def mobile_public_route_allowed(method: str, path: str) -> bool:
         "GET": (
             rf"/api/games/\d+",
             rf"/api/artwork/thumbnails/\d+",
+            rf"/api/devices/\d+/summary",
             rf"/api/devices/\d+/sync-status",
         ),
         "POST": (

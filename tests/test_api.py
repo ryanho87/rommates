@@ -232,6 +232,7 @@ class ApiIntegrationTests(unittest.TestCase):
             ("PUT", "/api/device-groups/42"),
             ("DELETE", "/api/device-groups/42"),
             ("POST", "/api/device-groups/42/apply"),
+            ("GET", "/api/devices/42/summary"),
         ):
             self.assertTrue(self.main.mobile_public_route_allowed(method, path))
         self.assertEqual(self.client.get("/api/status", headers=bearer).status_code, 404)

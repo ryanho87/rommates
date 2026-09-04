@@ -397,7 +397,7 @@ private struct DeviceDetailView: View {
                                 HStack(spacing: 7) {
                                     PlatformBadge(platform: game.platform)
                                     Text(ROMTheme.bytes(game.size))
-                                    if let state = game.deviceState {
+                                    if let state = game.deviceState, state != "on_device" {
                                         DeviceStateBadge(state: state)
                                     }
                                 }
@@ -528,7 +528,15 @@ private struct DeviceDetailView: View {
             totalGames = response.total
             inventory = response.deviceInventory
             hasLoadedGames = true
-            summary = try await model.request("/api/devices/\(device.id)/summary", fresh: true)
+            do {
+                summary = try await model.request("/api/devices/\(device.id)/summary", fresh: true)
+            } catch let error as URLError where error.code == .cancelled {
+            } catch is CancellationError {
+            } catch {
+                // Storage details enhance the device page, but the primary game
+                // response already contains safe fallbacks for every metric.
+                summary = nil
+            }
         } catch let error as URLError where error.code == .cancelled {
         } catch is CancellationError {
         } catch { model.report(error) }
