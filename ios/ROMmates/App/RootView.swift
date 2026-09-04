@@ -27,6 +27,12 @@ struct RootView: View {
             actions: { Button("OK") { model.errorMessage = nil } },
             message: { Text(model.errorMessage ?? "") }
         )
+        .sheet(item: $model.presentedRelease) { release in
+            ReleaseNotesView(release: release)
+                .environmentObject(model)
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+        }
     }
 }
 
@@ -34,26 +40,127 @@ private struct MainTabView: View {
     @EnvironmentObject private var model: AppModel
 
     var body: some View {
-        TabView(selection: $model.selectedTab) {
-            LibraryView()
-                .tabItem { Label("Library", systemImage: "books.vertical") }
-                .tag(AppTab.library)
-            if model.permissions?.manageDevices == true {
-                DevicesView()
-                    .tabItem { Label("Devices", systemImage: "gamecontroller") }
-                    .tag(AppTab.devices)
+        VStack(spacing: 0) {
+            if let release = model.updateAvailable {
+                ReleaseAnnouncementBanner(release: release)
+                Divider()
             }
-            if model.permissions?.upload == true {
-                UploadsView()
-                    .tabItem { Label("Uploads", systemImage: "arrow.up.doc") }
-                    .tag(AppTab.uploads)
+            TabView(selection: $model.selectedTab) {
+                LibraryView()
+                    .tabItem { Label("Library", systemImage: "books.vertical") }
+                    .tag(AppTab.library)
+                if model.permissions?.manageDevices == true {
+                    DevicesView()
+                        .tabItem { Label("Devices", systemImage: "gamecontroller") }
+                        .tag(AppTab.devices)
+                }
+                if model.permissions?.upload == true {
+                    UploadsView()
+                        .tabItem { Label("Uploads", systemImage: "arrow.up.doc") }
+                        .tag(AppTab.uploads)
+                }
+                InboxView()
+                    .tabItem { Label("Inbox", systemImage: "tray") }
+                    .badge(model.inboxUnread)
+                    .tag(AppTab.inbox)
+                AccountView()
+                    .tabItem { Label("Account", systemImage: "person.crop.circle") }
+                    .tag(AppTab.account)
             }
-            InboxView()
-                .tabItem { Label("Inbox", systemImage: "tray") }
-                .tag(AppTab.inbox)
-            AccountView()
-                .tabItem { Label("Account", systemImage: "person.crop.circle") }
-                .tag(AppTab.account)
+        }
+        .animation(.snappy, value: model.updateAvailable)
+    }
+}
+
+private struct ReleaseAnnouncementBanner: View {
+    @EnvironmentObject private var model: AppModel
+    let release: MobileRelease
+
+    var body: some View {
+        Button { model.showReleaseNotes(release) } label: {
+            HStack(spacing: 12) {
+                Image(systemName: "sparkles")
+                    .font(.headline)
+                    .foregroundStyle(ROMTheme.violet)
+                    .frame(width: 30, height: 30)
+                    .background(ROMTheme.softViolet, in: Circle())
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Build \(release.build) is ready")
+                        .font(.subheadline.weight(.semibold))
+                    Text("See what’s new in ROMmates \(release.version)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 8)
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .contentShape(Rectangle())
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+        }
+        .buttonStyle(.plain)
+        .background(.regularMaterial)
+        .accessibilityHint("Shows release notes and a TestFlight update button")
+    }
+}
+
+private struct ReleaseNotesView: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    let release: MobileRelease
+
+    private var isUpdate: Bool { release.build > AppModel.currentBuild }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Image(systemName: "sparkles.rectangle.stack.fill")
+                            .font(.system(size: 38, weight: .semibold))
+                            .symbolRenderingMode(.palette)
+                            .foregroundStyle(ROMTheme.violet, ROMTheme.softViolet)
+                        Text(isUpdate ? "A new build is ready" : "What’s new")
+                            .font(.largeTitle.bold())
+                            .tracking(-0.7)
+                        Text("ROMmates \(release.version) · Build \(release.build)")
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(.secondary)
+                    }
+                    Text(release.notes)
+                        .font(.body)
+                        .lineSpacing(5)
+                        .textSelection(.enabled)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(24)
+            }
+            .background(Color(.systemGroupedBackground))
+            .navigationTitle("Release Notes")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+            .safeAreaInset(edge: .bottom) {
+                if isUpdate {
+                    Button {
+                        model.openTestFlight()
+                    } label: {
+                        Label("Open TestFlight", systemImage: "arrow.down.circle.fill")
+                            .font(.headline)
+                            .frame(maxWidth: .infinity)
+                            .frame(minHeight: 48)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 12)
+                    .background(.regularMaterial)
+                }
+            }
         }
     }
 }

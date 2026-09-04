@@ -14,6 +14,7 @@ from .library import LibraryError
 
 
 PUSH_EVENTS = (
+    "new_build",
     "device_ready",
     "device_sync",
     "device_apply",
@@ -360,6 +361,7 @@ class MobilePushService:
                 "thread-id": str(row["kind"]),
             },
             "notification_id": int(row["notification_id"]),
+            "kind": str(row["kind"]),
             "path": str(row["path"]),
         }
 

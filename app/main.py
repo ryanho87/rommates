@@ -24,6 +24,7 @@ from .db import Database
 from .device_sync import DeviceSyncMonitor
 from .library import JobCancelled, LibraryError, LibraryService
 from .mobile_push import MobilePushService, PUSH_EVENTS
+from .mobile_releases import MobileReleaseService
 from .mcp_server import RommatesMCPService, create_mcp_server
 from .naming import NamingService
 from .notifications import NotificationService
@@ -75,6 +76,7 @@ transfers = TransferService(settings, db, library)
 syncthing = SyncthingService(settings)
 notifications = NotificationService(settings, db)
 mobile_push = MobilePushService(settings, db)
+mobile_releases = MobileReleaseService(db, mobile_push)
 device_syncs = DeviceSyncMonitor(
     db,
     syncthing,
@@ -890,6 +892,12 @@ class MobilePushPreferencesRequest(BaseModel):
     events: dict[str, bool]
 
 
+class MobileReleaseRequest(BaseModel):
+    build: int = Field(ge=1)
+    version: str = Field(min_length=1, max_length=50)
+    notes: str = Field(min_length=1, max_length=4000)
+
+
 class PasswordChangeRequest(BaseModel):
     current_password: str = Field(min_length=1, max_length=1024)
     new_password: str = Field(min_length=PASSWORD_MIN_LENGTH, max_length=1024)
@@ -1008,6 +1016,7 @@ def role_allows(principal: Principal, method: str, path: str) -> bool:
         "/api/v1/mobile/bootstrap",
         "/api/v1/mobile/push-installation",
         "/api/v1/mobile/push-preferences",
+        "/api/v1/mobile/releases",
     }:
         return True
     if path.startswith("/api/inbox"):
@@ -1086,6 +1095,7 @@ def mobile_public_route_allowed(method: str, path: str) -> bool:
         return True
     exact = {
         ("GET", "/api/v1/mobile/bootstrap"),
+        ("GET", "/api/v1/mobile/releases"),
         ("PUT", "/api/v1/mobile/push-installation"),
         ("PUT", "/api/v1/mobile/push-preferences"),
         ("POST", "/api/auth/logout"),
@@ -1461,6 +1471,24 @@ def update_mobile_push_preferences(
         "events": mobile_push.update_preferences(principal.id, payload.events),
         "supported_events": list(PUSH_EVENTS),
     }
+
+
+@app.get("/api/v1/mobile/releases")
+def mobile_release_manifest(request: Request, build: int = Query(ge=1)):
+    principal = request_principal(request)
+    if principal.id is None:
+        raise HTTPException(status_code=403, detail="A personal account is required")
+    return mobile_releases.manifest(build)
+
+
+@app.post("/api/mobile/releases", status_code=201)
+def publish_mobile_release(payload: MobileReleaseRequest):
+    result = mobile_releases.publish(payload.build, payload.version, payload.notes)
+    db.activity(
+        "mobile_release",
+        f"Published ROMmates {payload.version.strip()} build {payload.build}",
+    )
+    return result
 
 
 @app.get("/api/account/summary")

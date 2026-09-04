@@ -162,6 +162,12 @@ struct AuthenticatedArtwork: View {
     let version: String?
     @State private var image: UIImage?
 
+    private var cacheKey: String? {
+        guard let assetId else { return nil }
+        return [model.baseURL?.absoluteString ?? "", String(assetId), version ?? "unversioned"]
+            .joined(separator: ":")
+    }
+
     var body: some View {
         ZStack {
             RoundedRectangle(cornerRadius: 7)
@@ -179,12 +185,41 @@ struct AuthenticatedArtwork: View {
         }
         .clipped()
         .clipShape(RoundedRectangle(cornerRadius: 7))
-        .task(id: assetId) {
-            guard let assetId else { return }
+        .task(id: cacheKey) {
+            image = nil
+            guard let assetId, let cacheKey else { return }
+            if let cached = ArtworkMemoryCache.shared.image(for: cacheKey) {
+                image = cached
+                return
+            }
             let suffix = version.map { "?v=\($0)" } ?? ""
             guard let data = try? await model.data(path: "/api/artwork/thumbnails/\(assetId)\(suffix)") else { return }
-            image = UIImage(data: data)
+            guard !Task.isCancelled, let loaded = UIImage(data: data) else { return }
+            ArtworkMemoryCache.shared.insert(loaded, for: cacheKey)
+            image = loaded
         }
+    }
+}
+
+@MainActor
+private final class ArtworkMemoryCache {
+    static let shared = ArtworkMemoryCache()
+
+    private let cache: NSCache<NSString, UIImage> = {
+        let cache = NSCache<NSString, UIImage>()
+        cache.totalCostLimit = 48 * 1_024 * 1_024
+        cache.countLimit = 500
+        return cache
+    }()
+
+    func image(for key: String) -> UIImage? {
+        cache.object(forKey: key as NSString)
+    }
+
+    func insert(_ image: UIImage, for key: String) {
+        let decodedCost = (image.cgImage?.bytesPerRow ?? 0) * (image.cgImage?.height ?? 0)
+        let cost = max(decodedCost, 1)
+        cache.setObject(image, forKey: key as NSString, cost: cost)
     }
 }
 

@@ -11,12 +11,12 @@ owned by the server.
 - Public HTTPS servers only; session tokens are stored in the iOS Keychain.
 - Library browsing, metadata, authenticated artwork, per-game downloads, device
   selections, staged-capacity feedback, device apply/discard, Syncthing delivery
-  progress, contributor uploads, inbox, push preferences, and account editing.
+  progress, contributor uploads, inbox, push preferences, account editing, and
+  server-driven TestFlight announcements and release notes.
 - Push registration uses the production entitlement in Release builds and development
   in Debug builds.
-- `swiftc -typecheck` passes against the iPhoneOS SDK. A complete Xcode build and
-  simulator visual review still need to be run from a normal macOS/Xcode session;
-  the Codex sandbox could not access CoreSimulator's asset compiler.
+- Debug and optimized Release device builds pass with Xcode. Physical-device behavior,
+  including production APNs delivery, is exercised through the internal TestFlight group.
 
 ## Generate and open the project
 
@@ -65,6 +65,24 @@ server failures use bounded exponential retry.
    password flow.
 6. Archive the Release configuration, validate the production push entitlement, and
    upload the build to App Store Connect for internal TestFlight testing.
+
+## Publish a TestFlight release
+
+After App Store Connect reports the uploaded build as valid and it is available to the
+internal group, publish the matching metadata through the full administrator hostname:
+
+```sh
+curl --fail-with-body --request POST https://rommates.example.com/api/mobile/releases \
+  --header 'Authorization: Bearer YOUR_ROMMATES_ACCESS_TOKEN' \
+  --header 'Content-Type: application/json' \
+  --data '{"build":3,"version":"1.0","notes":"Release notes for this build."}'
+```
+
+Publishing a build for the first time creates one Inbox item per active native user and
+fans the announcement out through the existing durable APNs queue. Re-publishing the same
+build can correct its notes without notifying everyone again. The app checks at sign-in
+and whenever it returns to the foreground. Keep the complete notes in `ios/releases/` and
+use the same copy for TestFlight’s **What to Test** field.
 
 OAuth/OIDC remains a later migration. The client talks through a small session layer,
 so Authorization Code with PKCE can replace password session creation without changing

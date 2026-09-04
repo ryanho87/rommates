@@ -11,14 +11,27 @@ enum AppTab: Hashable {
     case account
 }
 
+enum PushAuthorizationState: Equatable {
+    case unavailable
+    case notDetermined
+    case authorized
+    case denied
+}
+
 @MainActor
 final class AppModel: ObservableObject {
-    enum SessionState { case loading, signedOut, signedIn }
+    enum SessionState: Equatable { case loading, signedOut, signedIn }
 
     @Published var sessionState: SessionState = .loading
     @Published var user: User?
     @Published var permissions: Permissions?
     @Published var push: MobileBootstrap.Push?
+    @Published var pushAuthorization: PushAuthorizationState = .unavailable
+    @Published var latestRelease: MobileRelease?
+    @Published var currentRelease: MobileRelease?
+    @Published var updateAvailable: MobileRelease?
+    @Published var presentedRelease: MobileRelease?
+    @Published var inboxUnread = 0
     @Published var selectedTab: AppTab = .library
     @Published var isBusy = false
     @Published var errorMessage: String?
@@ -42,6 +55,10 @@ final class AppModel: ObservableObject {
             .compactMap { $0.object as? String }
             .receive(on: RunLoop.main)
             .sink { [weak self] path in self?.openPushPath(path) }
+            .store(in: &cancellables)
+        NotificationCenter.default.publisher(for: .rommatesPushReceived)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in Task { await self?.refreshInboxUnread() } }
             .store(in: &cancellables)
     }
 
@@ -98,7 +115,9 @@ final class AppModel: ObservableObject {
             permissions = response.permissions
             push = response.push
             sessionState = .signedIn
-            if response.push.configured { await enablePushIfAllowed() }
+            await syncPushAuthorization(requestIfNeeded: response.push.configured)
+            await checkForUpdates()
+            await refreshInboxUnread()
         } catch let error as APIError where error.statusCode == 401 {
             clearSession()
         } catch {
@@ -190,6 +209,61 @@ final class AppModel: ObservableObject {
 
     func applyUpdatedUser(_ user: User) { self.user = user }
 
+    func setInboxUnread(_ count: Int) {
+        inboxUnread = max(0, count)
+    }
+
+    func checkForUpdates() async {
+        guard client != nil else { return }
+        do {
+            let manifest: MobileReleaseManifest = try await request(
+                "/api/v1/mobile/releases",
+                query: [.init(name: "build", value: String(Self.currentBuild))]
+            )
+            latestRelease = manifest.latest
+            currentRelease = manifest.current
+            updateAvailable = manifest.latest.flatMap {
+                $0.build > Self.currentBuild ? $0 : nil
+            }
+            let seenBuild = defaults.integer(forKey: "rommates.whats-new-seen-build")
+            if let current = manifest.current, current.build > seenBuild {
+                presentedRelease = current
+                defaults.set(current.build, forKey: "rommates.whats-new-seen-build")
+            }
+        } catch let error as APIError where error.statusCode == 404 {
+            // Older servers do not expose release metadata yet. Core app flows
+            // continue to work while the server is upgraded.
+        } catch {
+            // Update checks are optional and should never interrupt library use.
+        }
+    }
+
+    func becameActive() async {
+        guard sessionState == .signedIn else { return }
+        await syncPushAuthorization(requestIfNeeded: false)
+        await checkForUpdates()
+        await refreshInboxUnread()
+    }
+
+    func showReleaseNotes(_ release: MobileRelease? = nil) {
+        presentedRelease = release ?? currentRelease ?? latestRelease
+    }
+
+    func openTestFlight() {
+        guard let url = URL(string: "itms-beta://") else { return }
+        UIApplication.shared.open(url)
+    }
+
+    func requestPushPermission() async {
+        guard push?.configured == true else { return }
+        if pushAuthorization == .denied {
+            guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+            await UIApplication.shared.open(url)
+            return
+        }
+        await syncPushAuthorization(requestIfNeeded: true)
+    }
+
     private func configure(url: URL, token: String) {
         baseURL = url
         self.token = token
@@ -203,21 +277,39 @@ final class AppModel: ObservableObject {
         user = nil
         permissions = nil
         push = nil
+        pushAuthorization = .unavailable
+        latestRelease = nil
+        currentRelease = nil
+        updateAvailable = nil
+        presentedRelease = nil
+        inboxUnread = 0
         sessionState = .signedOut
     }
 
-    private func enablePushIfAllowed() async {
+    private func syncPushAuthorization(requestIfNeeded: Bool) async {
+        guard push?.configured == true else {
+            pushAuthorization = .unavailable
+            return
+        }
         let center = UNUserNotificationCenter.current()
         let settings = await center.notificationSettings()
-        if settings.authorizationStatus == .notDetermined {
+        if requestIfNeeded && settings.authorizationStatus == .notDetermined {
             _ = try? await center.requestAuthorization(options: [.alert, .badge, .sound])
         }
         let updated = await center.notificationSettings()
-        if updated.authorizationStatus == .authorized || updated.authorizationStatus == .provisional {
+        switch updated.authorizationStatus {
+        case .authorized, .provisional, .ephemeral:
+            pushAuthorization = .authorized
             UIApplication.shared.registerForRemoteNotifications()
             if let saved = defaults.string(forKey: "pushDeviceToken") {
                 await registerPushToken(saved)
             }
+        case .notDetermined:
+            pushAuthorization = .notDetermined
+        case .denied:
+            pushAuthorization = .denied
+        @unknown default:
+            pushAuthorization = .denied
         }
     }
 
@@ -240,8 +332,19 @@ final class AppModel: ObservableObject {
         }
     }
 
+    private func refreshInboxUnread() async {
+        guard client != nil else { return }
+        guard let response: InboxResponse = try? await request(
+            "/api/inbox", query: [.init(name: "limit", value: "1")]
+        ) else { return }
+        inboxUnread = response.unread
+    }
+
     private func openPushPath(_ path: String) {
-        if path.hasPrefix("devices") { selectedTab = .devices }
+        if path.hasPrefix("release") {
+            showReleaseNotes(latestRelease)
+        }
+        else if path.hasPrefix("devices") { selectedTab = .devices }
         else if path.hasPrefix("transfers") { selectedTab = .uploads }
         else { selectedTab = .inbox }
     }
@@ -254,10 +357,15 @@ final class AppModel: ObservableObject {
         return value
     }
 
-    private static var appVersion: String {
+    static var appVersion: String {
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
         let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "0"
         return "\(version) (\(build))"
+    }
+
+    static var currentBuild: Int {
+        let value = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "0"
+        return Int(value) ?? 0
     }
 }
 
@@ -288,4 +396,5 @@ private struct UnregisterResponse: Decodable, Sendable { let unregistered: Bool 
 extension Notification.Name {
     static let rommatesDeviceToken = Notification.Name("rommatesDeviceToken")
     static let rommatesPushOpened = Notification.Name("rommatesPushOpened")
+    static let rommatesPushReceived = Notification.Name("rommatesPushReceived")
 }

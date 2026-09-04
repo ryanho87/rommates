@@ -25,6 +25,22 @@ struct AccountView: View {
                     }
                     LabeledContent("Server", value: model.baseURL?.host ?? "")
                 }
+                Section("About") {
+                    LabeledContent("Version", value: AppModel.appVersion)
+                    if let update = model.updateAvailable {
+                        Button { model.showReleaseNotes(update) } label: {
+                            Label("Build \(update.build) is ready", systemImage: "arrow.down.circle.fill")
+                        }
+                    } else {
+                        Label("You’re on the latest build", systemImage: "checkmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                    }
+                    if model.currentRelease != nil || model.latestRelease != nil {
+                        Button { model.showReleaseNotes() } label: {
+                            Label("Release Notes", systemImage: "doc.text")
+                        }
+                    }
+                }
                 if let summary {
                     Section("Your library") {
                         LabeledContent("Unique synced ROMs", value: summary.uniqueSyncedRoms.formatted())
@@ -36,6 +52,7 @@ struct AccountView: View {
                 }
                 Section {
                     if model.push?.configured == true {
+                        pushAuthorizationRow
                         ForEach(pushKinds, id: \.key) { item in
                             Toggle(item.label, isOn: Binding(
                                 get: { model.push?.events[item.key] ?? true },
@@ -63,12 +80,36 @@ struct AccountView: View {
     }
 
     private let pushKinds = [
+        (key: "new_build", label: "New TestFlight builds"),
         (key: "device_ready", label: "Device ready"),
         (key: "device_sync", label: "Device delivery complete"),
         (key: "device_apply", label: "Device apply problems"),
         (key: "upload_approved", label: "Upload approved"),
         (key: "upload_rejected", label: "Upload not approved"),
     ]
+
+    @ViewBuilder
+    private var pushAuthorizationRow: some View {
+        switch model.pushAuthorization {
+        case .authorized:
+            Label("Notifications allowed", systemImage: "bell.badge.fill")
+                .foregroundStyle(.secondary)
+        case .notDetermined:
+            Button {
+                Task { await model.requestPushPermission() }
+            } label: {
+                Label("Enable notifications", systemImage: "bell.badge")
+            }
+        case .denied:
+            Button {
+                Task { await model.requestPushPermission() }
+            } label: {
+                Label("Notifications off — Open Settings", systemImage: "bell.slash")
+            }
+        case .unavailable:
+            EmptyView()
+        }
+    }
 
     private func load() async {
         do { summary = try await model.request("/api/account/summary") }

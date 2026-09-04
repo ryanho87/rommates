@@ -16,6 +16,8 @@ Cloudflare Tunnel.
 - [x] Reject web sessions, browser cookies, the bootstrap token, and anonymous proxy
   access on the mobile hostname.
 - [x] Continue applying role and device-ownership authorization after the host allowlist.
+- [x] Expose signed-in release metadata on the mobile hostname while keeping release
+  publication on the full administrator hostname.
 - [ ] Replace the process-local login limiter with durable per-account and per-source
   throttling that survives container restarts.
 - [ ] Add an account-facing native-session list with individual and all-device revocation.
@@ -71,6 +73,8 @@ Run these checks against the dedicated API hostname before inviting users:
 - [ ] Confirm the Xcode bundle identifier and Push Notifications entitlement match.
 - [ ] Test registration, preference updates, delivery, logout unregister, and invalid-token
   cleanup on a physical iPhone.
+- [ ] Publish a test release only after its TestFlight build is valid; confirm one Inbox
+  item, one APNs announcement per installation, and direct TestFlight opening on tap.
 
 ## 5. App and TestFlight UAT
 

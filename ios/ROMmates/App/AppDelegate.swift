@@ -22,14 +22,24 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification
     ) async -> UNNotificationPresentationOptions {
-        [.banner, .list, .sound]
+        await MainActor.run {
+            NotificationCenter.default.post(name: .rommatesPushReceived, object: nil)
+        }
+        return [.banner, .list, .sound]
     }
 
     nonisolated func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse
     ) async {
-        let path = response.notification.request.content.userInfo["path"] as? String ?? ""
+        let userInfo = response.notification.request.content.userInfo
+        let path = userInfo["path"] as? String ?? ""
+        let kind = userInfo["kind"] as? String ?? ""
+        if kind == "new_build" || path.hasPrefix("release") {
+            guard let url = URL(string: "itms-beta://") else { return }
+            await MainActor.run { UIApplication.shared.open(url) }
+            return
+        }
         await MainActor.run {
             NotificationCenter.default.post(name: .rommatesPushOpened, object: path)
         }

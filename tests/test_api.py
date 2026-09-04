@@ -209,6 +209,34 @@ class ApiIntegrationTests(unittest.TestCase):
             401,
         )
 
+        published = self.client.post(
+            "/api/mobile/releases",
+            headers=self.headers,
+            json={
+                "build": 1001,
+                "version": "1.0",
+                "notes": "A quieter update banner and release notes.",
+            },
+        )
+        self.assertEqual(published.status_code, 201, published.text)
+        self.assertTrue(published.json()["created"])
+        release = self.client.get(
+            "/api/v1/mobile/releases",
+            headers=bearer,
+            params={"build": 1001},
+        )
+        self.assertEqual(release.status_code, 200, release.text)
+        self.assertEqual(release.json()["latest"]["build"], 1001)
+        self.assertEqual(release.json()["current"]["version"], "1.0")
+        self.assertEqual(
+            self.client.post(
+                "/api/mobile/releases",
+                headers=bearer,
+                json={"build": 1002, "version": "1.0", "notes": "Not allowed"},
+            ).status_code,
+            404,
+        )
+
         _, web_token, _ = self.main.auth.authenticate(
             "public-mobile-member",
             "public-mobile-password-changed",

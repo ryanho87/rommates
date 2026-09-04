@@ -45,6 +45,7 @@ struct InboxView: View {
             let response: InboxResponse = try await model.request("/api/inbox")
             items = response.items
             unread = response.unread
+            model.setInboxUnread(response.unread)
         } catch { model.errorMessage = error.localizedDescription }
     }
 
@@ -92,6 +93,7 @@ private struct InboxRow: View {
     }
 
     private var icon: String {
+        if item.kind == "new_build" { return "sparkles" }
         if item.kind.hasPrefix("device") { return "gamecontroller.fill" }
         if item.kind.hasPrefix("upload") { return "arrow.up.doc.fill" }
         return "bell.fill"

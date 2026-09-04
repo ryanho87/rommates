@@ -491,6 +491,13 @@ CREATE TABLE IF NOT EXISTS mobile_push_outbox (
 CREATE INDEX IF NOT EXISTS idx_mobile_push_outbox_pending
 ON mobile_push_outbox(status,next_attempt_at,id);
 
+CREATE TABLE IF NOT EXISTS mobile_releases (
+    build INTEGER PRIMARY KEY CHECK(build > 0),
+    version TEXT NOT NULL,
+    notes TEXT NOT NULL,
+    released_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS activity (
     id INTEGER PRIMARY KEY,
     action TEXT NOT NULL,
@@ -977,6 +984,12 @@ class Database:
                     "WHERE client_name LIKE 'ROMmates for iOS%'"
                 )
             connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(35)")
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS mobile_releases ("
+                "build INTEGER PRIMARY KEY CHECK(build > 0),version TEXT NOT NULL,"
+                "notes TEXT NOT NULL,released_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"
+            )
+            connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(36)")
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:

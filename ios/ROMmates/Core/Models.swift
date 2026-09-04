@@ -37,6 +37,19 @@ struct MobileBootstrap: Codable, Sendable {
     let push: Push
 }
 
+struct MobileRelease: Codable, Identifiable, Hashable, Sendable {
+    var id: Int { build }
+    let build: Int
+    let version: String
+    let notes: String
+    let releasedAt: String
+}
+
+struct MobileReleaseManifest: Codable, Sendable {
+    let latest: MobileRelease?
+    let current: MobileRelease?
+}
+
 struct PlatformSummary: Codable, Identifiable, Hashable, Sendable {
     var id: String { platform }
     let platform: String

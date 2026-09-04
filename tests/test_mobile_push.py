@@ -7,6 +7,7 @@ from pathlib import Path
 from app.config import Settings
 from app.db import Database
 from app.mobile_push import APNsResult, MobilePushService
+from app.mobile_releases import MobileReleaseService
 
 
 class FakeProvider:
@@ -111,6 +112,30 @@ class MobilePushServiceTests(unittest.TestCase):
             outbox = connection.execute("SELECT status FROM mobile_push_outbox").fetchone()
         self.assertEqual(installation["notifications_enabled"], 0)
         self.assertEqual(outbox["status"], "failed")
+
+    def test_publishing_release_announces_once_and_returns_manifest(self):
+        provider = FakeProvider()
+        push = MobilePushService(self.settings, self.db, provider=provider)
+        self.register(push)
+        releases = MobileReleaseService(self.db, push)
+
+        published = releases.publish(
+            3,
+            "1.0",
+            "- New-build announcements\n- Faster artwork loading",
+        )
+        self.assertTrue(published["created"])
+        self.assertEqual(published["notified_users"], 1)
+        manifest = releases.manifest(3)
+        self.assertEqual(manifest["latest"]["build"], 3)
+        self.assertEqual(manifest["current"]["notes"], published["release"]["notes"])
+        self.assertTrue(push.drain_once())
+        self.assertEqual(provider.calls[0][1]["path"], "release?build=3")
+
+        republished = releases.publish(3, "1.0", "Corrected release notes")
+        self.assertFalse(republished["created"])
+        self.assertEqual(republished["notified_users"], 0)
+        self.assertFalse(push.drain_once())
 
 
 if __name__ == "__main__":
