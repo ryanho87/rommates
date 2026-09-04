@@ -1,6 +1,6 @@
 import SwiftUI
 
-private enum LibrarySort: String, CaseIterable, Identifiable {
+enum GameSort: String, CaseIterable, Identifiable {
     case nameAscending = "name_asc"
     case nameDescending = "name_desc"
     case topRanked = "rank_asc"
@@ -31,7 +31,7 @@ struct LibraryView: View {
     @State private var total = 0
     @State private var search = ""
     @State private var platform = ""
-    @State private var sort: LibrarySort = .nameAscending
+    @State private var sort: GameSort = .nameAscending
     @State private var loading = true
     @State private var loadingMore = false
     @State private var error: String?
@@ -154,7 +154,7 @@ struct LibraryView: View {
 private struct LibraryCriteriaBar: View {
     @Binding var search: String
     @Binding var platform: String
-    @Binding var sort: LibrarySort
+    @Binding var sort: GameSort
     let platforms: [PlatformSummary]
     let total: Int
     let loading: Bool
@@ -181,7 +181,7 @@ private struct LibraryCriteriaBar: View {
                 }
                 criteriaMenu(title: "SORT BY", value: sort.title, icon: "arrow.up.arrow.down") {
                     Picker("Sort games", selection: $sort) {
-                        ForEach(LibrarySort.allCases) { option in
+                        ForEach(GameSort.allCases) { option in
                             Text(option.title).tag(option)
                         }
                     }

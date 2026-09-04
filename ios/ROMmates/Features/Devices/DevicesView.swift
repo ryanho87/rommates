@@ -227,6 +227,8 @@ private struct DeviceDetailView: View {
     @State private var sync: DeviceSyncStatus?
     @State private var scope = "on_device"
     @State private var platform = ""
+    @State private var sort: GameSort = .nameAscending
+    @State private var totalGames = 0
     @State private var loadingGames = true
     @State private var hasLoadedGames = false
     @State private var didRefreshInventory = false
@@ -246,7 +248,7 @@ private struct DeviceDetailView: View {
     private var capacityBytes: Int64 { summary?.storageCapacityBytes ?? device.storageCapacityBytes }
     private var selectedGameCount: Int { summary?.games ?? device.selectedGames }
     private var changes: Int { inventory?.changes ?? 0 }
-    private var queryID: String { "\(scope)|\(platform)" }
+    private var queryID: String { "\(scope)|\(platform)|\(sort.rawValue)" }
     private var platformOptions: [String] {
         var values = Set(inventory?.platforms.map(\.platform) ?? [])
         values.formUnion(inventory?.presentPlatforms.map(\.platform) ?? [])
@@ -340,6 +342,16 @@ private struct DeviceDetailView: View {
                     Text("Library").tag("all")
                 }
                 .pickerStyle(.segmented)
+                DeviceCriteriaBar(
+                    platform: $platform,
+                    sort: $sort,
+                    platforms: platformOptions,
+                    counts: Dictionary(
+                        uniqueKeysWithValues: (inventory?.platforms ?? []).map { ($0.platform, $0.count) }
+                    ),
+                    total: totalGames,
+                    loading: loadingGames
+                )
                 if loadingGames && games.isEmpty {
                     ForEach(0..<6, id: \.self) { _ in DeviceGamePlaceholder() }
                 } else if games.isEmpty {
@@ -405,22 +417,6 @@ private struct DeviceDetailView: View {
         }
         .navigationTitle(device.name)
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            Menu {
-                Picker("Platform", selection: $platform) {
-                    Text("All platforms").tag("")
-                    ForEach(platformOptions, id: \.self) { value in
-                        Text(value).tag(value)
-                    }
-                }
-            } label: {
-                Label(
-                    platform.isEmpty ? "Platform" : platform,
-                    systemImage: platform.isEmpty ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill"
-                )
-            }
-            .accessibilityLabel(platform.isEmpty ? "Filter by platform" : "Platform: \(platform)")
-        }
         .refreshable {
             didRefreshInventory = true
             await load(refreshDeviceInventory: true)
@@ -469,9 +465,10 @@ private struct DeviceDetailView: View {
     private func load(refreshDeviceInventory: Bool = false) async {
         let requestedScope = scope
         let requestedPlatform = platform
+        let requestedSort = sort
         if games.isEmpty && !refreshDeviceInventory { loadingGames = true }
         defer {
-            if requestedScope == scope && requestedPlatform == platform {
+            if requestedScope == scope && requestedPlatform == platform && requestedSort == sort {
                 loadingGames = false
             }
         }
@@ -482,13 +479,15 @@ private struct DeviceDetailView: View {
                     .init(name: "device_id", value: String(device.id)),
                     .init(name: "device_scope", value: requestedScope),
                     .init(name: "platform", value: requestedPlatform),
+                    .init(name: "sort", value: requestedSort.rawValue),
                     .init(name: "refresh_device_inventory", value: String(refreshDeviceInventory)),
                     .init(name: "limit", value: "500"),
                 ],
                 fresh: refreshDeviceInventory
             )
-            guard requestedScope == scope, requestedPlatform == platform else { return }
+            guard requestedScope == scope, requestedPlatform == platform, requestedSort == sort else { return }
             games = response.items
+            totalGames = response.total
             inventory = response.deviceInventory
             hasLoadedGames = true
             summary = try await model.request("/api/devices/\(device.id)/summary", fresh: true)
@@ -581,6 +580,118 @@ private struct DeviceDetailView: View {
             }
         }
         throw APIError(statusCode: 0, message: "The package is still preparing. Try again shortly.")
+    }
+}
+
+private struct DeviceCriteriaBar: View {
+    @Binding var platform: String
+    @Binding var sort: GameSort
+    let platforms: [String]
+    let counts: [String: Int]
+    let total: Int
+    let loading: Bool
+
+    private var platformLabel: String {
+        platform.isEmpty ? "All platforms" : platform.uppercased()
+    }
+
+    private var hasCustomCriteria: Bool {
+        !platform.isEmpty || sort != .nameAscending
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 9) {
+                criteriaMenu(
+                    title: "FILTER BY",
+                    value: platformLabel,
+                    icon: "line.3.horizontal.decrease"
+                ) {
+                    Picker("Platform", selection: $platform) {
+                        Text("All platforms").tag("")
+                        ForEach(platforms, id: \.self) { value in
+                            if let count = counts[value] {
+                                Text("\(value.uppercased()) (\(count.formatted()))").tag(value)
+                            } else {
+                                Text(value.uppercased()).tag(value)
+                            }
+                        }
+                    }
+                }
+                criteriaMenu(
+                    title: "SORT BY",
+                    value: sort.title,
+                    icon: "arrow.up.arrow.down"
+                ) {
+                    Picker("Sort games", selection: $sort) {
+                        ForEach(GameSort.allCases) { option in
+                            Text(option.title).tag(option)
+                        }
+                    }
+                }
+            }
+            HStack(spacing: 8) {
+                Text(loading && total == 0
+                    ? "Loading games"
+                    : "\(total.formatted()) games · \(platformLabel) · \(sort.title)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .accessibilityLabel(loading && total == 0
+                        ? "Loading games"
+                        : "\(total.formatted()) games, filtered by \(platformLabel), sorted by \(sort.title)")
+                Spacer(minLength: 4)
+                if hasCustomCriteria {
+                    Button("Reset") {
+                        platform = ""
+                        sort = .nameAscending
+                    }
+                    .font(.caption.weight(.semibold))
+                }
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func criteriaMenu<Content: View>(
+        title: String,
+        value: String,
+        icon: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        Menu(content: content) {
+            HStack(spacing: 10) {
+                Image(systemName: icon)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(ROMTheme.violet)
+                    .frame(width: 20)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.caption2.weight(.bold))
+                        .tracking(0.6)
+                        .foregroundStyle(.secondary)
+                    Text(value)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 4)
+                Image(systemName: "chevron.down")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 12)
+            .frame(maxWidth: .infinity, minHeight: 48)
+            .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 11))
+            .overlay {
+                RoundedRectangle(cornerRadius: 11)
+                    .stroke(Color.primary.opacity(0.1), lineWidth: 0.5)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .frame(maxWidth: .infinity)
+        .accessibilityLabel("\(title.lowercased()), \(value)")
     }
 }
 

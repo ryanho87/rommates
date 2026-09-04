@@ -10,7 +10,8 @@ owned by the server.
 - iOS 17+, Swift 6, no third-party client dependencies.
 - Public HTTPS servers only; session tokens are stored in the iOS Keychain.
 - Paginated Library browsing, metadata, authenticated artwork, per-game and device-roster downloads,
-  device groups and shared rosters, device selections, filesystem-backed storage and per-platform metrics,
+  device groups and shared rosters, device selections, visible device filtering and sorting,
+  filesystem-backed storage and per-platform metrics,
   staged-capacity feedback,
   device apply/discard, Syncthing delivery
   progress, contributor uploads, inbox, push preferences, account editing, and
