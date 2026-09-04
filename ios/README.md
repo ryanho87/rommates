@@ -39,15 +39,15 @@ hosted relay, and the Mac does not need to remain online. Mount the APNs `.p8` k
 read-only in the server's existing data volume and set:
 
 ```dotenv
-ROMMATES_APNS_KEY_PATH=/data/secrets/AuthKey_XXXXXXXXXX.p8
-ROMMATES_APNS_KEY_ID=XXXXXXXXXX
-ROMMATES_APNS_TEAM_ID=XXXXXXXXXX
+ROMMATES_APNS_KEY_PATH=/data/secrets/AuthKey_64VLU2D5LV.p8
+ROMMATES_APNS_KEY_ID=64VLU2D5LV
+ROMMATES_APNS_TEAM_ID=2NKFMTXAX5
 ROMMATES_APNS_BUNDLE_ID=com.rommates.app
 ROMMATES_APNS_ENVIRONMENT=production
 ```
 
-An APNs token-signing key from another app can be reused when it belongs to the same
-Apple Developer team and has APNs access. Do not commit the key. TestFlight always
+These values deliberately reuse Boba Tracker's APNs provider key. ROMmates uses its
+own `com.rommates.app` APNs topic. Do not commit the private key. TestFlight always
 uses the production APNs environment.
 
 The server keeps installation tokens and a durable delivery outbox in SQLite. APNs
