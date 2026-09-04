@@ -27,6 +27,8 @@ Cloudflare Tunnel.
 - [ ] Route that hostname to the same ROMmates container over the private Docker network.
 - [ ] Set `ROMMATES_MOBILE_PUBLIC_HOSTS=rommates-api.orb-ranch.com` in the deployed
   Compose environment and recreate the container.
+- [ ] If Traefik has separate public and internal HTTPS entrypoints, attach the mobile
+  router to both so the hostname works on and away from the home network.
 - [ ] Keep `ROMMATES_ALLOW_ANONYMOUS=false`.
 - [ ] Ensure the container/origin port cannot be reached directly from the public internet.
 - [ ] Add Cloudflare rate limiting for `POST /api/v1/mobile/session` and upload endpoints.
