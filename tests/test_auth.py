@@ -37,6 +37,7 @@ class AuthServiceTests(unittest.TestCase):
         self.assertEqual(principal.role, "contributor")
         self.assertTrue(principal.must_change_password)
         self.assertEqual(self.auth.from_session(token).id, user["id"])
+        self.assertEqual(self.auth.from_session(token).session_kind, "web")
         updated = self.auth.change_password(
             user["id"], "a-long-test-password", "a-new-long-test-password", token
         )
@@ -52,6 +53,21 @@ class AuthServiceTests(unittest.TestCase):
         )
         self.auth.update_user(user["id"], active=False)
         self.assertIsNone(self.auth.from_session(token))
+
+    def test_mobile_session_is_tagged_by_the_server(self):
+        user = self.auth.create_user(
+            "ios-user", "iOS User", "a-long-test-password", "viewer"
+        )
+        principal, token, _ = self.auth.authenticate(
+            "ios-user",
+            "a-long-test-password",
+            "mobile-test",
+            client_name="ROMmates for iOS 1.0",
+            session_kind="mobile",
+        )
+        self.assertEqual(principal.id, user["id"])
+        self.assertEqual(principal.session_kind, "mobile")
+        self.assertEqual(self.auth.from_session(token).session_kind, "mobile")
 
     def test_rejects_short_passwords_and_duplicate_usernames(self):
         with self.assertRaisesRegex(LibraryError, "at least 12"):

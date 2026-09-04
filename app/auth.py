@@ -30,6 +30,9 @@ class Principal:
     impersonator_id: int | None = None
     impersonator_username: str = ""
     impersonator_display_name: str = ""
+    # Bound to the server-issued session, not supplied by the client. This lets
+    # the public native surface reject browser cookies and bootstrap credentials.
+    session_kind: str = ""
 
     def has_role(self, role: str) -> bool:
         return role in (self.roles or (self.role,))
@@ -107,7 +110,10 @@ class AuthService:
         rate_key: str,
         *,
         client_name: str = "",
+        session_kind: str = "web",
     ) -> tuple[Principal, str, int]:
+        if session_kind not in {"web", "mobile"}:
+            raise ValueError("session_kind must be web or mobile")
         self._check_rate_limit(rate_key)
         normalized = username.strip().casefold()
         with self.db.connect() as connection:
@@ -122,13 +128,15 @@ class AuthService:
         token_hash = hashlib.sha256(token.encode()).hexdigest()
         with self.db.write() as connection:
             connection.execute(
-                "INSERT INTO auth_sessions(token_hash,user_id,expires_at,client_name) VALUES(?,?,?,?)",
-                (token_hash, row["id"], expires_at, client_name.strip()[:100]),
+                "INSERT INTO auth_sessions(token_hash,user_id,expires_at,client_name,session_kind) "
+                "VALUES(?,?,?,?,?)",
+                (token_hash, row["id"], expires_at, client_name.strip()[:100], session_kind),
             )
             connection.execute(
                 "UPDATE users SET last_login_at=CURRENT_TIMESTAMP WHERE id=?", (row["id"],)
             )
-        return self._principal(row), token, expires_at
+        principal = self._principal(row)
+        return self._session_principal(principal, session_kind), token, expires_at
 
     def from_session(self, token: str) -> Principal | None:
         if not token:
@@ -138,7 +146,7 @@ class AuthService:
         impersonator = None
         with self.db.write() as connection:
             session = connection.execute(
-                "SELECT user_id,impersonated_user_id FROM auth_sessions "
+                "SELECT user_id,impersonated_user_id,session_kind FROM auth_sessions "
                 "WHERE token_hash=? AND expires_at>=?",
                 (token_hash, now),
             ).fetchone()
@@ -170,7 +178,7 @@ class AuthService:
             return None
         principal = self._principal(row)
         if not impersonator:
-            return principal
+            return self._session_principal(principal, str(session["session_kind"]))
         return Principal(
             id=principal.id,
             username=principal.username,
@@ -182,6 +190,23 @@ class AuthService:
             impersonator_id=int(impersonator["id"]),
             impersonator_username=str(impersonator["username"]),
             impersonator_display_name=str(impersonator["display_name"]),
+            session_kind=str(session["session_kind"]),
+        )
+
+    @staticmethod
+    def _session_principal(principal: Principal, session_kind: str) -> Principal:
+        return Principal(
+            id=principal.id,
+            username=principal.username,
+            display_name=principal.display_name,
+            role=principal.role,
+            bootstrap=principal.bootstrap,
+            must_change_password=principal.must_change_password,
+            roles=principal.roles,
+            impersonator_id=principal.impersonator_id,
+            impersonator_username=principal.impersonator_username,
+            impersonator_display_name=principal.impersonator_display_name,
+            session_kind=session_kind,
         )
 
     def begin_impersonation(self, token: str, actor_id: int, target_user_id: int) -> Principal:

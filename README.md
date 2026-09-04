@@ -148,6 +148,22 @@ the service. Do not set `ROMMATES_ALLOW_ANONYMOUS=true` when you want per-user r
 anonymous proxy access is intentionally treated as administrator access for backward
 compatibility.
 
+### Native iOS access
+
+Keep the browser and administrator UI behind Cloudflare Access. For the native app,
+create a separate HTTPS hostname such as `api.rommates.example.com` and set that exact
+hostname in `ROMMATES_MOBILE_PUBLIC_HOSTS`. On requests received through that hostname,
+ROMmates exposes only the native-client route allowlist, accepts only server-issued
+mobile bearer sessions, rejects browser sessions and the bootstrap administrator token,
+and does not honor anonymous proxy mode. Normal role and device-ownership checks still
+apply to every allowed route.
+
+Do not put `ROMMATES_ACCESS_TOKEN` or a Cloudflare service token in the distributed app.
+The iOS client signs in through `/api/v1/mobile/session` and stores its opaque session in
+Keychain. When `ROMMATES_MOBILE_PUBLIC_HOSTS` is empty, no hostname is treated as the
+restricted public mobile surface. See the [iOS server launch checklist](docs/IOS_SERVER_LAUNCH_CHECKLIST.md)
+before publishing a hostname.
+
 The save vault is read from `${EMULATION_ROOT}/saves` through the existing `/emulation`
 mount. The account selected by `PUID` and `PGID` needs read/write access to both the
 Emulation directory and `ROMMATES_DATA_ROOT`. Snapshot blobs are stored beneath that data
@@ -550,6 +566,7 @@ Duplicate and ROM trash confirmations list matching save filenames that would be
 | `ROMMATES_REQUIRE_EXISTING_ROOTS` | `true` in Compose | Fail startup instead of silently creating missing mounts |
 | `ROMMATES_ACCESS_TOKEN` | **required** | Bearer credential used by the browser API and `/mcp/`. Startup fails if it is missing or under 16 characters |
 | `ROMMATES_ALLOW_ANONYMOUS` | `false` | Disables the token check. Only for instances already behind an authenticated reverse proxy |
+| `ROMMATES_MOBILE_PUBLIC_HOSTS` | empty | Optional comma-separated hostnames restricted to the native-app API allowlist and mobile bearer sessions |
 | `ROMMATES_SCAN_PRUNE_LIMIT` | `0.5` | Largest share of the catalog one scan may delete without confirmation |
 | `ROMMATES_EXTENSIONS` | built-in list | Optional comma-separated extension override |
 | `ROMMATES_FOLDER_BUNDLE_PLATFORMS` | `ps3,wiiu` | Comma-separated platforms where each immediate child directory is one game bundle |

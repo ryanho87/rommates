@@ -107,6 +107,10 @@ class Settings:
     discord_webhook_url: str = ""
     discord_timeout_seconds: float = 5.0
     public_url: str = ""
+    # Optional hostnames that expose the native-client API without exposing the
+    # administrator web surface. Requests on these hosts are constrained again
+    # by an explicit route allowlist and mobile-only bearer sessions.
+    mobile_public_hosts: frozenset[str] = frozenset()
     apns_key_path: Path | None = None
     apns_key_id: str = ""
     apns_team_id: str = ""
@@ -217,6 +221,11 @@ class Settings:
                 "ROMMATES_DISCORD_TIMEOUT_SECONDS", 5.0, 1.0, 20.0
             ),
             public_url=os.getenv("ROMMATES_PUBLIC_URL", "").strip().rstrip("/"),
+            mobile_public_hosts=frozenset(
+                value.strip().casefold().rstrip(".")
+                for value in os.getenv("ROMMATES_MOBILE_PUBLIC_HOSTS", "").split(",")
+                if value.strip()
+            ),
             apns_key_path=(
                 Path(os.environ["ROMMATES_APNS_KEY_PATH"])
                 if os.getenv("ROMMATES_APNS_KEY_PATH", "").strip()

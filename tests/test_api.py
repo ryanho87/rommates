@@ -42,6 +42,7 @@ class ApiIntegrationTests(unittest.TestCase):
                 "ROMMATES_SCAN_ON_START": "false",
                 "ROMMATES_REQUIRE_EXISTING_ROOTS": "true",
                 "ROMMATES_ACCESS_TOKEN": cls.token,
+                "ROMMATES_MOBILE_PUBLIC_HOSTS": "mobile.testserver",
             },
         )
         cls.environment.start()
@@ -160,6 +161,65 @@ class ApiIntegrationTests(unittest.TestCase):
         self.assertEqual(self.client.post("/api/auth/logout", headers=bearer).status_code, 200)
         self.assertEqual(
             self.client.get("/api/v1/mobile/bootstrap", headers=bearer).status_code,
+            401,
+        )
+
+    def test_public_mobile_host_only_accepts_mobile_sessions_and_routes(self):
+        created = self.client.post(
+            "/api/users",
+            headers=self.headers,
+            json={
+                "username": "public-mobile-member",
+                "display_name": "Public Mobile Member",
+                "password": "public-mobile-password",
+                "roles": ["viewer", "member"],
+            },
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        mobile_host = {"Host": "mobile.testserver"}
+        signed_in = self.client.post(
+            "/api/v1/mobile/session",
+            headers=mobile_host,
+            json={
+                "username": "public-mobile-member",
+                "password": "public-mobile-password",
+                "client_name": "ROMmates for iOS public test",
+            },
+        )
+        self.assertEqual(signed_in.status_code, 200, signed_in.text)
+        self.assertEqual(signed_in.headers["x-rommates-surface"], "mobile")
+        token = signed_in.json()["session_token"]
+        bearer = {**mobile_host, "Authorization": f"Bearer {token}"}
+        changed = self.client.post(
+            "/api/auth/password",
+            headers=bearer,
+            json={
+                "current_password": "public-mobile-password",
+                "new_password": "public-mobile-password-changed",
+            },
+        )
+        self.assertEqual(changed.status_code, 200, changed.text)
+        self.assertEqual(self.client.get("/api/games", headers=bearer).status_code, 200)
+        self.assertEqual(self.client.get("/api/status", headers=bearer).status_code, 404)
+        self.assertEqual(self.client.get("/", headers=bearer).status_code, 404)
+        self.assertEqual(
+            self.client.get(
+                "/api/games", headers={**mobile_host, **self.headers}
+            ).status_code,
+            401,
+        )
+
+        _, web_token, _ = self.main.auth.authenticate(
+            "public-mobile-member",
+            "public-mobile-password-changed",
+            "public-mobile-web-session",
+            client_name="ROMmates web",
+        )
+        self.assertEqual(
+            self.client.get(
+                "/api/games",
+                headers={**mobile_host, "Authorization": f"Bearer {web_token}"},
+            ).status_code,
             401,
         )
 

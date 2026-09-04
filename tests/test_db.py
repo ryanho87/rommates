@@ -61,7 +61,7 @@ class DatabaseMigrationTests(unittest.TestCase):
                 versions = {row["version"] for row in upgraded.execute("SELECT version FROM schema_migrations")}
             self.assertIn("result_json", columns)
             self.assertIn("progress_json", columns)
-            self.assertEqual(versions, set(range(1, 35)))
+            self.assertEqual(versions, set(range(1, 36)))
             with db.connect() as upgraded:
                 tables = {
                     row["name"]
@@ -101,6 +101,7 @@ class DatabaseMigrationTests(unittest.TestCase):
                 self.assertIn("storage_capacity_bytes", device_columns)
                 self.assertIn("size", inventory_columns)
                 self.assertIn("impersonated_user_id", session_columns)
+                self.assertIn("session_kind", session_columns)
             self.assertIn("device_inventory_files", tables)
             self.assertIn("user_onboarding", tables)
             self.assertIn("user_notifications", tables)
@@ -160,7 +161,7 @@ class DatabaseMigrationTests(unittest.TestCase):
             with db.write() as upgraded:
                 account = upgraded.execute("SELECT id,role FROM users WHERE id=7").fetchone()
                 session = upgraded.execute(
-                    "SELECT user_id FROM auth_sessions WHERE token_hash='token'"
+                    "SELECT user_id,session_kind FROM auth_sessions WHERE token_hash='token'"
                 ).fetchone()
                 migrated_roles = [
                     row["role"]
@@ -178,6 +179,7 @@ class DatabaseMigrationTests(unittest.TestCase):
                 foreign_key_issues = upgraded.execute("PRAGMA foreign_key_check").fetchall()
             self.assertEqual((account["id"], account["role"]), (7, "admin"))
             self.assertEqual(session["user_id"], 7)
+            self.assertEqual(session["session_kind"], "web")
             self.assertEqual(migrated_roles, ["admin"])
             self.assertIsNone(device["owner_user_id"])
             self.assertEqual(device["deployment_mode"], "hardlink")

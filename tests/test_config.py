@@ -27,6 +27,7 @@ class ConfigurationCompatibilityTests(unittest.TestCase):
                 "ROMMATES_SYNCTHING_URL": "http://syncthing:8384/",
                 "ROMMATES_SYNCTHING_API_KEY": "syncthing-key",
                 "ROMMATES_SYNCTHING_TIMEOUT_SECONDS": "1.5",
+                "ROMMATES_MOBILE_PUBLIC_HOSTS": "api.rommates.example, MOBILE.example. ",
             },
             clear=True,
         ):
@@ -43,6 +44,10 @@ class ConfigurationCompatibilityTests(unittest.TestCase):
         self.assertEqual(settings.syncthing_url, "http://syncthing:8384")
         self.assertEqual(settings.syncthing_api_key, "syncthing-key")
         self.assertEqual(settings.syncthing_timeout_seconds, 1.5)
+        self.assertEqual(
+            settings.mobile_public_hosts,
+            frozenset({"api.rommates.example", "mobile.example"}),
+        )
 
     def test_invalid_syncthing_timeout_uses_default(self):
         with patch.dict(

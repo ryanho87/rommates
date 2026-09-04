@@ -443,6 +443,7 @@ CREATE TABLE IF NOT EXISTS auth_sessions (
     impersonated_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
     expires_at INTEGER NOT NULL,
     client_name TEXT NOT NULL DEFAULT '',
+    session_kind TEXT NOT NULL DEFAULT 'web' CHECK(session_kind IN ('web','mobile')),
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -962,6 +963,20 @@ class Database:
                     "ALTER TABLE auth_sessions ADD COLUMN client_name TEXT NOT NULL DEFAULT ''"
                 )
             connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(34)")
+            auth_session_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(auth_sessions)")
+            }
+            if "session_kind" not in auth_session_columns:
+                connection.execute(
+                    "ALTER TABLE auth_sessions ADD COLUMN session_kind TEXT NOT NULL DEFAULT 'web'"
+                )
+                # Preserve sessions created by the first native-app build. New
+                # sessions are tagged explicitly at creation time.
+                connection.execute(
+                    "UPDATE auth_sessions SET session_kind='mobile' "
+                    "WHERE client_name LIKE 'ROMmates for iOS%'"
+                )
+            connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(35)")
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:

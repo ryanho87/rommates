@@ -69,3 +69,8 @@ server failures use bounded exponential retry.
 OAuth/OIDC remains a later migration. The client talks through a small session layer,
 so Authorization Code with PKCE can replace password session creation without changing
 feature APIs or role checks.
+
+Before exposing the server or shipping a TestFlight build, complete the
+[iOS server launch checklist](../docs/IOS_SERVER_LAUNCH_CHECKLIST.md). The recommended
+deployment keeps the full browser/admin host behind Cloudflare Access and gives the app
+a separate hostname protected by ROMmates' mobile-only route boundary.

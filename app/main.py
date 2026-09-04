@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import secrets
 import threading
 import time
@@ -1067,6 +1068,69 @@ def role_allows(principal: Principal, method: str, path: str) -> bool:
     return False
 
 
+_MOBILE_ID = r"[A-Za-z0-9._~-]+"
+
+
+def mobile_public_route_allowed(method: str, path: str) -> bool:
+    """Keep the native hostname smaller than the full browser/admin API.
+
+    This is intentionally independent of role checks: a route must first be a
+    native-client capability, then the authenticated user's role and ownership
+    are evaluated by the normal authorization layer.
+    """
+    if method in {"GET", "HEAD"} and path == "/api/health":
+        return True
+    if method == "POST" and path == "/api/v1/mobile/session":
+        return True
+    if method in {"GET", "HEAD"} and path.startswith("/api/downloads/"):
+        return True
+    exact = {
+        ("GET", "/api/v1/mobile/bootstrap"),
+        ("PUT", "/api/v1/mobile/push-installation"),
+        ("PUT", "/api/v1/mobile/push-preferences"),
+        ("POST", "/api/auth/logout"),
+        ("POST", "/api/auth/password"),
+        ("PATCH", "/api/auth/profile"),
+        ("GET", "/api/account/summary"),
+        ("GET", "/api/platforms"),
+        ("GET", "/api/games"),
+        ("GET", "/api/devices"),
+        ("POST", "/api/devices"),
+        ("GET", "/api/uploads"),
+        ("POST", "/api/uploads"),
+        ("GET", "/api/inbox"),
+        ("POST", "/api/inbox/read-all"),
+    }
+    if (method, path) in exact:
+        return True
+    patterns = {
+        "GET": (
+            rf"/api/games/\d+",
+            rf"/api/artwork/thumbnails/\d+",
+            rf"/api/devices/\d+/sync-status",
+        ),
+        "POST": (
+            rf"/api/games/\d+/download-ticket",
+            rf"/api/devices/\d+/(?:apply|discard-changes)",
+            rf"/api/uploads/{_MOBILE_ID}/finalize",
+            rf"/api/inbox/\d+/read",
+        ),
+        "PUT": (
+            rf"/api/devices/\d+/selection",
+            rf"/api/uploads/{_MOBILE_ID}/files/\d+",
+        ),
+        "DELETE": (
+            rf"/api/v1/mobile/push-installation/{_MOBILE_ID}",
+        ),
+    }
+    return any(re.fullmatch(pattern, path) for pattern in patterns.get(method, ()))
+
+
+def is_mobile_public_request(request: Request) -> bool:
+    host = (request.url.hostname or "").casefold().rstrip(".")
+    return bool(settings.mobile_public_hosts and host in settings.mobile_public_hosts)
+
+
 @app.middleware("http")
 async def protect_private_api(request: Request, call_next):
     public_download = (
@@ -1074,6 +1138,12 @@ async def protect_private_api(request: Request, call_next):
         and request.method in {"GET", "HEAD"}
     )
     path = request.url.path
+    method = request.method
+    mobile_public = is_mobile_public_request(request)
+    if mobile_public and not mobile_public_route_allowed(method, path):
+        # Avoid advertising the existence of admin and MCP routes on the public
+        # native hostname.
+        return JSONResponse(status_code=404, content={"detail": "Not found"})
     private_path = path.startswith("/api/") or path.startswith("/mcp")
     if private_path and request.method not in {"GET", "HEAD", "OPTIONS"}:
         if request.headers.get("sec-fetch-site", "").lower() == "cross-site":
@@ -1090,7 +1160,11 @@ async def protect_private_api(request: Request, call_next):
         principal = None
         authorization = request.headers.get("authorization", "")
         expected = f"Bearer {settings.access_token}"
-        if settings.access_token and secrets.compare_digest(authorization, expected):
+        if (
+            not mobile_public
+            and settings.access_token
+            and secrets.compare_digest(authorization, expected)
+        ):
             principal = Principal(None, "bootstrap-admin", "Bootstrap administrator", "admin", True)
         if principal is None:
             bearer_token = (
@@ -1098,11 +1172,17 @@ async def protect_private_api(request: Request, call_next):
                 if authorization.startswith("Bearer ")
                 else ""
             )
-            session_token = bearer_token or request.cookies.get("rommates_session", "")
+            session_token = bearer_token or (
+                "" if mobile_public else request.cookies.get("rommates_session", "")
+            )
             principal = auth.from_session(session_token)
             if principal is not None:
                 request.state.session_token = session_token
-        if principal is None and settings.allow_anonymous:
+        if mobile_public and principal is not None and (
+            principal.session_kind != "mobile" or principal.has_role("admin")
+        ):
+            principal = None
+        if principal is None and settings.allow_anonymous and not mobile_public:
             principal = Principal(None, "proxy-admin", "Authenticated proxy user", "admin", True)
         if principal is None:
             return JSONResponse(status_code=401, content={"detail": "Sign in to continue"})
@@ -1124,9 +1204,12 @@ async def protect_private_api(request: Request, call_next):
             )
         if path.startswith("/mcp") and not principal.has_role("admin"):
             return JSONResponse(status_code=403, content={"detail": "Administrator access is required"})
-        if path.startswith("/api/") and not role_allows(principal, request.method, path):
+        if path.startswith("/api/") and not role_allows(principal, method, path):
             return JSONResponse(status_code=403, content={"detail": "Your role does not allow this action"})
-    return await call_next(request)
+    response = await call_next(request)
+    if mobile_public:
+        response.headers["X-ROMmates-Surface"] = "mobile"
+    return response
 
 
 @app.middleware("http")
@@ -1222,6 +1305,7 @@ def create_mobile_session(payload: MobileLoginRequest, request: Request):
         payload.password,
         f"{request.client.host if request.client else 'unknown'}:ios",
         client_name=payload.client_name,
+        session_kind="mobile",
     )
     if principal.has_role("admin"):
         auth.logout(token)
