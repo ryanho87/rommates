@@ -73,7 +73,7 @@ struct AccountView: View {
                 }
             }
             .navigationTitle("Account")
-            .refreshable { await load() }
+            .refreshable { await load(fresh: true) }
             .sheet(isPresented: $editingProfile) { EditProfileView { Task { await load() } } }
             .task { await load() }
         }
@@ -111,9 +111,9 @@ struct AccountView: View {
         }
     }
 
-    private func load() async {
-        do { summary = try await model.request("/api/account/summary") }
-        catch { model.errorMessage = error.localizedDescription }
+    private func load(fresh: Bool = false) async {
+        do { summary = try await model.request("/api/account/summary", fresh: fresh) }
+        catch { model.report(error) }
     }
 
     private func roleName(_ role: String) -> String {
@@ -174,7 +174,7 @@ private struct EditProfileView: View {
             model.applyUpdatedUser(response.user)
             didSave()
             dismiss()
-        } catch { model.errorMessage = error.localizedDescription }
+        } catch { model.report(error) }
     }
 }
 

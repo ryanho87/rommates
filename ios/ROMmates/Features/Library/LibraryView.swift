@@ -9,20 +9,25 @@ struct LibraryView: View {
     @State private var platform = ""
     @State private var sort = "name_asc"
     @State private var loading = true
+    @State private var loadingMore = false
     @State private var error: String?
+
+    private static let pageSize = 80
+    private var queryID: String { "\(search)|\(platform)|\(sort)" }
 
     var body: some View {
         NavigationStack {
             Group {
                 if loading && games.isEmpty {
-                    ProgressView("Loading library…")
+                    List(0..<8, id: \.self) { _ in LibraryRowPlaceholder() }
+                        .listStyle(.plain)
                 } else if let error, games.isEmpty {
                     ContentUnavailableView {
                         Label("Library unavailable", systemImage: "exclamationmark.triangle")
                     } description: {
                         Text(error)
                     } actions: {
-                        Button("Try Again") { Task { await load() } }
+                        Button("Try Again") { Task { await load(reset: true, fresh: true) } }
                     }
                 } else if games.isEmpty {
                     EmptyState(
@@ -31,11 +36,22 @@ struct LibraryView: View {
                         message: search.isEmpty ? "Your indexed library will appear here." : "Try a different search or platform."
                     )
                 } else {
-                    List(games) { game in
-                        NavigationLink(value: game) { GameRow(game: game) }
+                    List {
+                        ForEach(games) { game in
+                            NavigationLink(value: game) { GameRow(game: game) }
+                        }
+                        if games.count < total {
+                            HStack {
+                                Spacer()
+                                ProgressView()
+                                Spacer()
+                            }
+                            .listRowSeparator(.hidden)
+                            .task(id: games.count) { await loadMore() }
+                        }
                     }
                     .listStyle(.plain)
-                    .refreshable { await load() }
+                    .refreshable { await load(reset: true, fresh: true) }
                 }
             }
             .navigationTitle("Library")
@@ -61,25 +77,30 @@ struct LibraryView: View {
                     } label: { Label("Sort", systemImage: "arrow.up.arrow.down") }
                 }
             }
-            .task { await loadPlatforms(); await load() }
-            .task(id: search) {
-                try? await Task.sleep(for: .milliseconds(250))
-                guard !Task.isCancelled else { return }
-                await load()
+            .task { await loadPlatforms() }
+            .task(id: queryID) {
+                if !search.isEmpty {
+                    try? await Task.sleep(for: .milliseconds(250))
+                    guard !Task.isCancelled else { return }
+                }
+                await load(reset: true)
             }
-            .task(id: platform) { await load() }
-            .task(id: sort) { await load() }
         }
     }
 
     private func loadPlatforms() async {
         do { platforms = try await model.request("/api/platforms") }
-        catch { self.error = error.localizedDescription }
+        catch where error.isRequestCancellation { }
+        catch { model.report(error) }
     }
 
-    private func load() async {
-        loading = true
-        defer { loading = false }
+    private func load(reset: Bool, fresh: Bool = false) async {
+        let requestedQuery = queryID
+        let offset = reset ? 0 : games.count
+        if reset { loading = true } else { loadingMore = true }
+        defer {
+            if reset { loading = false } else { loadingMore = false }
+        }
         do {
             let response: GameList = try await model.request(
                 "/api/games",
@@ -87,16 +108,47 @@ struct LibraryView: View {
                     .init(name: "search", value: search),
                     .init(name: "platform", value: platform),
                     .init(name: "sort", value: sort),
-                    .init(name: "limit", value: "300"),
-                ]
+                    .init(name: "limit", value: String(Self.pageSize)),
+                    .init(name: "offset", value: String(offset)),
+                ],
+                fresh: fresh
             )
-            games = response.items
+            guard requestedQuery == queryID else { return }
+            if reset {
+                games = response.items
+            } else {
+                let existing = Set(games.map(\.id))
+                games.append(contentsOf: response.items.filter { !existing.contains($0.id) })
+            }
             total = response.total
             self.error = nil
-        } catch is CancellationError {
+        } catch where error.isRequestCancellation {
         } catch {
             self.error = error.localizedDescription
         }
+    }
+
+    private func loadMore() async {
+        guard !loading, !loadingMore, games.count < total else { return }
+        await load(reset: false)
+    }
+}
+
+private struct LibraryRowPlaceholder: View {
+    var body: some View {
+        HStack(spacing: 12) {
+            RoundedRectangle(cornerRadius: 7)
+                .fill(Color(.secondarySystemFill))
+                .frame(width: 44, height: 58)
+            VStack(alignment: .leading, spacing: 7) {
+                Text("Game title placeholder")
+                Text("platform · file size")
+                    .font(.caption)
+            }
+            .redacted(reason: .placeholder)
+        }
+        .padding(.vertical, 4)
+        .accessibilityHidden(true)
     }
 }
 
@@ -110,7 +162,7 @@ private struct GameRow: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(game.displayName)
                     .font(.body.weight(.medium))
-                    .lineLimit(1)
+                    .lineLimit(2)
                 HStack(spacing: 6) {
                     Text(game.platform)
                     Text("·")
@@ -287,7 +339,7 @@ private struct GameDetailView: View {
 
     private func load() async {
         do { detail = try await model.request("/api/games/\(game.id)") }
-        catch { model.errorMessage = error.localizedDescription }
+        catch { model.report(error) }
     }
 
     private func select(device: GameDetailDevice, selected: Bool) async {
@@ -297,7 +349,7 @@ private struct GameDetailView: View {
                 "/api/devices/\(device.id)/selection", method: "PUT", body: body
             )
             await load()
-        } catch { model.errorMessage = error.localizedDescription }
+        } catch { model.report(error) }
     }
 
     private func download() {
@@ -316,7 +368,7 @@ private struct GameDetailView: View {
                 try? FileManager.default.removeItem(at: destination)
                 try FileManager.default.moveItem(at: temporary, to: destination)
                 downloadedFile = destination
-            } catch { model.errorMessage = error.localizedDescription }
+            } catch { model.report(error) }
         }
     }
 }

@@ -2605,12 +2605,12 @@ def devices(request: Request):
             "SELECT d.*,rg.name AS roster_group_name,"
             "rg.owner_user_id AS roster_group_owner_user_id,"
             "u.username AS owner_username,u.display_name AS owner_display_name,"
-            "COUNT(DISTINCT ds.game_id) AS selected_games,COUNT(DISTINCT dp.game_id) AS deployed_games "
-            "FROM devices d LEFT JOIN device_selections ds ON ds.device_id=d.id "
-            "LEFT JOIN deployments dp ON dp.device_id=d.id "
+            "(SELECT COUNT(*) FROM device_selections ds WHERE ds.device_id=d.id) AS selected_games,"
+            "(SELECT COUNT(DISTINCT dp.game_id) FROM deployments dp WHERE dp.device_id=d.id) AS deployed_games "
+            "FROM devices d "
             "LEFT JOIN device_roster_groups rg ON rg.id=d.roster_group_id "
             "LEFT JOIN users u ON u.id=d.owner_user_id "
-            f"{owner_filter} GROUP BY d.id ORDER BY d.name COLLATE NOCASE",
+            f"{owner_filter} ORDER BY d.name COLLATE NOCASE",
             params,
         ).fetchall()
     return [dict(row) for row in rows]

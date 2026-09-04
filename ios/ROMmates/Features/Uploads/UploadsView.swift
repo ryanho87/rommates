@@ -24,7 +24,7 @@ struct UploadsView: View {
                     List {
                         ForEach(uploads) { upload in UploadRow(upload: upload) }
                     }
-                    .refreshable { await load() }
+                    .refreshable { await load(fresh: true) }
                 }
             }
             .navigationTitle("Uploads")
@@ -41,7 +41,7 @@ struct UploadsView: View {
                 do {
                     selectedFiles = try result.get()
                     showingPlan = !selectedFiles.isEmpty
-                } catch { model.errorMessage = error.localizedDescription }
+                } catch { model.report(error) }
             }
             .sheet(isPresented: $showingPlan) {
                 UploadPlanView(files: selectedFiles) {
@@ -54,13 +54,13 @@ struct UploadsView: View {
         }
     }
 
-    private func load() async {
+    private func load(fresh: Bool = false) async {
         loading = true
         defer { loading = false }
         do {
-            let response: UploadList = try await model.request("/api/uploads")
+            let response: UploadList = try await model.request("/api/uploads", fresh: fresh)
             uploads = response.items
-        } catch { model.errorMessage = error.localizedDescription }
+        } catch { model.report(error) }
     }
 }
 
@@ -169,7 +169,7 @@ private struct UploadPlanView: View {
             }
             .task {
                 do { platforms = try await model.request("/api/platforms") }
-                catch { model.errorMessage = error.localizedDescription }
+                catch { model.report(error) }
             }
         }
     }
@@ -221,7 +221,7 @@ private struct UploadPlanView: View {
                 "/api/uploads/\(session.id)/finalize", method: "POST"
             )
             didSubmit()
-        } catch { model.errorMessage = error.localizedDescription }
+        } catch { model.report(error) }
     }
 
     private func readChunk(_ url: URL, offset: Int64, count: Int) async throws -> Data {

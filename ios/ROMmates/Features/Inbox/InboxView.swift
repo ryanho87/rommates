@@ -25,7 +25,7 @@ struct InboxView: View {
                         .buttonStyle(.plain)
                     }
                     .listStyle(.plain)
-                    .refreshable { await load() }
+                    .refreshable { await load(fresh: true) }
                 }
             }
             .navigationTitle(unread > 0 ? "Inbox (\(unread))" : "Inbox")
@@ -38,15 +38,15 @@ struct InboxView: View {
         }
     }
 
-    private func load() async {
+    private func load(fresh: Bool = false) async {
         loading = true
         defer { loading = false }
         do {
-            let response: InboxResponse = try await model.request("/api/inbox")
+            let response: InboxResponse = try await model.request("/api/inbox", fresh: fresh)
             items = response.items
             unread = response.unread
             model.setInboxUnread(response.unread)
-        } catch { model.errorMessage = error.localizedDescription }
+        } catch { model.report(error) }
     }
 
     private func open(_ item: InboxItem) async {
@@ -55,7 +55,7 @@ struct InboxView: View {
                 let _: ReadResponse = try await model.request(
                     "/api/inbox/\(item.id)/read", method: "POST"
                 )
-            } catch { model.errorMessage = error.localizedDescription }
+            } catch { model.report(error) }
         }
         await load()
         model.navigate(path: item.path)
@@ -65,7 +65,7 @@ struct InboxView: View {
         do {
             let _: ReadAllResponse = try await model.request("/api/inbox/read-all", method: "POST")
             await load()
-        } catch { model.errorMessage = error.localizedDescription }
+        } catch { model.report(error) }
     }
 }
 

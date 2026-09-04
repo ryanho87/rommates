@@ -4,14 +4,20 @@ import SwiftUI
 struct DevicesView: View {
     @EnvironmentObject private var model: AppModel
     @State private var devices: [Device] = []
+    @State private var groups: [DeviceGroup] = []
     @State private var loading = true
-    @State private var showingCreate = false
+    @State private var showingCreateDevice = false
+    @State private var showingCreateGroup = false
+
+    private var independentDevices: [Device] {
+        devices.filter { $0.rosterGroupId == nil }
+    }
 
     var body: some View {
         NavigationStack {
             Group {
                 if loading && devices.isEmpty {
-                    ProgressView("Loading devices…")
+                    List(0..<5, id: \.self) { _ in DeviceRowPlaceholder() }
                 } else if devices.isEmpty {
                     EmptyState(
                         icon: "gamecontroller",
@@ -19,34 +25,134 @@ struct DevicesView: View {
                         message: "Create a device to stage a tailored ROM collection."
                     )
                 } else {
-                    List(devices) { device in
-                        NavigationLink(value: device) { DeviceRow(device: device) }
+                    List {
+                        if !groups.isEmpty {
+                            Section("Device groups") {
+                                ForEach(groups) { group in
+                                    DeviceGroupRow(group: group, devices: devices)
+                                }
+                            }
+                        }
+                        if !independentDevices.isEmpty {
+                            Section(groups.isEmpty ? "Your devices" : "Independent devices") {
+                                ForEach(independentDevices) { device in
+                                    NavigationLink(value: device) { DeviceRow(device: device) }
+                                }
+                            }
+                        }
                     }
-                    .refreshable { await load() }
+                    .refreshable { await load(fresh: true) }
                 }
             }
             .navigationTitle("Devices")
             .navigationDestination(for: Device.self) { DeviceDetailView(device: $0) }
             .toolbar {
-                Button { showingCreate = true } label: {
-                    Label("New Device", systemImage: "plus")
+                Menu {
+                    Button { showingCreateDevice = true } label: {
+                        Label("New Device", systemImage: "gamecontroller")
+                    }
+                    Button { showingCreateGroup = true } label: {
+                        Label("New Device Group", systemImage: "rectangle.3.group")
+                    }
+                } label: {
+                    Label("Add", systemImage: "plus")
                 }
             }
-            .sheet(isPresented: $showingCreate) {
+            .sheet(isPresented: $showingCreateDevice) {
                 CreateDeviceView {
-                    showingCreate = false
-                    Task { await load() }
+                    showingCreateDevice = false
+                    Task { await load(fresh: true) }
+                }
+            }
+            .sheet(isPresented: $showingCreateGroup) {
+                CreateDeviceGroupView(devices: independentDevices) {
+                    showingCreateGroup = false
+                    Task { await load(fresh: true) }
                 }
             }
             .task { await load() }
         }
     }
 
-    private func load() async {
+    private func load(fresh: Bool = false) async {
         loading = true
         defer { loading = false }
-        do { devices = try await model.request("/api/devices") }
-        catch { model.errorMessage = error.localizedDescription }
+        do {
+            async let loadedDevices: [Device] = model.request("/api/devices", fresh: fresh)
+            async let loadedGroups: [DeviceGroup] = model.request("/api/device-groups", fresh: fresh)
+            (devices, groups) = try await (loadedDevices, loadedGroups)
+        } catch { model.report(error) }
+    }
+}
+
+private struct DeviceRowPlaceholder: View {
+    var body: some View {
+        HStack(spacing: 14) {
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color(.secondarySystemFill))
+                .frame(width: 34, height: 34)
+            VStack(alignment: .leading, spacing: 7) {
+                Text("Handheld name")
+                Text("Selected games · on device").font(.caption)
+            }
+            .redacted(reason: .placeholder)
+        }
+        .padding(.vertical, 8)
+        .accessibilityHidden(true)
+    }
+}
+
+private struct DeviceGroupRow: View {
+    let group: DeviceGroup
+    let devices: [Device]
+
+    var body: some View {
+        DisclosureGroup {
+            ForEach(group.members) { member in
+                if let device = devices.first(where: { $0.id == member.id }) {
+                    NavigationLink(value: device) {
+                        DeviceGroupMemberRow(member: member)
+                    }
+                } else {
+                    DeviceGroupMemberRow(member: member)
+                }
+            }
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: "rectangle.3.group.fill")
+                    .foregroundStyle(ROMTheme.violet)
+                    .frame(width: 28)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(group.name).font(.body.weight(.semibold))
+                    Text("\(group.deviceCount) devices · \(group.selectedGames) selected")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.vertical, 4)
+        }
+        .accessibilityHint("Shows devices that share this game roster")
+    }
+}
+
+private struct DeviceGroupMemberRow: View {
+    let member: DeviceGroupMember
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: member.deliveryMode == "syncthing" ? "arrow.triangle.2.circlepath" : "arrow.down.circle")
+                .foregroundStyle(.secondary)
+                .frame(width: 24)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(member.name)
+                Text(member.deliveryMode == "syncthing" ?
+                    (member.syncthingReadyAt == nil ? "Syncthing setup pending" : "Syncthing ready") :
+                    "Manual download")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.leading, 4)
     }
 }
 
@@ -250,11 +356,11 @@ private struct DeviceDetailView: View {
             hasLoadedGames = true
         } catch let error as URLError where error.code == .cancelled {
         } catch is CancellationError {
-        } catch { model.errorMessage = error.localizedDescription }
+        } catch { model.report(error) }
     }
 
     private func loadSync() async {
-        do { sync = try await model.request("/api/devices/\(device.id)/sync-status") }
+        do { sync = try await model.request("/api/devices/\(device.id)/sync-status", fresh: true) }
         catch { /* Refresh remains available even when Syncthing is offline. */ }
     }
 
@@ -267,7 +373,7 @@ private struct DeviceDetailView: View {
             await load()
         } catch let error as URLError where error.code == .cancelled {
         } catch is CancellationError {
-        } catch { model.errorMessage = error.localizedDescription }
+        } catch { model.report(error) }
     }
 
     private func apply() async {
@@ -277,7 +383,7 @@ private struct DeviceDetailView: View {
             let _: JobReference = try await model.request("/api/devices/\(device.id)/apply", method: "POST")
             await load()
             await loadSync()
-        } catch { model.errorMessage = error.localizedDescription }
+        } catch { model.report(error) }
     }
 
     private func discard() async {
@@ -286,7 +392,7 @@ private struct DeviceDetailView: View {
                 "/api/devices/\(device.id)/discard-changes", method: "POST"
             )
             await load()
-        } catch { model.errorMessage = error.localizedDescription }
+        } catch { model.report(error) }
     }
 }
 
@@ -332,6 +438,126 @@ private struct DeviceGamesEmptyState: View {
         case "on_device": return "Use Library to choose games for this device."
         default: return "The indexed library will appear here."
         }
+    }
+}
+
+private struct CreateDeviceGroupView: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    let devices: [Device]
+    let didCreate: () -> Void
+    @State private var name = ""
+    @State private var sourceDeviceId: Int?
+    @State private var memberIds: Set<Int> = []
+    @State private var showingConfirmation = false
+    @State private var busy = false
+
+    private var sourceDevice: Device? {
+        devices.first { $0.id == sourceDeviceId }
+    }
+    private var selectedMembers: [Device] {
+        devices.filter { memberIds.contains($0.id) }
+    }
+    private var canCreate: Bool {
+        !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && sourceDevice != nil
+            && !selectedMembers.isEmpty
+            && !busy
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                if devices.count < 2 {
+                    ContentUnavailableView {
+                        Label("Two devices required", systemImage: "rectangle.3.group")
+                    } description: {
+                        Text("Create another device, or remove one from its current group, before starting a shared roster.")
+                    }
+                } else {
+                    Section("Group") {
+                        TextField("Name", text: $name, prompt: Text("Travel handhelds"))
+                        Picker("Use selections from", selection: $sourceDeviceId) {
+                            Text("Choose a device").tag(nil as Int?)
+                            ForEach(devices) { device in
+                                Text(device.name).tag(device.id as Int?)
+                            }
+                        }
+                    }
+                    Section {
+                        ForEach(devices.filter { $0.id != sourceDeviceId }) { device in
+                            Toggle(device.name, isOn: memberBinding(for: device.id))
+                        }
+                    } header: {
+                        Text("Other devices")
+                    } footer: {
+                        Text("The source device’s selections will replace selections on the other devices, then stay shared across the group.")
+                    }
+                }
+            }
+            .navigationTitle("New Device Group")
+            .navigationBarTitleDisplayMode(.inline)
+            .onChange(of: sourceDeviceId) { oldValue, newValue in
+                if let oldValue, oldValue != newValue { memberIds.remove(oldValue) }
+                if let newValue { memberIds.remove(newValue) }
+            }
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                if devices.count >= 2 {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Review") { showingConfirmation = true }
+                            .disabled(!canCreate)
+                    }
+                }
+            }
+            .confirmationDialog(
+                "Create \(name.trimmingCharacters(in: .whitespacesAndNewlines))?",
+                isPresented: $showingConfirmation,
+                titleVisibility: .visible
+            ) {
+                Button("Use Roster & Create Group") { Task { await create() } }
+                Button("Cancel", role: .cancel) { }
+            } message: {
+                Text(confirmationMessage)
+            }
+        }
+    }
+
+    private var confirmationMessage: String {
+        guard let sourceDevice else { return "Choose a source device." }
+        let targets = selectedMembers.map(\.name).joined(separator: ", ")
+        return "Use \(sourceDevice.name)’s selections for \(targets). Future selection changes will affect every device in the group."
+    }
+
+    private func memberBinding(for id: Int) -> Binding<Bool> {
+        Binding(
+            get: { memberIds.contains(id) },
+            set: { selected in
+                if selected { memberIds.insert(id) }
+                else { memberIds.remove(id) }
+            }
+        )
+    }
+
+    private func create() async {
+        guard canCreate, let sourceDeviceId else { return }
+        busy = true
+        defer { busy = false }
+        do {
+            let body = try JSONEncoder.rommates.encode(
+                CreateDeviceGroupBody(
+                    name: name.trimmingCharacters(in: .whitespacesAndNewlines),
+                    sourceDeviceId: sourceDeviceId,
+                    memberDeviceIds: selectedMembers.map(\.id)
+                )
+            )
+            let _: CreatedDeviceGroup = try await model.request(
+                "/api/device-groups", method: "POST", body: body
+            )
+            didCreate()
+        } catch { model.report(error) }
     }
 }
 
@@ -387,7 +613,7 @@ private struct CreateDeviceView: View {
             )
             let _: CreatedDevice = try await model.request("/api/devices", method: "POST", body: body)
             didCreate()
-        } catch { model.errorMessage = error.localizedDescription }
+        } catch { model.report(error) }
     }
 }
 
@@ -402,3 +628,14 @@ private struct CreateDeviceBody: Encodable {
     let storageCapacityBytes: Int64
 }
 private struct CreatedDevice: Decodable, Sendable { let id: Int; let name: String }
+private struct CreateDeviceGroupBody: Encodable {
+    let name: String
+    let sourceDeviceId: Int
+    let memberDeviceIds: [Int]
+}
+private struct CreatedDeviceGroup: Decodable, Sendable {
+    let id: Int
+    let name: String
+    let devices: Int
+    let games: Int
+}

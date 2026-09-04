@@ -102,7 +102,7 @@ final class AppModel: ObservableObject {
             sessionState = .signedIn
             await bootstrap()
         } catch {
-            errorMessage = error.localizedDescription
+            report(error)
             sessionState = .signedOut
         }
     }
@@ -121,7 +121,7 @@ final class AppModel: ObservableObject {
         } catch let error as APIError where error.statusCode == 401 {
             clearSession()
         } catch {
-            errorMessage = error.localizedDescription
+            report(error)
             if user == nil { sessionState = .signedOut }
         }
     }
@@ -138,7 +138,7 @@ final class AppModel: ObservableObject {
             await bootstrap()
             return true
         } catch {
-            errorMessage = error.localizedDescription
+            report(error)
             return false
         }
     }
@@ -161,12 +161,24 @@ final class AppModel: ObservableObject {
         _ path: String,
         method: String = "GET",
         query: [URLQueryItem] = [],
-        body: Data? = nil
+        body: Data? = nil,
+        fresh: Bool = false
     ) async throws -> Response {
         guard let client else {
             throw APIError(statusCode: 401, message: "Sign in to continue.")
         }
-        return try await client.request(path, method: method, query: query, body: body)
+        return try await client.request(
+            path, method: method, query: query, body: body, fresh: fresh
+        )
+    }
+
+    func report(_ error: Error, prefix: String? = nil) {
+        guard !error.isRequestCancellation else { return }
+        if let prefix {
+            errorMessage = "\(prefix): \(error.localizedDescription)"
+        } else {
+            errorMessage = error.localizedDescription
+        }
     }
 
     func url(path: String) -> URL? { client?.absoluteURL(path: path) }
@@ -201,7 +213,7 @@ final class AppModel: ObservableObject {
                 )
             }
         } catch {
-            errorMessage = error.localizedDescription
+            report(error)
         }
     }
 
@@ -218,7 +230,8 @@ final class AppModel: ObservableObject {
         do {
             let manifest: MobileReleaseManifest = try await request(
                 "/api/v1/mobile/releases",
-                query: [.init(name: "build", value: String(Self.currentBuild))]
+                query: [.init(name: "build", value: String(Self.currentBuild))],
+                fresh: true
             )
             latestRelease = manifest.latest
             currentRelease = manifest.current
@@ -328,14 +341,14 @@ final class AppModel: ObservableObject {
                 "/api/v1/mobile/push-installation", method: "PUT", body: body
             )
         } catch {
-            errorMessage = "Push registration failed: \(error.localizedDescription)"
+            report(error, prefix: "Push registration failed")
         }
     }
 
     private func refreshInboxUnread() async {
         guard client != nil else { return }
         guard let response: InboxResponse = try? await request(
-            "/api/inbox", query: [.init(name: "limit", value: "1")]
+            "/api/inbox", query: [.init(name: "limit", value: "1")], fresh: true
         ) else { return }
         inboxUnread = response.unread
     }

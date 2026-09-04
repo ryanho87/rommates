@@ -162,10 +162,28 @@ struct Device: Codable, Identifiable, Hashable, Sendable {
     let id: Int
     let name: String
     let deliveryMode: String
+    let rosterGroupId: Int?
     let rosterGroupName: String?
+    let ownerUserId: Int?
     let selectedGames: Int
     let deployedGames: Int
     let storageCapacityBytes: Int64
+    let syncthingReadyAt: String?
+}
+
+struct DeviceGroup: Codable, Identifiable, Hashable, Sendable {
+    let id: Int
+    let name: String
+    let ownerUserId: Int
+    let deviceCount: Int
+    let selectedGames: Int
+    let members: [DeviceGroupMember]
+}
+
+struct DeviceGroupMember: Codable, Identifiable, Hashable, Sendable {
+    let id: Int
+    let name: String
+    let deliveryMode: String
     let syncthingReadyAt: String?
 }
 

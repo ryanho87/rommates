@@ -7,6 +7,41 @@ struct APIError: LocalizedError, Sendable {
     var errorDescription: String? { message }
 }
 
+extension Error {
+    var isRequestCancellation: Bool {
+        if self is CancellationError { return true }
+        let error = self as NSError
+        return (error.domain == NSURLErrorDomain && error.code == NSURLErrorCancelled)
+            || (error.domain == NSCocoaErrorDomain && error.code == NSUserCancelledError)
+    }
+}
+
+private actor APIResponseCache {
+    private struct Entry: Sendable {
+        let data: Data
+        let storedAt: Date
+    }
+
+    private var entries: [String: Entry] = [:]
+
+    func value(for key: String, maxAge: TimeInterval) -> Data? {
+        guard let entry = entries[key] else { return nil }
+        guard Date().timeIntervalSince(entry.storedAt) <= maxAge else {
+            entries[key] = nil
+            return nil
+        }
+        return entry.data
+    }
+
+    func insert(_ data: Data, for key: String) {
+        entries[key] = Entry(data: data, storedAt: Date())
+    }
+
+    func removeAll() {
+        entries.removeAll(keepingCapacity: true)
+    }
+}
+
 struct ServerAddress {
     static func parse(_ value: String) throws -> URL {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -33,6 +68,7 @@ struct APIClient: Sendable {
     private let baseURL: URL
     private let token: String?
     private let session: URLSession
+    private let responseCache = APIResponseCache()
 
     init(baseURL: URL, token: String? = nil, session: URLSession = .shared) {
         self.baseURL = baseURL
@@ -44,7 +80,8 @@ struct APIClient: Sendable {
         _ path: String,
         method: String = "GET",
         query: [URLQueryItem] = [],
-        body: Data? = nil
+        body: Data? = nil,
+        fresh: Bool = false
     ) async throws -> Response {
         guard var components = URLComponents(
             url: baseURL.appending(path: path),
@@ -67,7 +104,17 @@ struct APIClient: Sendable {
             request.httpBody = body
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         }
-        let (data, response) = try await session.data(for: request)
+        let cacheKey = url.absoluteString
+        if method == "GET", !fresh,
+           let cached = await responseCache.value(for: cacheKey, maxAge: 15) {
+            return try decode(cached, statusCode: 200)
+        }
+        let (data, response): (Data, URLResponse)
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch where error.isRequestCancellation {
+            throw CancellationError()
+        }
         guard let response = response as? HTTPURLResponse else {
             throw APIError(statusCode: 0, message: "The server returned an invalid response.")
         }
@@ -78,11 +125,12 @@ struct APIClient: Sendable {
                 message: detail ?? HTTPURLResponse.localizedString(forStatusCode: response.statusCode)
             )
         }
-        do {
-            return try JSONDecoder.rommates.decode(Response.self, from: data)
-        } catch {
-            throw APIError(statusCode: response.statusCode, message: "ROMmates returned data this app cannot read.")
+        if method == "GET" {
+            await responseCache.insert(data, for: cacheKey)
+        } else {
+            await responseCache.removeAll()
         }
+        return try decode(data, statusCode: response.statusCode)
     }
 
     func data(_ path: String) async throws -> Data {
@@ -94,7 +142,12 @@ struct APIClient: Sendable {
         if let token {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
-        let (data, response) = try await session.data(for: request)
+        let (data, response): (Data, URLResponse)
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch where error.isRequestCancellation {
+            throw CancellationError()
+        }
         guard let response = response as? HTTPURLResponse else {
             throw APIError(statusCode: 0, message: "The server returned an invalid response.")
         }
@@ -115,13 +168,19 @@ struct APIClient: Sendable {
         request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
         request.setValue(String(offset), forHTTPHeaderField: "Upload-Offset")
         if let token { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
-        let (responseData, response) = try await session.upload(for: request, from: data)
+        let (responseData, response): (Data, URLResponse)
+        do {
+            (responseData, response) = try await session.upload(for: request, from: data)
+        } catch where error.isRequestCancellation {
+            throw CancellationError()
+        }
         guard let response = response as? HTTPURLResponse else {
             throw APIError(statusCode: 0, message: "The server returned an invalid response.")
         }
         guard (200..<300).contains(response.statusCode) else {
             throw APIError(statusCode: response.statusCode, message: "The upload chunk was not accepted.")
         }
+        await responseCache.removeAll()
         return try JSONDecoder.rommates.decode(UploadSession.self, from: responseData)
     }
 
@@ -135,6 +194,17 @@ struct APIClient: Sendable {
     }
 
     private struct ErrorBody: Decodable { let detail: String }
+
+    private func decode<Response: Decodable & Sendable>(
+        _ data: Data,
+        statusCode: Int
+    ) throws -> Response {
+        do {
+            return try JSONDecoder.rommates.decode(Response.self, from: data)
+        } catch {
+            throw APIError(statusCode: statusCode, message: "ROMmates returned data this app cannot read.")
+        }
+    }
 }
 
 extension JSONDecoder {

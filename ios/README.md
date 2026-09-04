@@ -9,8 +9,9 @@ owned by the server.
 
 - iOS 17+, Swift 6, no third-party client dependencies.
 - Public HTTPS servers only; session tokens are stored in the iOS Keychain.
-- Library browsing, metadata, authenticated artwork, per-game downloads, device
-  selections, staged-capacity feedback, device apply/discard, Syncthing delivery
+- Paginated Library browsing, metadata, authenticated artwork, per-game downloads,
+  device groups and shared rosters, device selections, staged-capacity feedback,
+  device apply/discard, Syncthing delivery
   progress, contributor uploads, inbox, push preferences, account editing, and
   server-driven TestFlight announcements and release notes.
 - Push registration uses the production entitlement in Release builds and development
@@ -75,7 +76,7 @@ internal group, publish the matching metadata through the full administrator hos
 curl --fail-with-body --request POST https://rommates.example.com/api/mobile/releases \
   --header 'Authorization: Bearer YOUR_ROMMATES_ACCESS_TOKEN' \
   --header 'Content-Type: application/json' \
-  --data '{"build":3,"version":"1.0","notes":"Release notes for this build."}'
+  --data '{"build":4,"version":"1.0","notes":"Release notes for this build."}'
 ```
 
 Publishing a build for the first time creates one Inbox item per active native user and
