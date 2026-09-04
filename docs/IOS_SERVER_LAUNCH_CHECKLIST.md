@@ -10,7 +10,8 @@ Cloudflare Tunnel.
 - [x] Issue opaque native sessions from `POST /api/v1/mobile/session`.
 - [x] Store only a hash of each session token in SQLite.
 - [x] Tag sessions as `web` or `mobile` on the server.
-- [x] Reject administrator accounts from native login.
+- [x] Allow administrator credentials while stripping administrator authority from the
+  resulting native session.
 - [x] Restrict configured mobile hostnames to an explicit native route allowlist.
 - [x] Reject web sessions, browser cookies, the bootstrap token, and anonymous proxy
   access on the mobile hostname.
@@ -48,7 +49,9 @@ routes from that hostname.
 Run these checks against the dedicated API hostname before inviting users:
 
 - [ ] Unauthenticated `GET /api/games` returns `401`.
-- [ ] A valid non-admin native login succeeds and returns a mobile session token.
+- [ ] A valid native login succeeds and returns a mobile session token.
+- [ ] An administrator login reports `admin: false`, cannot access administrator routes,
+  and can see only devices owned by that account.
 - [ ] That token can access the Library and only devices owned by its account.
 - [ ] The bootstrap bearer token returns `401` on the mobile hostname.
 - [ ] A normal browser session returns `401` on the mobile hostname.

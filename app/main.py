@@ -1307,12 +1307,6 @@ def create_mobile_session(payload: MobileLoginRequest, request: Request):
         client_name=payload.client_name,
         session_kind="mobile",
     )
-    if principal.has_role("admin"):
-        auth.logout(token)
-        raise HTTPException(
-            status_code=403,
-            detail="Administrator accounts use the ROMmates web app",
-        )
     return {
         "session_token": token,
         "expires_at": expires_at,
@@ -1371,12 +1365,14 @@ def change_password(payload: PasswordChangeRequest, request: Request):
             status_code=400,
             detail="Bootstrap access uses ROMMATES_ACCESS_TOKEN rather than an account password",
         )
+    session_token = request_session_token(request)
     updated = auth.change_password(
         principal.id,
         payload.current_password,
         payload.new_password,
-        request_session_token(request),
+        session_token,
     )
+    updated = auth.from_session(session_token) or updated
     db.activity("user", f"Changed password for account {updated.username}")
     return {"user": updated.payload(), "changed": True}
 
@@ -1396,6 +1392,7 @@ def update_profile(payload: ProfileUpdateRequest, request: Request):
         payload.username,
         payload.display_name,
     )
+    updated = auth.from_session(request_session_token(request)) or updated
     db.activity("user", f"Updated profile for account {updated.username}")
     return {"user": updated.payload(), "changed": True}
 
@@ -1413,8 +1410,8 @@ def current_user(request: Request):
 @app.get("/api/v1/mobile/bootstrap")
 def mobile_bootstrap(request: Request):
     principal = request_principal(request)
-    if principal.id is None or principal.has_role("admin"):
-        raise HTTPException(status_code=403, detail="The native app is for non-administrator accounts")
+    if principal.id is None:
+        raise HTTPException(status_code=403, detail="A personal account is required")
     return {
         "api_version": 1,
         "user": principal.payload(),
@@ -1430,8 +1427,8 @@ def mobile_bootstrap(request: Request):
 @app.put("/api/v1/mobile/push-installation")
 def register_mobile_installation(payload: MobileInstallationRequest, request: Request):
     principal = request_principal(request)
-    if principal.id is None or principal.has_role("admin"):
-        raise HTTPException(status_code=403, detail="A non-administrator account is required")
+    if principal.id is None:
+        raise HTTPException(status_code=403, detail="A personal account is required")
     return mobile_push.register(
         principal.id,
         payload.installation_id,
@@ -1458,8 +1455,8 @@ def update_mobile_push_preferences(
     request: Request,
 ):
     principal = request_principal(request)
-    if principal.id is None or principal.has_role("admin"):
-        raise HTTPException(status_code=403, detail="A non-administrator account is required")
+    if principal.id is None:
+        raise HTTPException(status_code=403, detail="A personal account is required")
     return {
         "events": mobile_push.update_preferences(principal.id, payload.events),
         "supported_events": list(PUSH_EVENTS),

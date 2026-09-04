@@ -69,6 +69,28 @@ class AuthServiceTests(unittest.TestCase):
         self.assertEqual(principal.session_kind, "mobile")
         self.assertEqual(self.auth.from_session(token).session_kind, "mobile")
 
+    def test_admin_mobile_session_is_reduced_to_user_capabilities(self):
+        user = self.auth.create_user(
+            "mobile-admin", "Mobile Admin", "a-long-test-password", "admin"
+        )
+        principal, token, _ = self.auth.authenticate(
+            "mobile-admin",
+            "a-long-test-password",
+            "mobile-admin-test",
+            client_name="ROMmates for iOS 1.0",
+            session_kind="mobile",
+        )
+        self.assertEqual(principal.id, user["id"])
+        self.assertEqual(principal.role, "member")
+        self.assertEqual(principal.roles, ("viewer", "contributor", "member"))
+        self.assertFalse(principal.has_role("admin"))
+        self.assertEqual(self.auth.from_session(token).roles, principal.roles)
+
+        web_principal, _, _ = self.auth.authenticate(
+            "mobile-admin", "a-long-test-password", "web-admin-test"
+        )
+        self.assertTrue(web_principal.has_role("admin"))
+
     def test_rejects_short_passwords_and_duplicate_usernames(self):
         with self.assertRaisesRegex(LibraryError, "at least 12"):
             self.auth.create_user("short", "Short", "too-short", "viewer")

@@ -14,6 +14,7 @@ from .library import LibraryError
 
 ROLES = ("viewer", "contributor", "member", "admin")
 ROLE_PRIORITY = {role: index for index, role in enumerate(ROLES)}
+MOBILE_ADMIN_ROLES = ("viewer", "contributor", "member")
 SESSION_SECONDS = 30 * 24 * 60 * 60
 PASSWORD_MIN_LENGTH = 12
 
@@ -195,14 +196,23 @@ class AuthService:
 
     @staticmethod
     def _session_principal(principal: Principal, session_kind: str) -> Principal:
+        roles = principal.roles
+        role = principal.role
+        # An administrator may use the native app, but a token issued to that
+        # app must never carry administrator authority. Give it the complete
+        # user-facing capability set and let normal ownership checks limit it
+        # to this account's devices and groups.
+        if session_kind == "mobile" and principal.has_role("admin"):
+            roles = MOBILE_ADMIN_ROLES
+            role = "member"
         return Principal(
             id=principal.id,
             username=principal.username,
             display_name=principal.display_name,
-            role=principal.role,
+            role=role,
             bootstrap=principal.bootstrap,
             must_change_password=principal.must_change_password,
-            roles=principal.roles,
+            roles=roles,
             impersonator_id=principal.impersonator_id,
             impersonator_username=principal.impersonator_username,
             impersonator_display_name=principal.impersonator_display_name,

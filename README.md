@@ -156,7 +156,10 @@ hostname in `ROMMATES_MOBILE_PUBLIC_HOSTS`. On requests received through that ho
 ROMmates exposes only the native-client route allowlist, accepts only server-issued
 mobile bearer sessions, rejects browser sessions and the bootstrap administrator token,
 and does not honor anonymous proxy mode. Normal role and device-ownership checks still
-apply to every allowed route.
+apply to every allowed route. Named administrators may sign in to the native app, but
+their mobile session is reduced to the standard Viewer, Contributor, and Member
+capabilities. It has no administrator authority and can access only devices owned by
+that account.
 
 Do not put `ROMMATES_ACCESS_TOKEN` or a Cloudflare service token in the distributed app.
 The iOS client signs in through `/api/v1/mobile/session` and stores its opaque session in

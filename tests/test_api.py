@@ -223,6 +223,58 @@ class ApiIntegrationTests(unittest.TestCase):
             401,
         )
 
+    def test_admin_can_sign_in_natively_without_admin_authority(self):
+        created = self.client.post(
+            "/api/users",
+            headers=self.headers,
+            json={
+                "username": "native-admin",
+                "display_name": "Native Admin",
+                "password": "native-admin-password",
+                "roles": ["admin"],
+            },
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        mobile_host = {"Host": "mobile.testserver"}
+        signed_in = self.client.post(
+            "/api/v1/mobile/session",
+            headers=mobile_host,
+            json={
+                "username": "native-admin",
+                "password": "native-admin-password",
+                "client_name": "ROMmates for iOS admin test",
+            },
+        )
+        self.assertEqual(signed_in.status_code, 200, signed_in.text)
+        session = signed_in.json()
+        self.assertEqual(session["user"]["roles"], ["viewer", "contributor", "member"])
+        self.assertFalse(session["permissions"]["admin"])
+
+        bearer = {
+            **mobile_host,
+            "Authorization": f"Bearer {session['session_token']}",
+        }
+        changed = self.client.post(
+            "/api/auth/password",
+            headers=bearer,
+            json={
+                "current_password": "native-admin-password",
+                "new_password": "native-admin-password-changed",
+            },
+        )
+        self.assertEqual(changed.status_code, 200, changed.text)
+        self.assertEqual(changed.json()["user"]["roles"], ["viewer", "contributor", "member"])
+        bootstrap = self.client.get("/api/v1/mobile/bootstrap", headers=bearer)
+        self.assertEqual(bootstrap.status_code, 200, bootstrap.text)
+        self.assertFalse(bootstrap.json()["permissions"]["admin"])
+        self.assertTrue(bootstrap.json()["permissions"]["manage_devices"])
+        self.assertTrue(bootstrap.json()["permissions"]["upload"])
+        self.assertEqual(self.client.get("/api/users", headers=bearer).status_code, 404)
+
+        # The token remains reduced even if presented to the browser hostname.
+        browser_bearer = {"Authorization": f"Bearer {session['session_token']}"}
+        self.assertEqual(self.client.get("/api/users", headers=browser_bearer).status_code, 403)
+
     def test_onboarding_progress_is_persisted_per_account(self):
         created = self.client.post(
             "/api/users",
