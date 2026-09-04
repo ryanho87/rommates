@@ -18,6 +18,11 @@ struct AccountView: View {
                         }
                     }
                     Button("Edit Profile") { editingProfile = true }
+                    NavigationLink {
+                        AccountPasswordChangeView()
+                    } label: {
+                        Text("Change Password")
+                    }
                 }
                 Section("Access") {
                     LabeledContent("Roles") {
@@ -182,3 +187,118 @@ private struct EditProfileView: View {
 
 private struct ProfileBody: Encodable { let username: String; let displayName: String }
 private struct ProfileResponse: Decodable, Sendable { let user: User }
+
+private struct AccountPasswordChangeView: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var currentPassword = ""
+    @State private var newPassword = ""
+    @State private var confirmation = ""
+    @State private var saving = false
+    @State private var changed = false
+    @FocusState private var focusedField: Field?
+
+    private enum Field {
+        case current
+        case new
+        case confirmation
+    }
+
+    private var passwordsMatch: Bool {
+        confirmation.isEmpty || newPassword == confirmation
+    }
+
+    private var canSave: Bool {
+        !saving
+            && !currentPassword.isEmpty
+            && newPassword.count >= 12
+            && newPassword != currentPassword
+            && newPassword == confirmation
+    }
+
+    var body: some View {
+        Form {
+            Section {
+                SecureField("Enter current password", text: $currentPassword)
+                    .textContentType(.password)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .focused($focusedField, equals: .current)
+                    .submitLabel(.next)
+                    .onSubmit { focusedField = .new }
+            } header: {
+                Text("Current password")
+            }
+
+            Section {
+                SecureField("Create a new password", text: $newPassword)
+                    .textContentType(.newPassword)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .focused($focusedField, equals: .new)
+                    .submitLabel(.next)
+                    .onSubmit { focusedField = .confirmation }
+                SecureField("Confirm new password", text: $confirmation)
+                    .textContentType(.newPassword)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .focused($focusedField, equals: .confirmation)
+                    .submitLabel(.done)
+                    .onSubmit { if canSave { submit() } }
+            } header: {
+                Text("New password")
+            } footer: {
+                if !passwordsMatch {
+                    Label("The new passwords do not match.", systemImage: "exclamationmark.circle.fill")
+                        .foregroundStyle(.red)
+                } else if !newPassword.isEmpty && newPassword == currentPassword {
+                    Text("Choose a password different from your current password.")
+                        .foregroundStyle(.red)
+                } else {
+                    Text("Use at least 12 characters. Your current iPhone session will remain signed in.")
+                }
+            }
+
+            Section {
+                Button(action: submit) {
+                    HStack {
+                        Spacer()
+                        if saving {
+                            ProgressView()
+                        } else {
+                            Text("Change Password").fontWeight(.semibold)
+                        }
+                        Spacer()
+                    }
+                    .frame(minHeight: 30)
+                }
+                .disabled(!canSave)
+            }
+        }
+        .navigationTitle("Change Password")
+        .navigationBarTitleDisplayMode(.inline)
+        .alert("Password Changed", isPresented: $changed) {
+            Button("Done") { dismiss() }
+        } message: {
+            Text("Your new password is ready to use the next time you sign in.")
+        }
+    }
+
+    private func submit() {
+        guard canSave else { return }
+        focusedField = nil
+        saving = true
+        Task {
+            let success = await model.changePassword(
+                current: currentPassword,
+                new: newPassword
+            )
+            saving = false
+            guard success else { return }
+            currentPassword = ""
+            newPassword = ""
+            confirmation = ""
+            changed = true
+        }
+    }
+}
