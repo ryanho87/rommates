@@ -39,8 +39,8 @@ hosted relay, and the Mac does not need to remain online. Mount the APNs `.p8` k
 read-only in the server's existing data volume and set:
 
 ```dotenv
-ROMMATES_APNS_KEY_PATH=/data/secrets/AuthKey_64VLU2D5LV.p8
-ROMMATES_APNS_KEY_ID=64VLU2D5LV
+ROMMATES_APNS_KEY_PATH=/data/secrets/AuthKey_XS7BLQULZC.p8
+ROMMATES_APNS_KEY_ID=XS7BLQULZC
 ROMMATES_APNS_TEAM_ID=2NKFMTXAX5
 ROMMATES_APNS_BUNDLE_ID=com.rommates.app
 ROMMATES_APNS_ENVIRONMENT=production
