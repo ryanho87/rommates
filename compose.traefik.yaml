@@ -1,0 +1,17 @@
+# Optional Traefik overlay for the restricted native-app hostname.
+#
+# Usage:
+#   ROMMATES_MOBILE_PUBLIC_HOSTS=api.rommates.example.com \
+#   docker compose -f compose.yaml -f compose.traefik.yaml up -d --build
+services:
+  rommates:
+    environment:
+      ROMMATES_MOBILE_PUBLIC_HOSTS: "${ROMMATES_MOBILE_PUBLIC_HOSTS:?Set the native API hostname}"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.rommates-mobile.entrypoints=${ROMMATES_MOBILE_TRAEFIK_ENTRYPOINT:-websecure}"
+      - "traefik.http.routers.rommates-mobile.rule=Host(`${ROMMATES_MOBILE_PUBLIC_HOSTS:?Set the native API hostname}`)"
+      - "traefik.http.routers.rommates-mobile.tls=true"
+      - "traefik.http.routers.rommates-mobile.tls.certresolver=${ROMMATES_MOBILE_TRAEFIK_CERTRESOLVER:-lets-encrypt}"
+      - "traefik.http.routers.rommates-mobile.service=rommates"
+      - "traefik.http.services.rommates.loadbalancer.server.port=8080"

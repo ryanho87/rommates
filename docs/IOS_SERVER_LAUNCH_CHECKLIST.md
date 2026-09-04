@@ -35,6 +35,12 @@ Cloudflare Tunnel.
 - [ ] Do not use an Access Bypass policy for the full existing application.
 - [ ] Do not embed the bootstrap token or a Cloudflare service token in the iOS app.
 
+For a Traefik deployment, the repository includes `compose.traefik.yaml`. Apply it as
+an overlay to the base Compose file, or copy its `rommates-mobile` router labels into a
+deployment-specific Compose file. The API router intentionally points to the same
+container; the application-level hostname boundary is what removes the web and admin
+routes from that hostname.
+
 ## 3. Boundary verification
 
 Run these checks against the dedicated API hostname before inviting users:
