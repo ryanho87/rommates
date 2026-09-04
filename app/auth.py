@@ -100,7 +100,14 @@ class AuthService:
         with self._attempt_lock:
             self._attempts.pop(key, None)
 
-    def authenticate(self, username: str, password: str, rate_key: str) -> tuple[Principal, str, int]:
+    def authenticate(
+        self,
+        username: str,
+        password: str,
+        rate_key: str,
+        *,
+        client_name: str = "",
+    ) -> tuple[Principal, str, int]:
         self._check_rate_limit(rate_key)
         normalized = username.strip().casefold()
         with self.db.connect() as connection:
@@ -115,8 +122,8 @@ class AuthService:
         token_hash = hashlib.sha256(token.encode()).hexdigest()
         with self.db.write() as connection:
             connection.execute(
-                "INSERT INTO auth_sessions(token_hash,user_id,expires_at) VALUES(?,?,?)",
-                (token_hash, row["id"], expires_at),
+                "INSERT INTO auth_sessions(token_hash,user_id,expires_at,client_name) VALUES(?,?,?,?)",
+                (token_hash, row["id"], expires_at, client_name.strip()[:100]),
             )
             connection.execute(
                 "UPDATE users SET last_login_at=CURRENT_TIMESTAMP WHERE id=?", (row["id"],)

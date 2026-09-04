@@ -442,11 +442,53 @@ CREATE TABLE IF NOT EXISTS auth_sessions (
     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     impersonated_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
     expires_at INTEGER NOT NULL,
+    client_name TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_auth_sessions_expiry ON auth_sessions(expires_at);
+
+CREATE TABLE IF NOT EXISTS mobile_installations (
+    id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    apns_token TEXT NOT NULL,
+    bundle_id TEXT NOT NULL,
+    environment TEXT NOT NULL CHECK(environment IN ('production','sandbox')),
+    app_version TEXT NOT NULL DEFAULT '',
+    notifications_enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(bundle_id,environment,apns_token)
+);
+CREATE INDEX IF NOT EXISTS idx_mobile_installations_user
+ON mobile_installations(user_id,notifications_enabled);
+
+CREATE TABLE IF NOT EXISTS mobile_push_preferences (
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY(user_id,kind)
+);
+
+CREATE TABLE IF NOT EXISTS mobile_push_outbox (
+    id INTEGER PRIMARY KEY,
+    notification_id INTEGER NOT NULL REFERENCES user_notifications(id) ON DELETE CASCADE,
+    installation_id TEXT NOT NULL REFERENCES mobile_installations(id) ON DELETE CASCADE,
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK(status IN ('pending','sending','sent','failed')),
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at INTEGER NOT NULL DEFAULT 0,
+    response_code INTEGER,
+    error TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    sent_at TEXT,
+    UNIQUE(notification_id,installation_id)
+);
+CREATE INDEX IF NOT EXISTS idx_mobile_push_outbox_pending
+ON mobile_push_outbox(status,next_attempt_at,id);
 
 CREATE TABLE IF NOT EXISTS activity (
     id INTEGER PRIMARY KEY,
@@ -878,6 +920,48 @@ class Database:
                     "INTEGER REFERENCES users(id) ON DELETE SET NULL"
                 )
             connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(33)")
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS mobile_installations ("
+                "id TEXT PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,"
+                "apns_token TEXT NOT NULL,bundle_id TEXT NOT NULL,environment TEXT NOT NULL "
+                "CHECK(environment IN ('production','sandbox')),app_version TEXT NOT NULL DEFAULT '',"
+                "notifications_enabled INTEGER NOT NULL DEFAULT 1,"
+                "created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+                "updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+                "UNIQUE(bundle_id,environment,apns_token))"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_mobile_installations_user "
+                "ON mobile_installations(user_id,notifications_enabled)"
+            )
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS mobile_push_preferences ("
+                "user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,kind TEXT NOT NULL,"
+                "enabled INTEGER NOT NULL DEFAULT 1,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+                "PRIMARY KEY(user_id,kind))"
+            )
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS mobile_push_outbox ("
+                "id INTEGER PRIMARY KEY,notification_id INTEGER NOT NULL "
+                "REFERENCES user_notifications(id) ON DELETE CASCADE,installation_id TEXT NOT NULL "
+                "REFERENCES mobile_installations(id) ON DELETE CASCADE,status TEXT NOT NULL DEFAULT 'pending' "
+                "CHECK(status IN ('pending','sending','sent','failed')),attempt_count INTEGER NOT NULL DEFAULT 0,"
+                "next_attempt_at INTEGER NOT NULL DEFAULT 0,response_code INTEGER,error TEXT NOT NULL DEFAULT '',"
+                "created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+                "sent_at TEXT,UNIQUE(notification_id,installation_id))"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_mobile_push_outbox_pending "
+                "ON mobile_push_outbox(status,next_attempt_at,id)"
+            )
+            auth_session_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(auth_sessions)")
+            }
+            if "client_name" not in auth_session_columns:
+                connection.execute(
+                    "ALTER TABLE auth_sessions ADD COLUMN client_name TEXT NOT NULL DEFAULT ''"
+                )
+            connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(34)")
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:

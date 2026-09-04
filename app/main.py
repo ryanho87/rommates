@@ -22,6 +22,7 @@ from .config import Settings
 from .db import Database
 from .device_sync import DeviceSyncMonitor
 from .library import JobCancelled, LibraryError, LibraryService
+from .mobile_push import MobilePushService, PUSH_EVENTS
 from .mcp_server import RommatesMCPService, create_mcp_server
 from .naming import NamingService
 from .notifications import NotificationService
@@ -72,10 +73,12 @@ ranking_service = RankingService(settings, db)
 transfers = TransferService(settings, db, library)
 syncthing = SyncthingService(settings)
 notifications = NotificationService(settings, db)
+mobile_push = MobilePushService(settings, db)
 device_syncs = DeviceSyncMonitor(
     db,
     syncthing,
     notifications,
+    mobile_push=mobile_push,
     poll_seconds=max(3, settings.syncthing_cache_seconds),
 )
 auth = AuthService(db)
@@ -644,6 +647,7 @@ async def lifespan(_: FastAPI):
     transfers.initialize()
     notifications.initialize()
     auth.initialize()
+    mobile_push.start()
     device_syncs.start()
     scheduler_stop = threading.Event()
     scheduler_thread = threading.Thread(target=save_scheduler, args=(scheduler_stop,), daemon=True)
@@ -668,6 +672,7 @@ async def lifespan(_: FastAPI):
         scheduler_thread.join(timeout=2)
         artwork_thumbnails.close()
         device_syncs.close()
+        mobile_push.close()
         notifications.close()
 
 
@@ -861,6 +866,29 @@ class LoginRequest(BaseModel):
     password: str = Field(min_length=1, max_length=1024)
 
 
+class MobileLoginRequest(LoginRequest):
+    client_name: str = Field(default="ROMmates for iOS", min_length=1, max_length=100)
+
+
+class MobileInstallationRequest(BaseModel):
+    installation_id: str = Field(
+        min_length=16,
+        max_length=64,
+        pattern="^[A-Za-z0-9._-]+$",
+    )
+    device_token: str = Field(
+        min_length=64,
+        max_length=512,
+        pattern="^[A-Fa-f0-9]+$",
+    )
+    app_version: str = Field(default="", max_length=50)
+    notifications_enabled: bool = True
+
+
+class MobilePushPreferencesRequest(BaseModel):
+    events: dict[str, bool]
+
+
 class PasswordChangeRequest(BaseModel):
     current_password: str = Field(min_length=1, max_length=1024)
     new_password: str = Field(min_length=PASSWORD_MIN_LENGTH, max_length=1024)
@@ -905,8 +933,24 @@ def request_principal(request: Request) -> Principal:
     return principal
 
 
+def request_session_token(request: Request) -> str:
+    return str(getattr(request.state, "session_token", ""))
+
+
 def can_manage_devices(principal: Principal) -> bool:
     return principal.has_role("member") or principal.has_role("admin")
+
+
+def permission_payload(principal: Principal) -> dict[str, bool]:
+    ready = not principal.must_change_password
+    return {
+        "admin": principal.has_role("admin") and ready,
+        "manage_devices": can_manage_devices(principal) and ready,
+        "upload": (
+            principal.has_role("admin") or principal.has_role("contributor")
+        ) and ready,
+        "download": ready,
+    }
 
 
 def require_device_access(device_id: int, principal: Principal):
@@ -960,10 +1004,15 @@ def role_allows(principal: Principal, method: str, path: str) -> bool:
         "/api/auth/profile",
         "/api/account/summary",
         "/api/onboarding",
+        "/api/v1/mobile/bootstrap",
+        "/api/v1/mobile/push-installation",
+        "/api/v1/mobile/push-preferences",
     }:
         return True
     if path.startswith("/api/inbox"):
         return method in {"GET", "POST"}
+    if path.startswith("/api/v1/mobile/push-installation"):
+        return method in {"PUT", "DELETE"}
     if method == "GET" and (
         path in {"/api/status", "/api/platforms"}
         or path.startswith("/api/games")
@@ -1032,7 +1081,11 @@ async def protect_private_api(request: Request, call_next):
         origin = request.headers.get("origin")
         if origin and origin.rstrip("/") != str(request.base_url).rstrip("/"):
             return JSONResponse(status_code=403, content={"detail": "Request origin is not allowed"})
-    public_api = path in {"/api/health", "/api/auth/login"} or public_download
+    public_api = path in {
+        "/api/health",
+        "/api/auth/login",
+        "/api/v1/mobile/session",
+    } or public_download
     if private_path and not public_api:
         principal = None
         authorization = request.headers.get("authorization", "")
@@ -1040,7 +1093,15 @@ async def protect_private_api(request: Request, call_next):
         if settings.access_token and secrets.compare_digest(authorization, expected):
             principal = Principal(None, "bootstrap-admin", "Bootstrap administrator", "admin", True)
         if principal is None:
-            principal = auth.from_session(request.cookies.get("rommates_session", ""))
+            bearer_token = (
+                authorization.removeprefix("Bearer ").strip()
+                if authorization.startswith("Bearer ")
+                else ""
+            )
+            session_token = bearer_token or request.cookies.get("rommates_session", "")
+            principal = auth.from_session(session_token)
+            if principal is not None:
+                request.state.session_token = session_token
         if principal is None and settings.allow_anonymous:
             principal = Principal(None, "proxy-admin", "Authenticated proxy user", "admin", True)
         if principal is None:
@@ -1052,6 +1113,7 @@ async def protect_private_api(request: Request, call_next):
             "/api/auth/impersonation/end",
             "/api/auth/password",
             "/api/status",
+            "/api/v1/mobile/bootstrap",
         }:
             return JSONResponse(
                 status_code=403,
@@ -1134,6 +1196,7 @@ def login(payload: LoginRequest, request: Request):
         payload.username,
         payload.password,
         request.client.host if request.client else "unknown",
+        client_name="ROMmates web",
     )
     response = JSONResponse({"user": principal.payload(), "expires_at": expires_at})
     response.set_cookie(
@@ -1152,9 +1215,31 @@ def login(payload: LoginRequest, request: Request):
     return response
 
 
+@app.post("/api/v1/mobile/session")
+def create_mobile_session(payload: MobileLoginRequest, request: Request):
+    principal, token, expires_at = auth.authenticate(
+        payload.username,
+        payload.password,
+        f"{request.client.host if request.client else 'unknown'}:ios",
+        client_name=payload.client_name,
+    )
+    if principal.has_role("admin"):
+        auth.logout(token)
+        raise HTTPException(
+            status_code=403,
+            detail="Administrator accounts use the ROMmates web app",
+        )
+    return {
+        "session_token": token,
+        "expires_at": expires_at,
+        "user": principal.payload(),
+        "permissions": permission_payload(principal),
+    }
+
+
 @app.post("/api/auth/logout")
 def logout(request: Request):
-    auth.logout(request.cookies.get("rommates_session", ""))
+    auth.logout(request_session_token(request))
     response = JSONResponse({"signed_out": True})
     response.delete_cookie("rommates_session", path="/", samesite="strict")
     return response
@@ -1206,7 +1291,7 @@ def change_password(payload: PasswordChangeRequest, request: Request):
         principal.id,
         payload.current_password,
         payload.new_password,
-        request.cookies.get("rommates_session", ""),
+        request_session_token(request),
     )
     db.activity("user", f"Changed password for account {updated.username}")
     return {"user": updated.payload(), "changed": True}
@@ -1237,14 +1322,63 @@ def current_user(request: Request):
     return {
         "user": principal.payload(),
         "roles": list(ROLES),
-        "permissions": {
-            "admin": principal.has_role("admin") and not principal.must_change_password,
-            "manage_devices": can_manage_devices(principal) and not principal.must_change_password,
-            "upload": (
-                principal.has_role("admin") or principal.has_role("contributor")
-            ) and not principal.must_change_password,
-            "download": not principal.must_change_password,
+        "permissions": permission_payload(principal),
+    }
+
+
+@app.get("/api/v1/mobile/bootstrap")
+def mobile_bootstrap(request: Request):
+    principal = request_principal(request)
+    if principal.id is None or principal.has_role("admin"):
+        raise HTTPException(status_code=403, detail="The native app is for non-administrator accounts")
+    return {
+        "api_version": 1,
+        "user": principal.payload(),
+        "permissions": permission_payload(principal),
+        "push": {
+            "configured": mobile_push.configured,
+            "bundle_id": settings.apns_bundle_id,
+            "events": mobile_push.preferences(principal.id),
         },
+    }
+
+
+@app.put("/api/v1/mobile/push-installation")
+def register_mobile_installation(payload: MobileInstallationRequest, request: Request):
+    principal = request_principal(request)
+    if principal.id is None or principal.has_role("admin"):
+        raise HTTPException(status_code=403, detail="A non-administrator account is required")
+    return mobile_push.register(
+        principal.id,
+        payload.installation_id,
+        payload.device_token,
+        payload.app_version,
+        payload.notifications_enabled,
+    )
+
+
+@app.delete("/api/v1/mobile/push-installation/{installation_id}")
+def unregister_mobile_installation(installation_id: str, request: Request):
+    principal = request_principal(request)
+    if principal.id is None:
+        raise HTTPException(status_code=403, detail="A personal account is required")
+    return {
+        "unregistered": mobile_push.unregister(principal.id, installation_id),
+        "installation_id": installation_id,
+    }
+
+
+@app.put("/api/v1/mobile/push-preferences")
+def update_mobile_push_preferences(
+    payload: MobilePushPreferencesRequest,
+    request: Request,
+):
+    principal = request_principal(request)
+    if principal.id is None or principal.has_role("admin"):
+        raise HTTPException(status_code=403, detail="A non-administrator account is required")
+    return {
+        "events": mobile_push.update_preferences(principal.id, payload.events),
+        "supported_events": list(PUSH_EVENTS),
     }
 
 
@@ -2548,6 +2682,11 @@ def update_device_syncthing_ready(
                     "devices", f"device:{device_id}:ready",
                 ),
             )
+    if payload.ready:
+        mobile_push.enqueue_existing(
+            int(device["owner_user_id"]),
+            f"device:{device_id}:ready",
+        )
     db.activity(
         "device",
         f"Marked {device['name']} Syncthing {'ready' if payload.ready else 'pending'}",
@@ -2963,25 +3102,50 @@ def finalize_upload(session_id: str, request: Request):
 @app.post("/api/uploads/{session_id}/approve", status_code=202)
 def approve_upload(session_id: str, request: Request):
     principal = request_principal(request)
+    with db.connect() as connection:
+        upload = connection.execute(
+            "SELECT owner_user_id,platform,bundle_name FROM upload_sessions WHERE id=?",
+            (session_id,),
+        ).fetchone()
+    if not upload:
+        raise HTTPException(status_code=404, detail="Upload session was not found")
     job_id = enqueue_job(
         "upload_finalize",
         f"Approving upload {session_id}",
         transfers.finalize,
         session_id,
         coalesce=True,
+        requested_by=principal.id,
     )
     with db.write() as connection:
         connection.execute(
             "UPDATE upload_sessions SET reviewed_by=?,reviewed_at=CURRENT_TIMESTAMP WHERE id=?",
             (principal.id, session_id),
         )
+    mobile_push.notify_user(
+        upload["owner_user_id"],
+        "upload_approved",
+        "Your ROM upload was approved",
+        f"{upload['platform']}/{upload['bundle_name'] or 'Upload'} is being added to the library.",
+        "transfers",
+        f"upload:{session_id}:approved",
+    )
     return {"job_id": job_id}
 
 
 @app.post("/api/uploads/{session_id}/reject")
 def reject_upload(session_id: str, payload: UploadReviewRequest, request: Request):
     principal = request_principal(request)
-    return transfers.reject(session_id, principal.id, payload.note)
+    result = transfers.reject(session_id, principal.id, payload.note)
+    mobile_push.notify_user(
+        result.get("owner_user_id"),
+        "upload_rejected",
+        "Your ROM upload was not approved",
+        payload.note.strip() or "An administrator declined this upload.",
+        "transfers",
+        f"upload:{session_id}:rejected",
+    )
+    return result
 
 
 @app.delete("/api/uploads/{session_id}")

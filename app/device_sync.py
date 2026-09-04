@@ -19,11 +19,13 @@ class DeviceSyncMonitor:
         syncthing: SyncthingService,
         notifications: Any,
         *,
+        mobile_push: Any | None = None,
         poll_seconds: float = 10.0,
     ) -> None:
         self.db = db
         self.syncthing = syncthing
         self.notifications = notifications
+        self.mobile_push = mobile_push
         self.poll_seconds = max(1.0, float(poll_seconds))
         self._stop = threading.Event()
         self._wake = threading.Event()
@@ -297,5 +299,15 @@ class DeviceSyncMonitor:
         except Exception:
             # Sync completion and the in-app notification remain authoritative.
             pass
+        if self.mobile_push and row["requested_by"]:
+            try:
+                self.mobile_push.enqueue_existing(
+                    int(row["requested_by"]),
+                    f"device-sync:{row['id']}:complete",
+                )
+            except Exception:
+                # The durable in-app notification remains available even if
+                # queueing APNs is temporarily unavailable.
+                pass
         self.db.activity("device_sync", f"{row['device_name']} finished syncing")
         return True

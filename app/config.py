@@ -107,6 +107,12 @@ class Settings:
     discord_webhook_url: str = ""
     discord_timeout_seconds: float = 5.0
     public_url: str = ""
+    apns_key_path: Path | None = None
+    apns_key_id: str = ""
+    apns_team_id: str = ""
+    apns_bundle_id: str = "com.rommates.app"
+    apns_environment: str = "production"
+    apns_timeout_seconds: float = 10.0
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -211,6 +217,26 @@ class Settings:
                 "ROMMATES_DISCORD_TIMEOUT_SECONDS", 5.0, 1.0, 20.0
             ),
             public_url=os.getenv("ROMMATES_PUBLIC_URL", "").strip().rstrip("/"),
+            apns_key_path=(
+                Path(os.environ["ROMMATES_APNS_KEY_PATH"])
+                if os.getenv("ROMMATES_APNS_KEY_PATH", "").strip()
+                else None
+            ),
+            apns_key_id=os.getenv("ROMMATES_APNS_KEY_ID", "").strip(),
+            apns_team_id=os.getenv("ROMMATES_APNS_TEAM_ID", "").strip(),
+            apns_bundle_id=(
+                os.getenv("ROMMATES_APNS_BUNDLE_ID", "com.rommates.app").strip()
+                or "com.rommates.app"
+            ),
+            apns_environment=(
+                "sandbox"
+                if os.getenv("ROMMATES_APNS_ENVIRONMENT", "production").strip().lower()
+                == "sandbox"
+                else "production"
+            ),
+            apns_timeout_seconds=_number_env(
+                "ROMMATES_APNS_TIMEOUT_SECONDS", 10.0, 1.0, 30.0
+            ),
             screenscraper_user=os.getenv("ROMMATES_SCREENSCRAPER_USER", "").strip(),
             screenscraper_password=os.getenv(
                 "ROMMATES_SCREENSCRAPER_PASSWORD", ""

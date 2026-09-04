@@ -101,6 +101,68 @@ class ApiIntegrationTests(unittest.TestCase):
         self.assertEqual(mcp_authorized.status_code, 200, mcp_authorized.text)
         self.assertEqual(mcp_authorized.json()["result"]["serverInfo"]["name"], "ROMmates")
 
+    def test_native_session_uses_bearer_auth_and_registers_push_installation(self):
+        created = self.client.post(
+            "/api/users",
+            headers=self.headers,
+            json={
+                "username": "ios-viewer",
+                "display_name": "iOS Viewer",
+                "password": "ios-viewer-password",
+                "roles": ["viewer", "contributor"],
+            },
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        signed_in = self.client.post(
+            "/api/v1/mobile/session",
+            json={
+                "username": "ios-viewer",
+                "password": "ios-viewer-password",
+                "client_name": "ROMmates iPhone 1.0",
+            },
+        )
+        self.assertEqual(signed_in.status_code, 200, signed_in.text)
+        token = signed_in.json()["session_token"]
+        bearer = {"Authorization": f"Bearer {token}"}
+        self.assertTrue(signed_in.json()["user"]["must_change_password"])
+        changed = self.client.post(
+            "/api/auth/password",
+            headers=bearer,
+            json={
+                "current_password": "ios-viewer-password",
+                "new_password": "ios-viewer-password-changed",
+            },
+        )
+        self.assertEqual(changed.status_code, 200, changed.text)
+        bootstrap = self.client.get("/api/v1/mobile/bootstrap", headers=bearer)
+        self.assertEqual(bootstrap.status_code, 200, bootstrap.text)
+        self.assertTrue(bootstrap.json()["permissions"]["upload"])
+        self.assertFalse(bootstrap.json()["permissions"]["manage_devices"])
+        installation_id = "550e8400-e29b-41d4-a716-446655440000"
+        registered = self.client.put(
+            "/api/v1/mobile/push-installation",
+            headers=bearer,
+            json={
+                "installation_id": installation_id,
+                "device_token": "ab" * 32,
+                "app_version": "1.0 (1)",
+            },
+        )
+        self.assertEqual(registered.status_code, 200, registered.text)
+        self.assertEqual(registered.json()["id"], installation_id)
+        preferences = self.client.put(
+            "/api/v1/mobile/push-preferences",
+            headers=bearer,
+            json={"events": {"device_sync": False}},
+        )
+        self.assertEqual(preferences.status_code, 200, preferences.text)
+        self.assertFalse(preferences.json()["events"]["device_sync"])
+        self.assertEqual(self.client.post("/api/auth/logout", headers=bearer).status_code, 200)
+        self.assertEqual(
+            self.client.get("/api/v1/mobile/bootstrap", headers=bearer).status_code,
+            401,
+        )
+
     def test_onboarding_progress_is_persisted_per_account(self):
         created = self.client.post(
             "/api/users",

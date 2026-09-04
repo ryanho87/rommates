@@ -1,0 +1,540 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		07C7E6A2041F6E6460FD29C6 /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6762645411975D4F33C7F4E /* APIClient.swift */; };
+		23BC7CBCD7D025AA6B62E3DF /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 7591BD81C5EC240EA7B8C212 /* Assets.xcassets */; };
+		4B39679EFCCB9021653BB129 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F9540B533AD601FB6300048 /* Theme.swift */; };
+		5074649BE1F23D29B00F6C86 /* LibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 71109561E3E7C32B9784D00C /* LibraryView.swift */; };
+		521F3F8A625C25E183097B48 /* UploadsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 75B5D106E6F7E49D2D4212B2 /* UploadsView.swift */; };
+		5E8AF42F53B592171C30FF8F /* AccountView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42B656081A87F582B37648C6 /* AccountView.swift */; };
+		89B9131342ED4B6729D26B35 /* ROMmatesApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = D73E5EC018867EA0366D1985 /* ROMmatesApp.swift */; };
+		9A23DC5D046EDD787FE0C3DA /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 706C227BE5128A9362A69383 /* AppModel.swift */; };
+		A8FFC3145CB4EF84D32AD34B /* DevicesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19C6305588E3E4D45FC8424E /* DevicesView.swift */; };
+		BE233EA3AAF921C185CBD5F5 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4FBFB7E4C6BBD95F30E8752 /* AppDelegate.swift */; };
+		BFBD3F021A51ED2AE5A32BFE /* InboxView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D8AB952FFF374C7970188807 /* InboxView.swift */; };
+		C4368A18420E7FA97F6861DB /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FD4D3DE95DA1A8C4C7FA7C4E /* RootView.swift */; };
+		C8B31613168998B06B2C9E65 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 29B03FC225779E7BAB5993CC /* Models.swift */; };
+		D870755515C1CD26A0D3C903 /* KeychainStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 79A9D9AFA92712D13BB5AFEF /* KeychainStore.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		17F183AC8D919943225FA41E /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 68E5ECE17712AA832F05D216 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 18F4F0060236230B038DF211;
+			remoteInfo = ROMmates;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		0A165383013BD998E6BBE58E /* ROMmates-Release.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "ROMmates-Release.entitlements"; sourceTree = "<group>"; };
+		19C6305588E3E4D45FC8424E /* DevicesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevicesView.swift; sourceTree = "<group>"; };
+		234DD675243377D69CD323D0 /* ROMmates.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = ROMmates.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		29B03FC225779E7BAB5993CC /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
+		41ED5705497F1E32839937A7 /* ROMmatesTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = ROMmatesTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		42B656081A87F582B37648C6 /* AccountView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountView.swift; sourceTree = "<group>"; };
+		4F9540B533AD601FB6300048 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
+		5EC2915DF7F90F4A1033C1B9 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		706C227BE5128A9362A69383 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
+		71109561E3E7C32B9784D00C /* LibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryView.swift; sourceTree = "<group>"; };
+		7591BD81C5EC240EA7B8C212 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		75B5D106E6F7E49D2D4212B2 /* UploadsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UploadsView.swift; sourceTree = "<group>"; };
+		79A9D9AFA92712D13BB5AFEF /* KeychainStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainStore.swift; sourceTree = "<group>"; };
+		A6762645411975D4F33C7F4E /* APIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIClient.swift; sourceTree = "<group>"; };
+		BCC134A6FAF656F3CCB0D1A3 /* ROMmates-Debug.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "ROMmates-Debug.entitlements"; sourceTree = "<group>"; };
+		D4FBFB7E4C6BBD95F30E8752 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
+		D73E5EC018867EA0366D1985 /* ROMmatesApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ROMmatesApp.swift; sourceTree = "<group>"; };
+		D8AB952FFF374C7970188807 /* InboxView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxView.swift; sourceTree = "<group>"; };
+		FD4D3DE95DA1A8C4C7FA7C4E /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		034524FAAFA006BC2F847D69 /* Core */ = {
+			isa = PBXGroup;
+			children = (
+				A6762645411975D4F33C7F4E /* APIClient.swift */,
+				706C227BE5128A9362A69383 /* AppModel.swift */,
+				79A9D9AFA92712D13BB5AFEF /* KeychainStore.swift */,
+				29B03FC225779E7BAB5993CC /* Models.swift */,
+				4F9540B533AD601FB6300048 /* Theme.swift */,
+			);
+			path = Core;
+			sourceTree = "<group>";
+		};
+		12762F96677FB47FD31BC7AE /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				234DD675243377D69CD323D0 /* ROMmates.app */,
+				41ED5705497F1E32839937A7 /* ROMmatesTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		1451047957F3A64029FBAABD /* Account */ = {
+			isa = PBXGroup;
+			children = (
+				42B656081A87F582B37648C6 /* AccountView.swift */,
+			);
+			path = Account;
+			sourceTree = "<group>";
+		};
+		14EEBBFB20B242814351D7C1 /* Devices */ = {
+			isa = PBXGroup;
+			children = (
+				19C6305588E3E4D45FC8424E /* DevicesView.swift */,
+			);
+			path = Devices;
+			sourceTree = "<group>";
+		};
+		506FE14D0A0B4B43473D80BD /* Inbox */ = {
+			isa = PBXGroup;
+			children = (
+				D8AB952FFF374C7970188807 /* InboxView.swift */,
+			);
+			path = Inbox;
+			sourceTree = "<group>";
+		};
+		5F98AB456DB7BFF122F18521 /* ROMmatesTests */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			path = ROMmatesTests;
+			sourceTree = "<group>";
+		};
+		7D9280761BD0CDD620E7BF87 /* Features */ = {
+			isa = PBXGroup;
+			children = (
+				1451047957F3A64029FBAABD /* Account */,
+				14EEBBFB20B242814351D7C1 /* Devices */,
+				506FE14D0A0B4B43473D80BD /* Inbox */,
+				9CDF0AB8B5297F3030C048F1 /* Library */,
+				FDDF48FCE0EF31E7AC07ACBF /* Uploads */,
+			);
+			path = Features;
+			sourceTree = "<group>";
+		};
+		8D3D40DC736C6CF2B1C33143 /* ROMmates */ = {
+			isa = PBXGroup;
+			children = (
+				A91253161B72EBAA4C7CA809 /* App */,
+				034524FAAFA006BC2F847D69 /* Core */,
+				7D9280761BD0CDD620E7BF87 /* Features */,
+				D74087151C507CE934FB94FE /* Resources */,
+			);
+			path = ROMmates;
+			sourceTree = "<group>";
+		};
+		9662EE4B009FBB8358E5F367 = {
+			isa = PBXGroup;
+			children = (
+				8D3D40DC736C6CF2B1C33143 /* ROMmates */,
+				5F98AB456DB7BFF122F18521 /* ROMmatesTests */,
+				12762F96677FB47FD31BC7AE /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		9CDF0AB8B5297F3030C048F1 /* Library */ = {
+			isa = PBXGroup;
+			children = (
+				71109561E3E7C32B9784D00C /* LibraryView.swift */,
+			);
+			path = Library;
+			sourceTree = "<group>";
+		};
+		A91253161B72EBAA4C7CA809 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				D4FBFB7E4C6BBD95F30E8752 /* AppDelegate.swift */,
+				D73E5EC018867EA0366D1985 /* ROMmatesApp.swift */,
+				FD4D3DE95DA1A8C4C7FA7C4E /* RootView.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		D74087151C507CE934FB94FE /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				7591BD81C5EC240EA7B8C212 /* Assets.xcassets */,
+				5EC2915DF7F90F4A1033C1B9 /* Info.plist */,
+				BCC134A6FAF656F3CCB0D1A3 /* ROMmates-Debug.entitlements */,
+				0A165383013BD998E6BBE58E /* ROMmates-Release.entitlements */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
+		FDDF48FCE0EF31E7AC07ACBF /* Uploads */ = {
+			isa = PBXGroup;
+			children = (
+				75B5D106E6F7E49D2D4212B2 /* UploadsView.swift */,
+			);
+			path = Uploads;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		18F4F0060236230B038DF211 /* ROMmates */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = C04049C2951109B6F1DA1FE1 /* Build configuration list for PBXNativeTarget "ROMmates" */;
+			buildPhases = (
+				FB1287E7C609194A674288D9 /* Sources */,
+				14D807B6D4CAED6289C6FC0B /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = ROMmates;
+			packageProductDependencies = (
+			);
+			productName = ROMmates;
+			productReference = 234DD675243377D69CD323D0 /* ROMmates.app */;
+			productType = "com.apple.product-type.application";
+		};
+		807A3BC94A750E795E7089E3 /* ROMmatesTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 3C2EAB762C7B8C491E915BD8 /* Build configuration list for PBXNativeTarget "ROMmatesTests" */;
+			buildPhases = (
+				CEB7C4841D353150D3B31B1D /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				B4AC009C820B12B3509A5E69 /* PBXTargetDependency */,
+			);
+			name = ROMmatesTests;
+			packageProductDependencies = (
+			);
+			productName = ROMmatesTests;
+			productReference = 41ED5705497F1E32839937A7 /* ROMmatesTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		68E5ECE17712AA832F05D216 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 2600;
+				TargetAttributes = {
+					18F4F0060236230B038DF211 = {
+						ProvisioningStyle = Automatic;
+					};
+					807A3BC94A750E795E7089E3 = {
+						ProvisioningStyle = Automatic;
+					};
+				};
+			};
+			buildConfigurationList = 9643EE9F0744C945BC6E9B4C /* Build configuration list for PBXProject "ROMmates" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 9662EE4B009FBB8358E5F367;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 12762F96677FB47FD31BC7AE /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				18F4F0060236230B038DF211 /* ROMmates */,
+				807A3BC94A750E795E7089E3 /* ROMmatesTests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		14D807B6D4CAED6289C6FC0B /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				23BC7CBCD7D025AA6B62E3DF /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		CEB7C4841D353150D3B31B1D /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		FB1287E7C609194A674288D9 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				07C7E6A2041F6E6460FD29C6 /* APIClient.swift in Sources */,
+				5E8AF42F53B592171C30FF8F /* AccountView.swift in Sources */,
+				BE233EA3AAF921C185CBD5F5 /* AppDelegate.swift in Sources */,
+				9A23DC5D046EDD787FE0C3DA /* AppModel.swift in Sources */,
+				A8FFC3145CB4EF84D32AD34B /* DevicesView.swift in Sources */,
+				BFBD3F021A51ED2AE5A32BFE /* InboxView.swift in Sources */,
+				D870755515C1CD26A0D3C903 /* KeychainStore.swift in Sources */,
+				5074649BE1F23D29B00F6C86 /* LibraryView.swift in Sources */,
+				C8B31613168998B06B2C9E65 /* Models.swift in Sources */,
+				89B9131342ED4B6729D26B35 /* ROMmatesApp.swift in Sources */,
+				C4368A18420E7FA97F6861DB /* RootView.swift in Sources */,
+				4B39679EFCCB9021653BB129 /* Theme.swift in Sources */,
+				521F3F8A625C25E183097B48 /* UploadsView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		B4AC009C820B12B3509A5E69 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 18F4F0060236230B038DF211 /* ROMmates */;
+			targetProxy = 17F183AC8D919943225FA41E /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		10DDB635FA5EF32E13191568 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_ENTITLEMENTS = "ROMmates/Resources/ROMmates-Release.entitlements";
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 0.1.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = com.rommates.app;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+		48EA14DE6617E5F72C152CBC /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				INFOPLIST_FILE = ROMmates/Resources/Info.plist;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				SDKROOT = iphoneos;
+				SUPPORTS_MACCATALYST = NO;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		8C9341B82D689C3A705FA5B6 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_ENTITLEMENTS = "ROMmates/Resources/ROMmates-Debug.entitlements";
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 0.1.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = com.rommates.app;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		AA8A398C3A3FFF7C3F71CA49 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				INFOPLIST_FILE = ROMmates/Resources/Info.plist;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				SDKROOT = iphoneos;
+				SUPPORTS_MACCATALYST = NO;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		ADBC6E8F73538A4B09F619B8 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/ROMmates.app/ROMmates";
+			};
+			name = Debug;
+		};
+		B59E984F64EF2B7E071A6527 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/ROMmates.app/ROMmates";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		3C2EAB762C7B8C491E915BD8 /* Build configuration list for PBXNativeTarget "ROMmatesTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				ADBC6E8F73538A4B09F619B8 /* Debug */,
+				B59E984F64EF2B7E071A6527 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		9643EE9F0744C945BC6E9B4C /* Build configuration list for PBXProject "ROMmates" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				8C9341B82D689C3A705FA5B6 /* Debug */,
+				10DDB635FA5EF32E13191568 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		C04049C2951109B6F1DA1FE1 /* Build configuration list for PBXNativeTarget "ROMmates" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AA8A398C3A3FFF7C3F71CA49 /* Debug */,
+				48EA14DE6617E5F72C152CBC /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 68E5ECE17712AA832F05D216 /* Project object */;
+}
