@@ -29,11 +29,9 @@ struct DevicesView: View {
                         Button("Try Again") { Task { await load(fresh: true) } }
                     }
                 } else if devices.isEmpty {
-                    EmptyState(
-                        icon: "gamecontroller",
-                        title: "No devices yet",
-                        message: "Create a device to stage a tailored ROM collection."
-                    )
+                    DevicesFirstUseView {
+                        showingCreateDevice = true
+                    }
                 } else {
                     List {
                         if let groupsError {
@@ -71,15 +69,17 @@ struct DevicesView: View {
                 }
             }
             .toolbar {
-                Menu {
-                    Button { showingCreateDevice = true } label: {
-                        Label("New Device", systemImage: "gamecontroller")
+                if !devices.isEmpty {
+                    Menu {
+                        Button { showingCreateDevice = true } label: {
+                            Label("New Device", systemImage: "gamecontroller")
+                        }
+                        Button { showingCreateGroup = true } label: {
+                            Label("New Device Group", systemImage: "rectangle.3.group")
+                        }
+                    } label: {
+                        Label("Add", systemImage: "plus")
                     }
-                    Button { showingCreateGroup = true } label: {
-                        Label("New Device Group", systemImage: "rectangle.3.group")
-                    }
-                } label: {
-                    Label("Add", systemImage: "plus")
                 }
             }
             .sheet(isPresented: $showingCreateDevice) {
@@ -117,6 +117,252 @@ struct DevicesView: View {
         } catch {
             groupsError = "Device groups couldn’t load"
         }
+    }
+}
+
+private struct DevicesFirstUseView: View {
+    let createDevice: () -> Void
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
+                VStack(alignment: .leading, spacing: 9) {
+                    Image(systemName: "gamecontroller.fill")
+                        .font(.system(size: 28, weight: .semibold))
+                        .foregroundStyle(ROMTheme.violet)
+                        .frame(width: 52, height: 52)
+                        .background(ROMTheme.violet.opacity(0.14), in: Circle())
+                        .accessibilityHidden(true)
+                    Text("Connect your first device")
+                        .font(.title2.bold())
+                    Text("Create a device to give one handheld its own ROM collection. Your full library stays on the ROMmates server.")
+                        .font(.body)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                DeviceIntegrationDiagram()
+                DeviceSetupChecklist()
+
+                Button(action: createDevice) {
+                    Label("Create First Device", systemImage: "plus")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                        .frame(minHeight: 48)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(ROMTheme.violet)
+                .accessibilityHint("Choose a device name, delivery method, and ROM capacity")
+            }
+            .frame(maxWidth: 560, alignment: .leading)
+            .padding(.horizontal, 24)
+            .padding(.top, 20)
+            .padding(.bottom, 32)
+            .frame(maxWidth: .infinity)
+        }
+        .background(Color(.systemGroupedBackground))
+    }
+}
+
+private struct DeviceSetupChecklist: View {
+    private let steps = [
+        DeviceSetupStep(
+            title: "Create the device",
+            detail: "Choose its name, delivery method, and ROM capacity."
+        ),
+        DeviceSetupStep(
+            title: "Choose its games",
+            detail: "Switches stage the roster without changing any files."
+        ),
+        DeviceSetupStep(
+            title: "Review and apply",
+            detail: "ROMmates reconciles the device folder on the server."
+        ),
+        DeviceSetupStep(
+            title: "Finish delivery",
+            detail: "Pair Syncthing once, or download an ES-DE-ready ZIP."
+        ),
+    ]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("WHAT YOU’LL DO")
+                .font(.caption2.weight(.bold))
+                .tracking(0.7)
+                .foregroundStyle(.secondary)
+
+            ForEach(Array(steps.enumerated()), id: \.offset) { index, step in
+                HStack(alignment: .top, spacing: 12) {
+                    Text("\(index + 1)")
+                        .font(.caption.weight(.bold).monospacedDigit())
+                        .foregroundStyle(ROMTheme.violet)
+                        .frame(width: 28, height: 28)
+                        .background(ROMTheme.violet.opacity(0.12), in: Circle())
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(step.title)
+                            .font(.subheadline.weight(.semibold))
+                        Text(step.detail)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("Step \(index + 1). \(step.title). \(step.detail)")
+            }
+        }
+    }
+}
+
+private struct DeviceSetupStep {
+    let title: String
+    let detail: String
+}
+
+private struct DeviceIntegrationDiagram: View {
+    var body: some View {
+        VStack(spacing: 0) {
+            Text("HOW IT WORKS")
+                .font(.caption2.weight(.bold))
+                .tracking(0.7)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.bottom, 16)
+
+            DiagramEndpoint(
+                icon: "books.vertical.fill",
+                eyebrow: "SERVER",
+                title: "Full ROM library",
+                detail: "The canonical collection stays here."
+            )
+
+            DiagramConnector(label: "Choose ROMs")
+
+            VStack(alignment: .leading, spacing: 12) {
+                Text("ROMMATES")
+                    .font(.caption2.weight(.bold))
+                    .tracking(0.7)
+                    .foregroundStyle(ROMTheme.violet)
+
+                HStack(alignment: .center, spacing: 10) {
+                    DiagramState(
+                        icon: "checklist",
+                        title: "Device roster",
+                        detail: "Desired collection"
+                    )
+
+                    VStack(spacing: 4) {
+                        Text("APPLY")
+                            .font(.caption2.weight(.bold))
+                            .tracking(0.45)
+                            .foregroundStyle(.secondary)
+                        Image(systemName: "arrow.right")
+                            .font(.body.weight(.bold))
+                            .foregroundStyle(ROMTheme.violet)
+                    }
+                    .accessibilityElement(children: .combine)
+
+                    DiagramState(
+                        icon: "folder.fill",
+                        title: "Device folder",
+                        detail: "Filesystem state"
+                    )
+                }
+            }
+            .padding(16)
+            .background(ROMTheme.violet.opacity(0.10), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(ROMTheme.violet.opacity(0.24), lineWidth: 0.5)
+            }
+
+            DiagramConnector(label: "Syncthing or ZIP")
+
+            DiagramEndpoint(
+                icon: "gamecontroller.fill",
+                eyebrow: "HANDHELD",
+                title: "Your device",
+                detail: "Receives the applied device folder."
+            )
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("How device integration works")
+    }
+}
+
+private struct DiagramEndpoint: View {
+    let icon: String
+    let eyebrow: String
+    let title: String
+    let detail: String
+
+    var body: some View {
+        HStack(spacing: 14) {
+            Image(systemName: icon)
+                .font(.body.weight(.semibold))
+                .foregroundStyle(ROMTheme.violet)
+                .frame(width: 46, height: 46)
+                .background(ROMTheme.violet.opacity(0.12), in: Circle())
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(eyebrow)
+                    .font(.caption2.weight(.bold))
+                    .tracking(0.6)
+                    .foregroundStyle(.secondary)
+                Text(title)
+                    .font(.body.weight(.semibold))
+                Text(detail)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+    }
+}
+
+private struct DiagramConnector: View {
+    let label: String
+
+    var body: some View {
+        VStack(spacing: 3) {
+            Rectangle()
+                .fill(Color.secondary.opacity(0.30))
+                .frame(width: 1, height: 12)
+            Text(label.uppercased())
+                .font(.caption2.weight(.bold))
+                .tracking(0.55)
+                .foregroundStyle(.secondary)
+            Image(systemName: "chevron.down")
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 5)
+        .accessibilityElement(children: .combine)
+    }
+}
+
+private struct DiagramState: View {
+    let icon: String
+    let title: String
+    let detail: String
+
+    var body: some View {
+        VStack(spacing: 5) {
+            Image(systemName: icon)
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(ROMTheme.violet)
+                .accessibilityHidden(true)
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+                .multilineTextAlignment(.center)
+            Text(detail)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+        .accessibilityElement(children: .combine)
     }
 }
 
