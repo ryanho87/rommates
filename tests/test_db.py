@@ -61,7 +61,7 @@ class DatabaseMigrationTests(unittest.TestCase):
                 versions = {row["version"] for row in upgraded.execute("SELECT version FROM schema_migrations")}
             self.assertIn("result_json", columns)
             self.assertIn("progress_json", columns)
-            self.assertEqual(versions, set(range(1, 37)))
+            self.assertEqual(versions, set(range(1, 38)))
             with db.connect() as upgraded:
                 tables = {
                     row["name"]
@@ -115,6 +115,7 @@ class DatabaseMigrationTests(unittest.TestCase):
             self.assertIn("idx_device_selections_game", indexes)
             self.assertIn("idx_deployments_game", indexes)
             self.assertIn("idx_platform_rankings_matched_game", indexes)
+            self.assertIn("idx_devices_owner_name", indexes)
 
     def test_member_and_device_ownership_migration_preserves_accounts_and_sessions(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -177,6 +178,16 @@ class DatabaseMigrationTests(unittest.TestCase):
                     "INSERT INTO users(username,username_normalized,display_name,password_hash,role) "
                     "VALUES('brother','brother','Brother','hash','member')"
                 )
+                # The migrated schema treats name as a per-owner display label,
+                # while path remains the globally unique filesystem identity.
+                upgraded.execute(
+                    "INSERT INTO devices(name,path,owner_user_id) VALUES('handheld','owner-device',7)"
+                )
+                with self.assertRaises(sqlite3.IntegrityError):
+                    upgraded.execute(
+                        "INSERT INTO devices(name,path,owner_user_id) "
+                        "VALUES('HANDHELD','duplicate-owner-device',7)"
+                    )
                 foreign_key_issues = upgraded.execute("PRAGMA foreign_key_check").fetchall()
             self.assertEqual((account["id"], account["role"]), (7, "admin"))
             self.assertEqual(session["user_id"], 7)

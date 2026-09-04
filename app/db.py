@@ -190,7 +190,7 @@ CREATE TABLE IF NOT EXISTS device_roster_groups (
 
 CREATE TABLE IF NOT EXISTS devices (
     id INTEGER PRIMARY KEY,
-    name TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
     path TEXT NOT NULL UNIQUE,
     deployment_mode TEXT NOT NULL DEFAULT 'hardlink' CHECK(deployment_mode IN ('copy','hardlink')),
     delivery_mode TEXT NOT NULL DEFAULT 'syncthing' CHECK(delivery_mode IN ('syncthing','download')),
@@ -990,6 +990,55 @@ class Database:
                 "notes TEXT NOT NULL,released_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"
             )
             connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(36)")
+            if not connection.execute(
+                "SELECT 1 FROM schema_migrations WHERE version=37"
+            ).fetchone():
+                # Device names are user-facing labels. The immutable, unique
+                # filesystem identity lives in devices.path, so different
+                # owners may safely use the same display name.
+                connection.commit()
+                connection.execute("PRAGMA foreign_keys=OFF")
+                connection.executescript(
+                    """
+                    BEGIN;
+                    CREATE TABLE devices_path_identity_migration (
+                        id INTEGER PRIMARY KEY,
+                        name TEXT NOT NULL,
+                        path TEXT NOT NULL UNIQUE,
+                        deployment_mode TEXT NOT NULL DEFAULT 'hardlink'
+                            CHECK(deployment_mode IN ('copy','hardlink')),
+                        delivery_mode TEXT NOT NULL DEFAULT 'syncthing'
+                            CHECK(delivery_mode IN ('syncthing','download')),
+                        roster_group_id INTEGER REFERENCES device_roster_groups(id) ON DELETE SET NULL,
+                        owner_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                        syncthing_ready_at TEXT,
+                        syncthing_ready_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                        syncthing_device_id TEXT NOT NULL DEFAULT '',
+                        syncthing_folder_id TEXT NOT NULL DEFAULT '',
+                        storage_capacity_bytes INTEGER NOT NULL DEFAULT 0
+                            CHECK(storage_capacity_bytes >= 0),
+                        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    );
+                    INSERT INTO devices_path_identity_migration(
+                        id,name,path,deployment_mode,delivery_mode,roster_group_id,
+                        owner_user_id,syncthing_ready_at,syncthing_ready_by,
+                        syncthing_device_id,syncthing_folder_id,storage_capacity_bytes,created_at
+                    ) SELECT
+                        id,name,path,deployment_mode,delivery_mode,roster_group_id,
+                        owner_user_id,syncthing_ready_at,syncthing_ready_by,
+                        syncthing_device_id,syncthing_folder_id,storage_capacity_bytes,created_at
+                    FROM devices;
+                    DROP TABLE devices;
+                    ALTER TABLE devices_path_identity_migration RENAME TO devices;
+                    CREATE UNIQUE INDEX idx_devices_owner_name
+                    ON devices(COALESCE(owner_user_id,-1), name COLLATE NOCASE);
+                    CREATE INDEX idx_devices_owner ON devices(owner_user_id,name);
+                    CREATE INDEX idx_devices_roster_group ON devices(roster_group_id,name);
+                    COMMIT;
+                    """
+                )
+                connection.execute("PRAGMA foreign_keys=ON")
+                connection.execute("INSERT INTO schema_migrations(version) VALUES(37)")
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:

@@ -71,16 +71,20 @@ Emulation/
 │   ├── psx/
 │   └── snes/
 ├── devices/
-│   ├── retroid-pocket/
+│   ├── retroid-pocket/             # existing or manually created device
 │   │   └── roms/
-│   └── steam-deck/
+│   └── device-7a34c1d8-.../        # device created in ROMmates
 │       └── roms/
 └── .rommates-trash/
 ```
 
 Every direct child of `devices` containing a `roms` directory is discovered during a library
 scan. Administrators can also use **Devices > Add device** to create and register that folder
-immediately from a phone, without waiting for a scan.
+immediately from a phone, without waiting for a scan. New devices receive an immutable
+`device-<UUID>` filesystem key while retaining the user-entered device name as an editable
+display label. The key does not depend on a username, so account or device-name changes cannot
+move the folder or break Syncthing. Different owners may use the same display name without a
+path collision. Existing device directories keep their current paths and are not renamed.
 
 ## Deploy with Docker Compose
 
@@ -268,7 +272,8 @@ The NUC filesystem is the source of truth for what is currently on a device. Sel
 only the staged desired state used to calculate the next apply. Each device can use independent
 copies or prefer hardlinks. Applying changes:
 
-1. Deploys missing or changed files from `/emulation/roms` to `/emulation/devices/{device}/roms`.
+1. Deploys missing or changed files from `/emulation/roms` to
+   `/emulation/devices/{immutable-device-key}/roms`.
    Hardlink-preferred devices use a zero-additional-storage hardlink when the source and
    target are on the same underlying filesystem, with a safe copy fallback.
 2. Removes recognized files whose games were explicitly unselected.
@@ -409,7 +414,7 @@ You can build the desired set in either direction:
 - **Devices:** Choose one device and select or unselect many games, then review and apply its pending changes.
 
 For a new handheld, **Devices > Add device** creates
-`/emulation/devices/{device}/roms`. Choose automatic Syncthing delivery or manual ZIP downloads
+`/emulation/devices/device-<UUID>/roms`. Choose automatic Syncthing delivery or manual ZIP downloads
 during onboarding. Syncthing devices require an administrator to add and share the host folder;
 ROMmates deliberately does not edit Syncthing's cluster configuration. Download-only devices
 can select games immediately and use **Download ROM package** to stream one ZIP containing the
@@ -419,6 +424,8 @@ creating another persistent copy on the server.
 Devices created by a Member are owned by that account automatically. Existing device folders
 remain administrator-only after upgrade until an administrator chooses an owner on the Devices
 page. Ownership is enforced by the API, not just hidden in the browser.
+Device display names are unique per owner, not globally, and can be changed without changing the
+immutable filesystem key.
 
 New and existing devices can copy the desired roster from another accessible device as a one-time
 operation. Devices can also be combined into a named, owner-specific group. A group appears once

@@ -504,9 +504,11 @@ def apply_device_and_rescan(
 ) -> dict[str, object]:
     result: dict[str, object] = dict(library.apply_device(device_id, cancel_check=cancel_check))
     with db.connect() as connection:
-        device = connection.execute("SELECT name FROM devices WHERE id=?", (device_id,)).fetchone()
+        device = connection.execute("SELECT name,path FROM devices WHERE id=?", (device_id,)).fetchone()
     if device:
-        result["syncthing_rescan"] = syncthing.rescan_device(device["name"])
+        result["syncthing_rescan"] = syncthing.rescan_device(
+            device["path"], device_label=device["name"]
+        )
     return result
 
 
@@ -519,9 +521,11 @@ def apply_reviewed_device_and_rescan(
         )
     )
     with db.connect() as connection:
-        device = connection.execute("SELECT name FROM devices WHERE id=?", (device_id,)).fetchone()
+        device = connection.execute("SELECT name,path FROM devices WHERE id=?", (device_id,)).fetchone()
     if device:
-        result["syncthing_rescan"] = syncthing.rescan_device(device["name"])
+        result["syncthing_rescan"] = syncthing.rescan_device(
+            device["path"], device_label=device["name"]
+        )
     return result
 
 
@@ -721,7 +725,7 @@ class DeviceDeploymentModeRequest(BaseModel):
 
 
 class DeviceCreateRequest(BaseModel):
-    name: str = Field(min_length=1, max_length=64)
+    name: str = Field(min_length=1, max_length=100)
     deployment_mode: str = Field(default="hardlink", pattern="^hardlink$")
     delivery_mode: str = Field(default="syncthing", pattern="^(syncthing|download)$")
     clone_device_id: int | None = Field(default=None, ge=1)
@@ -1748,16 +1752,30 @@ def syncthing_status(request: Request, refresh: bool = False):
     if principal.has_role("admin"):
         return payload
     with db.connect() as connection:
-        owned_names = {
-            str(row["name"]).casefold()
-            for row in connection.execute(
-                "SELECT name FROM devices WHERE owner_user_id=?", (principal.id,)
-            )
-        }
+        owned_devices = connection.execute(
+            "SELECT name,syncthing_device_id FROM devices WHERE owner_user_id=?",
+            (principal.id,),
+        ).fetchall()
+    owned_device_ids = {
+        str(row["syncthing_device_id"])
+        for row in owned_devices
+        if str(row["syncthing_device_id"] or "")
+    }
+    # Older device records may not yet have a stored Syncthing device ID.
+    # Retain the previous display-name match only for those legacy rows.
+    owned_legacy_names = {
+        str(row["name"]).casefold()
+        for row in owned_devices
+        if not str(row["syncthing_device_id"] or "")
+    }
     visible = [
         item
         for item in payload.get("devices", [])
-        if isinstance(item, dict) and str(item.get("name") or "").casefold() in owned_names
+        if isinstance(item, dict)
+        and (
+            str(item.get("device_id") or "") in owned_device_ids
+            or str(item.get("name") or "").casefold() in owned_legacy_names
+        )
     ]
     payload["devices"] = visible
     payload["online"] = sum(1 for item in visible if item.get("connected"))
@@ -2247,10 +2265,12 @@ def duplicate_groups(
     devices_by_game: dict[int, list[str]] = {game_id: [] for game_id in game_ids}
     for row in device_rows:
         devices_by_game[row["game_id"]].append(row["name"])
-    device_inventories = {
-        device["name"]: library.device_inventory(device["id"], refresh=False)
+    # Display names are only unique within an owner, so keep inventories as
+    # rows rather than collapsing same-named devices into a dictionary.
+    device_inventories = [
+        (device["name"], library.device_inventory(device["id"], refresh=False))
         for device in devices
-    }
+    ]
     files_by_game: dict[int, list[str]] = {game_id: [] for game_id in game_ids}
     for row in file_rows:
         files_by_game[row["game_id"]].append(row["relpath"])
@@ -2259,7 +2279,7 @@ def duplicate_groups(
     for item in items:
         selected_devices = devices_by_game[item["id"]]
         present_devices = [
-            name for name, inventory in device_inventories.items()
+            name for name, inventory in device_inventories
             if any(relpath in inventory for relpath in files_by_game[item["id"]])
         ]
         item["devices"] = selected_devices
@@ -2849,7 +2869,8 @@ def device_syncthing_status(
             "sync_run": sync_run,
         }
     result = dict(syncthing.device_sync_status(
-        str(device["name"]),
+        str(device["path"]),
+        device_label=str(device["name"]),
         remote_device_id=str(device["syncthing_device_id"] or ""),
         folder_id=str(device["syncthing_folder_id"] or ""),
     ))
@@ -2870,6 +2891,7 @@ def share_device_with_syncthing(
     try:
         result = syncthing.share_device_folder(
             str(device["name"]),
+            str(device["path"]),
             payload.device_id,
             folder_id=f"rommates-device-{device_id}",
         )
@@ -2894,7 +2916,7 @@ def update_device_owner(device_id: int, payload: DeviceOwnerRequest, request: Re
     require_device_access(device_id, principal)
     with db.write() as connection:
         current_device = connection.execute(
-            "SELECT roster_group_id,owner_user_id FROM devices WHERE id=?", (device_id,)
+            "SELECT name,roster_group_id,owner_user_id FROM devices WHERE id=?", (device_id,)
         ).fetchone()
         if (
             current_device
@@ -2922,6 +2944,16 @@ def update_device_owner(device_id: int, payload: DeviceOwnerRequest, request: Re
                     status_code=400,
                     detail="Choose an active member or administrator",
                 )
+        if current_device and connection.execute(
+            "SELECT 1 FROM devices WHERE id<>? "
+            "AND COALESCE(owner_user_id,-1)=COALESCE(?,-1) "
+            "AND name=? COLLATE NOCASE",
+            (device_id, payload.owner_user_id, current_device["name"]),
+        ).fetchone():
+            raise HTTPException(
+                status_code=409,
+                detail="That owner already has a device with this name",
+            )
         connection.execute(
             "UPDATE devices SET owner_user_id=? WHERE id=?",
             (payload.owner_user_id, device_id),

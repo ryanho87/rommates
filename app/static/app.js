@@ -2587,14 +2587,14 @@ function deviceOnboardingPanel(force = false) {
       <p id="device-onboarding-title">Create its ROM workspace and choose how the package reaches the handheld. No library scan is required.</p>
     </div>
     <form class="device-onboarding-form" data-device-onboarding-form>
-      <label class="field"><span>Device folder name</span><input class="input" name="name" placeholder="retroid-pocket-6" autocomplete="off" autocapitalize="none" maxlength="64" required><small>Letters, numbers, dots, dashes, and underscores.</small></label>
+      <label class="field"><span>Device name</span><input class="input" name="name" placeholder="My Retroid Pocket" autocomplete="off" maxlength="100" required><small>This is the editable name people see. ROMmates assigns a separate permanent folder ID.</small></label>
       <label class="field"><span>Get ROMs onto the device</span><select name="delivery_mode"><option value="syncthing">Sync automatically with Syncthing</option><option value="download">Download a ZIP manually</option></select></label>
       <label class="field"><span>Usable SD card capacity</span><span class="input-with-suffix"><input class="input" type="number" name="storage_capacity_gib" min="0" max="1048576" step="0.1" inputmode="decimal" placeholder="128"><span>GB</span></span><small>Optional. Leave room for saves and emulator data.</small></label>
       <div class="device-clone-options">
         <label class="field"><span>Start with games from</span><select name="clone_device_id"><option value="">Start with an empty roster</option>${state.devices.map((device) => `<option value="${device.id}">${escapeHtml(device.name)} (${Number(device.selected_games || 0).toLocaleString()} selected)</option>`).join("")}</select></label>
         <label class="device-choice compact hidden" data-clone-sync-row><input type="checkbox" name="keep_in_sync"><span><strong>Keep these device rosters in sync</strong><small>Future game selections on either device will update both desired rosters.</small></span></label>
       </div>
-      <div class="device-path-preview"><span>ROM folder</span><code data-device-path-preview>devices/new-device/roms</code></div>
+      <div class="device-path-preview"><span>ROM folder</span><code data-device-path-preview>devices/device-&lt;unique-id&gt;/roms</code></div>
       <div class="device-onboarding-actions"><button class="button secondary" type="button" data-cancel-device-onboarding>Cancel</button><button class="button" type="submit">Create device</button></div>
     </form>
   </section>`;
@@ -2637,11 +2637,6 @@ function bindDeviceOnboarding(root = view, inDialog = false) {
   const input = form?.elements.name;
   const cloneSelect = form?.elements.clone_device_id;
   const cloneSyncRow = form?.querySelector("[data-clone-sync-row]");
-  const preview = root.querySelector("[data-device-path-preview]");
-  input?.addEventListener("input", () => {
-    const slug = input.value.trim().toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9._-]/g, "").replace(/-+/g, "-");
-    if (preview) preview.textContent = `devices/${slug || "new-device"}/roms`;
-  });
   cloneSelect?.addEventListener("change", () => {
     cloneSyncRow?.classList.toggle("hidden", !cloneSelect.value);
     if (!cloneSelect.value) form.elements.keep_in_sync.checked = false;
@@ -2649,14 +2644,14 @@ function bindDeviceOnboarding(root = view, inDialog = false) {
   form?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const submit = form.querySelector('[type="submit"]');
-    const slug = input.value.trim().toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9._-]/g, "").replace(/-+/g, "-");
-    if (!slug) return toast("Enter a device name", "error");
+    const displayName = input.value.trim();
+    if (!displayName) return toast("Enter a device name", "error");
     submit.disabled = true;
     try {
       const created = await api("/api/devices", {
         method: "POST",
         body: JSON.stringify({
-          name: slug,
+          name: displayName,
           deployment_mode: "hardlink",
           delivery_mode: form.elements.delivery_mode.value,
           storage_capacity_bytes: Math.round(Number(form.elements.storage_capacity_gib.value || 0) * 1024 ** 3),

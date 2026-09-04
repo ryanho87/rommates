@@ -8,6 +8,7 @@ import tempfile
 import threading
 import time
 import unittest
+import uuid
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
@@ -63,24 +64,49 @@ class LibraryServiceTests(unittest.TestCase):
             return connection.execute("SELECT id FROM games WHERE display_name=?", (name,)).fetchone()["id"]
 
     def test_create_device_makes_roms_directory_and_registers_immediately(self):
-        created = self.service.create_device("retroid-pocket-6", "hardlink")
+        created = self.service.create_device("My Retroid Pocket", "hardlink")
 
-        self.assertEqual(created["name"], "retroid-pocket-6")
+        self.assertEqual(created["name"], "My Retroid Pocket")
         self.assertEqual(created["deployment_mode"], "hardlink")
-        self.assertTrue((self.devices / "retroid-pocket-6" / "roms").is_dir())
+        self.assertTrue(str(created["path"]).startswith("device-"))
+        uuid.UUID(str(created["path"])[len("device-"):])
+        self.assertTrue((self.devices / created["path"] / "roms").is_dir())
         with self.db.connect() as connection:
             row = connection.execute(
                 "SELECT name,path FROM devices WHERE id=?", (created["id"],)
             ).fetchone()
-        self.assertEqual(dict(row), {"name": "retroid-pocket-6", "path": "retroid-pocket-6"})
+        self.assertEqual(
+            dict(row), {"name": "My Retroid Pocket", "path": created["path"]}
+        )
 
-    def test_create_device_rejects_unsafe_and_duplicate_names(self):
-        for unsafe in ("../outside", "nested/device", "device name", ".hidden"):
-            with self.subTest(unsafe=unsafe), self.assertRaises(LibraryError):
-                self.service.create_device(unsafe)
-        self.service.create_device("odin2")
+    def test_create_device_uses_display_names_and_scopes_duplicates_to_owner(self):
+        for invalid in ("", "bad\nname", "x" * 101):
+            with self.subTest(invalid=invalid), self.assertRaises(LibraryError):
+                self.service.create_device(invalid)
+        friendly = self.service.create_device("Ryan's Retroid / Travel")
+        self.assertEqual(friendly["name"], "Ryan's Retroid / Travel")
+        self.assertNotIn("Ryan", friendly["path"])
+
+        self.service.create_device("Odin 2")
         with self.assertRaises(LibraryError):
-            self.service.create_device("odin2")
+            self.service.create_device("odin 2")
+
+        with self.db.write() as connection:
+            for username in ("owner-one", "owner-two"):
+                connection.execute(
+                    "INSERT INTO users(username,username_normalized,display_name,password_hash,role) "
+                    "VALUES(?,?,?,?,?)",
+                    (username, username, username, "unused", "member"),
+                )
+            owners = [
+                row["id"]
+                for row in connection.execute(
+                    "SELECT id FROM users WHERE username_normalized LIKE 'owner-%' ORDER BY id"
+                )
+            ]
+        first = self.service.create_device("Game Room", owner_user_id=owners[0])
+        second = self.service.create_device("Game Room", owner_user_id=owners[1])
+        self.assertNotEqual(first["path"], second["path"])
 
     def test_linked_device_rosters_propagate_selections_and_unlink_safely(self):
         self.write("gba/Alpha.gba", b"alpha")
@@ -728,7 +754,8 @@ class LibraryServiceTests(unittest.TestCase):
         self.service.scan()
         keep_id = self.game_id("Keep Deployed")
         discard_id = self.game_id("Discard Addition")
-        device_id = self.service.create_device("handheld")["id"]
+        device = self.service.create_device("handheld")
+        device_id = device["id"]
         self.service.set_selection(device_id, keep_id, True)
         self.service.apply_device(device_id)
         self.service.set_selection(device_id, keep_id, False)
@@ -746,13 +773,14 @@ class LibraryServiceTests(unittest.TestCase):
                 )
             }
         self.assertEqual(selections, {keep_id})
-        self.assertTrue((self.devices / "handheld/roms/gba/Keep Deployed.gba").exists())
-        self.assertFalse((self.devices / "handheld/roms/gba/Discard Addition.gba").exists())
+        self.assertTrue((self.devices / device["path"] / "roms/gba/Keep Deployed.gba").exists())
+        self.assertFalse((self.devices / device["path"] / "roms/gba/Discard Addition.gba").exists())
 
     def test_inventory_adopts_recognized_files_and_preserves_staged_removal(self):
         source = self.write("gba/Filesystem State.gba", b"filesystem-state")
-        device_id = self.service.create_device("filesystem-handheld")["id"]
-        target = self.devices / "filesystem-handheld/roms/gba/Filesystem State.gba"
+        device = self.service.create_device("filesystem-handheld")
+        device_id = device["id"]
+        target = self.devices / device["path"] / "roms/gba/Filesystem State.gba"
         target.parent.mkdir(parents=True, exist_ok=True)
         self.service.scan()
         game_id = self.game_id("Filesystem State")
@@ -785,8 +813,9 @@ class LibraryServiceTests(unittest.TestCase):
 
     def test_inventory_keeps_unknown_files_out_of_derived_device_state(self):
         self.write("gba/Known.gba", b"known")
-        device_id = self.service.create_device("unknown-handheld")["id"]
-        unknown = self.devices / "unknown-handheld/roms/gba/Unknown.gba"
+        device = self.service.create_device("unknown-handheld")
+        device_id = device["id"]
+        unknown = self.devices / device["path"] / "roms/gba/Unknown.gba"
         unknown.parent.mkdir(parents=True, exist_ok=True)
         unknown.write_bytes(b"unknown")
         self.service.scan()

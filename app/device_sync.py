@@ -125,7 +125,7 @@ class DeviceSyncMonitor:
             return None
         with self.db.connect() as connection:
             device = connection.execute(
-                "SELECT id,name,owner_user_id,delivery_mode,syncthing_device_id,syncthing_folder_id "
+                "SELECT id,name,path,owner_user_id,delivery_mode,syncthing_device_id,syncthing_folder_id "
                 "FROM devices WHERE id=?",
                 (device_id,),
             ).fetchone()
@@ -139,7 +139,9 @@ class DeviceSyncMonitor:
             return None
         if not resolved_device_id:
             live = self.syncthing.device_sync_status(
-                str(device["name"]), folder_id=resolved_folder_id
+                str(device["path"]),
+                device_label=str(device["name"]),
+                folder_id=resolved_folder_id,
             )
             if live.get("linked"):
                 resolved_folder_id = str(live.get("folder_id") or resolved_folder_id)
@@ -181,7 +183,8 @@ class DeviceSyncMonitor:
         """Refresh active runs once. Exposed separately for deterministic tests."""
         with self.db.connect() as connection:
             rows = connection.execute(
-                "SELECT r.*,d.name AS device_name,d.syncthing_device_id AS current_device_id,"
+                "SELECT r.*,d.name AS device_name,d.path AS device_path,"
+                "d.syncthing_device_id AS current_device_id,"
                 "d.syncthing_folder_id AS current_folder_id "
                 "FROM device_sync_runs r JOIN devices d ON d.id=r.device_id "
                 "WHERE r.status IN ('pending','syncing','offline') ORDER BY r.id"
@@ -192,7 +195,8 @@ class DeviceSyncMonitor:
                 break
             try:
                 live = self.syncthing.device_sync_status(
-                    str(row["device_name"]),
+                    str(row["device_path"]),
+                    device_label=str(row["device_name"]),
                     remote_device_id=str(row["current_device_id"] or row["remote_device_id"]),
                     folder_id=str(row["current_folder_id"] or row["folder_id"]),
                 )

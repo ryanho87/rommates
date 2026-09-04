@@ -12,6 +12,7 @@ import struct
 import tempfile
 import threading
 import time
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -880,25 +881,40 @@ class LibraryService:
             directories = sorted(item for item in root.iterdir() if item.is_dir())
         except OSError:
             return []
-        present: list[str] = []
+        present_paths: list[str] = []
         for directory in directories:
             roms = directory / "roms"
             if roms.is_dir():
-                present.append(directory.name)
-                connection.execute(
-                    "INSERT INTO devices(name,path) VALUES(?,?) "
-                    "ON CONFLICT(name) DO UPDATE SET path=excluded.path",
-                    (directory.name, directory.name),
-                )
-        known = [row["name"] for row in connection.execute("SELECT name FROM devices")]
-        if not present:
+                path_key = directory.name
+                present_paths.append(path_key)
+                if not connection.execute(
+                    "SELECT 1 FROM devices WHERE path=?", (path_key,)
+                ).fetchone():
+                    discovered_name = path_key
+                    suffix = 2
+                    while connection.execute(
+                        "SELECT 1 FROM devices WHERE owner_user_id IS NULL "
+                        "AND name=? COLLATE NOCASE",
+                        (discovered_name,),
+                    ).fetchone():
+                        discovered_name = f"{path_key} ({suffix})"
+                        suffix += 1
+                    connection.execute(
+                        "INSERT INTO devices(name,path) VALUES(?,?)",
+                        (discovered_name, path_key),
+                    )
+        known = [dict(row) for row in connection.execute("SELECT id,name,path FROM devices")]
+        if not present_paths:
             # Nothing discovered: treat as an unavailable mount rather than a deletion.
             return []
-        stale = [name for name in known if name not in present]
+        stale = [row for row in known if row["path"] not in present_paths]
         if stale:
             placeholders = ",".join("?" for _ in stale)
-            connection.execute(f"DELETE FROM devices WHERE name IN ({placeholders})", stale)
-        return stale
+            connection.execute(
+                f"DELETE FROM devices WHERE id IN ({placeholders})",
+                [row["id"] for row in stale],
+            )
+        return [str(row["name"]) for row in stale]
 
     def create_device(
         self,
@@ -910,12 +926,14 @@ class LibraryService:
     ) -> dict[str, object]:
         """Create and register a device directory without requiring a library scan."""
         device_name = name.strip()
-        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", device_name):
+        if (
+            not device_name
+            or len(device_name) > 100
+            or any(ord(character) < 32 or ord(character) == 127 for character in device_name)
+        ):
             raise LibraryError(
-                "Device names must be 1 to 64 characters using letters, numbers, dots, dashes, or underscores"
+                "Device names must be 1 to 100 characters without control characters"
             )
-        if device_name in {".", ".."}:
-            raise LibraryError("Choose a different device name")
         if deployment_mode != "hardlink":
             raise LibraryError("ROMmates always deploys device ROMs as hardlinks where supported")
         if delivery_mode not in {"syncthing", "download"}:
@@ -925,18 +943,26 @@ class LibraryService:
 
         root = self.settings.devices_root.resolve()
         root.mkdir(parents=True, exist_ok=True)
-        device_root = _inside(root, root / device_name)
-        if device_root.is_symlink():
-            raise LibraryError("Device folders cannot be symbolic links")
-        if device_root.exists() and not device_root.is_dir():
-            raise LibraryError("A file already uses that device name")
-
         with self.db.connect() as connection:
             existing = connection.execute(
-                "SELECT id FROM devices WHERE name=? OR path=?", (device_name, device_name)
+                "SELECT id FROM devices WHERE COALESCE(owner_user_id,-1)=COALESCE(?,-1) "
+                "AND name=? COLLATE NOCASE",
+                (owner_user_id, device_name),
             ).fetchone()
         if existing:
-            raise LibraryError("A device with that name already exists")
+            raise LibraryError("You already have a device with that name")
+
+        for _ in range(10):
+            device_path = f"device-{uuid.uuid4()}"
+            device_root = _inside(root, root / device_path)
+            with self.db.connect() as connection:
+                path_exists = connection.execute(
+                    "SELECT 1 FROM devices WHERE path=?", (device_path,)
+                ).fetchone()
+            if not path_exists and not device_root.exists():
+                break
+        else:
+            raise LibraryError("Could not allocate a unique device folder")
 
         roms_root = device_root / "roms"
         try:
@@ -952,7 +978,7 @@ class LibraryService:
                 "VALUES(?,?,?,?,?,?)",
                 (
                     device_name,
-                    device_name,
+                    device_path,
                     "hardlink",
                     owner_user_id,
                     delivery_mode,
@@ -966,7 +992,7 @@ class LibraryService:
         return {
             **dict(row),
             "roms_path": str(roms_root),
-            "relative_path": f"devices/{device_name}/roms",
+            "relative_path": f"devices/{device_path}/roms",
         }
 
     def scan(

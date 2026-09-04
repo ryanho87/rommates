@@ -888,8 +888,9 @@ class ApiIntegrationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 201, response.text)
         created = response.json()
         self.assertEqual(created["name"], "zz-new-device")
-        self.assertEqual(created["relative_path"], "devices/zz-new-device/roms")
-        self.assertTrue((self.root / "devices/zz-new-device/roms").is_dir())
+        self.assertTrue(created["path"].startswith("device-"))
+        self.assertEqual(created["relative_path"], f"devices/{created['path']}/roms")
+        self.assertTrue((self.root / "devices" / created["path"] / "roms").is_dir())
 
         listed = self.client.get("/api/devices", headers=self.headers).json()
         self.assertIn("zz-new-device", [device["name"] for device in listed])
@@ -935,8 +936,8 @@ class ApiIntegrationTests(unittest.TestCase):
         self.assertEqual(self.client.get(ticket["url"]).status_code, 404)
         with self.main.db.write() as connection:
             connection.execute("DELETE FROM devices WHERE id=?", (device["id"],))
-        (self.root / "devices/zz-export-device/roms").rmdir()
-        (self.root / "devices/zz-export-device").rmdir()
+        (self.root / "devices" / device["path"] / "roms").rmdir()
+        (self.root / "devices" / device["path"]).rmdir()
 
     def test_device_creation_can_clone_and_link_an_existing_roster(self):
         if not self.client.get("/api/games", headers=self.headers).json()["items"]:
@@ -1026,9 +1027,9 @@ class ApiIntegrationTests(unittest.TestCase):
             connection.execute(
                 "DELETE FROM devices WHERE id IN (?,?)", (source["id"], clone_payload["id"])
             )
-        for name in ("zz-roster-source", "zz-roster-clone"):
-            (self.root / "devices" / name / "roms").rmdir()
-            (self.root / "devices" / name).rmdir()
+        for device in (source, clone_payload):
+            (self.root / "devices" / device["path"] / "roms").rmdir()
+            (self.root / "devices" / device["path"]).rmdir()
 
     def test_existing_device_can_clone_another_roster_once(self):
         if not self.client.get("/api/games", headers=self.headers).json()["items"]:
@@ -1066,9 +1067,9 @@ class ApiIntegrationTests(unittest.TestCase):
 
         with self.main.db.write() as connection:
             connection.execute("DELETE FROM devices WHERE id IN (?,?)", (source["id"], target["id"]))
-        for name in ("zz-existing-clone-source", "zz-existing-clone-target"):
-            (self.root / "devices" / name / "roms").rmdir()
-            (self.root / "devices" / name).rmdir()
+        for device in (source, target):
+            (self.root / "devices" / device["path"] / "roms").rmdir()
+            (self.root / "devices" / device["path"]).rmdir()
 
     def test_device_group_crud_persists_owner_and_preserves_members(self):
         if not self.client.get("/api/games", headers=self.headers).json()["items"]:
@@ -1142,8 +1143,8 @@ class ApiIntegrationTests(unittest.TestCase):
                 "DELETE FROM devices WHERE id IN (?,?)", (devices[0]["id"], devices[1]["id"])
             )
         for device in devices:
-            (self.root / "devices" / device["name"] / "roms").rmdir()
-            (self.root / "devices" / device["name"]).rmdir()
+            (self.root / "devices" / device["path"] / "roms").rmdir()
+            (self.root / "devices" / device["path"]).rmdir()
 
     def test_upload_resumes_finalizes_and_downloads_without_bearer_token(self):
         manifest = {
@@ -1666,6 +1667,7 @@ class ApiIntegrationTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200, response.text)
             share.assert_called_once_with(
                 device["name"],
+                device["path"],
                 "REMOTE-DEVICE-ID",
                 folder_id=f"rommates-device-{device['id']}",
             )

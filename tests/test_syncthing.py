@@ -171,7 +171,8 @@ class SyncthingServiceTests(unittest.TestCase):
         service = SyncthingService(self.settings(devices_root=Path("/emulation/devices")))
         with patch("app.syncthing.urlopen", side_effect=fake_urlopen):
             result = service.share_device_folder(
-                "retroid-pocket-5", remote_id, folder_id="rommates-device-5"
+                "Retroid Pocket 5", "retroid-pocket-5", remote_id,
+                folder_id="rommates-device-5"
             )
 
         self.assertFalse(result["created"])
@@ -207,13 +208,15 @@ class SyncthingServiceTests(unittest.TestCase):
         service = SyncthingService(self.settings(devices_root=Path("/emulation/devices")))
         with patch("app.syncthing.urlopen", side_effect=fake_urlopen):
             result = service.share_device_folder(
-                "new-handheld", remote_id, folder_id="rommates-device-12"
+                "New Handheld", "device-1234", remote_id,
+                folder_id="rommates-device-12"
             )
 
         self.assertTrue(result["created"])
-        self.assertEqual(result["folder_path"], "/media/Emulation/devices/new-handheld/roms")
+        self.assertEqual(result["folder_path"], "/media/Emulation/devices/device-1234/roms")
         folder_write = next(payload for path, payload in writes if path == "/rest/config/folders")
         self.assertEqual(folder_write["id"], "rommates-device-12")
+        self.assertEqual(folder_write["label"], "New Handheld ROMs")
         self.assertIn({"deviceID": remote_id}, folder_write["devices"])
 
     def test_device_sync_status_reports_completion_and_last_sync(self):

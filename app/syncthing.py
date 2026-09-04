@@ -78,34 +78,46 @@ class SyncthingService:
         return "".join(character for character in str(value or "").casefold() if character.isalnum())
 
     def _folder_scan_target(
-        self, folder: dict[str, Any], device_name: str
+        self,
+        folder: dict[str, Any],
+        device_path: str,
+        device_label: str = "",
     ) -> tuple[str, str] | None:
         """Return the Syncthing folder id and optional subpath for a ROMmates device."""
         folder_id = str(folder.get("id") or "").strip()
         if not folder_id:
             return None
         folder_path = self._normalized_path(folder.get("path"))
-        device_key = device_name.casefold()
+        device_key = device_path.casefold()
         device_suffix = f"devices/{device_key}/roms"
         if folder_path.endswith(f"/{device_suffix}") or folder_path == device_suffix:
             return folder_id, ""
         if folder_path.endswith(f"/devices/{device_key}"):
             return folder_id, "roms"
         if folder_path.endswith("/devices"):
-            return folder_id, f"{device_name}/roms"
+            return folder_id, f"{device_path}/roms"
         emulation_name = self.settings.devices_root.parent.name.casefold()
         if emulation_name and folder_path.endswith(f"/{emulation_name}"):
-            return folder_id, f"devices/{device_name}/roms"
+            return folder_id, f"devices/{device_path}/roms"
 
         expected_labels = {
-            self._normalized_label(device_name),
-            self._normalized_label(f"{device_name} roms"),
+            self._normalized_label(device_path),
+            self._normalized_label(f"{device_path} roms"),
         }
+        if device_label:
+            expected_labels.update(
+                {
+                    self._normalized_label(device_label),
+                    self._normalized_label(f"{device_label} roms"),
+                }
+            )
         if self._normalized_label(folder.get("label")) in expected_labels:
             return folder_id, ""
         return None
 
-    def rescan_device(self, device_name: str) -> dict[str, object]:
+    def rescan_device(
+        self, device_path: str, *, device_label: str = ""
+    ) -> dict[str, object]:
         """Ask Syncthing to rescan folders that contain one device's ROM directory.
 
         A deployment has already committed by the time this runs, so connectivity or
@@ -125,7 +137,7 @@ class SyncthingService:
                 target
                 for folder in configured_folders
                 if isinstance(folder, dict)
-                for target in [self._folder_scan_target(folder, device_name)]
+                for target in [self._folder_scan_target(folder, device_path, device_label)]
                 if target is not None
             ]
             if not targets:
@@ -155,23 +167,23 @@ class SyncthingService:
         return {"requested": False, "folders": [], "error": error}
 
     def _syncthing_device_path(
-        self, device_name: str, configured_folders: list[dict[str, Any]]
+        self, device_path: str, configured_folders: list[dict[str, Any]]
     ) -> str:
         """Resolve the device path in Syncthing's filesystem namespace."""
         if self.settings.syncthing_devices_root is not None:
-            return str(self.settings.syncthing_devices_root / device_name / "roms")
+            return str(self.settings.syncthing_devices_root / device_path / "roms")
         for folder in configured_folders:
             raw_path = str(folder.get("path") or "").replace("\\", "/").rstrip("/")
             folded = raw_path.casefold()
             marker = "/devices/"
             marker_index = folded.rfind(marker)
             if marker_index >= 0 and folded.endswith("/roms"):
-                return f"{raw_path[:marker_index]}/devices/{device_name}/roms"
+                return f"{raw_path[:marker_index]}/devices/{device_path}/roms"
             if folded.endswith("/devices"):
-                return f"{raw_path}/{device_name}/roms"
+                return f"{raw_path}/{device_path}/roms"
             if folded.endswith("/emulation"):
-                return f"{raw_path}/devices/{device_name}/roms"
-        return str(self.settings.devices_root / device_name / "roms")
+                return f"{raw_path}/devices/{device_path}/roms"
+        return str(self.settings.devices_root / device_path / "roms")
 
     @staticmethod
     def _folder_remote_ids(folder: dict[str, Any], local_device_id: str) -> list[str]:
@@ -187,6 +199,7 @@ class SyncthingService:
     def share_device_folder(
         self,
         device_name: str,
+        device_path: str,
         remote_device_id: str,
         *,
         folder_id: str,
@@ -228,7 +241,7 @@ class SyncthingService:
                 (
                     item
                     for item in configured_folders
-                    if self._folder_scan_target(item, device_name) is not None
+                    if self._folder_scan_target(item, device_path, device_name) is not None
                     or str(item.get("id") or "") == folder_id
                 ),
                 None,
@@ -243,7 +256,7 @@ class SyncthingService:
                     {
                         "id": folder_id,
                         "label": f"{device_name} ROMs",
-                        "path": self._syncthing_device_path(device_name, configured_folders),
+                        "path": self._syncthing_device_path(device_path, configured_folders),
                     }
                 )
             folder_devices = [item for item in folder.get("devices", []) if isinstance(item, dict)]
@@ -276,8 +289,9 @@ class SyncthingService:
 
     def device_sync_status(
         self,
-        device_name: str,
+        device_path: str,
         *,
+        device_label: str = "",
         remote_device_id: str = "",
         folder_id: str = "",
     ) -> dict[str, object]:
@@ -292,7 +306,7 @@ class SyncthingService:
                 (
                     item for item in folders if isinstance(item, dict) and (
                         (folder_id and str(item.get("id") or "") == folder_id)
-                        or self._folder_scan_target(item, device_name) is not None
+                        or self._folder_scan_target(item, device_path, device_label) is not None
                     )
                 ),
                 None,
