@@ -1,7 +1,7 @@
 # Optional Traefik overlay for the restricted native-app hostname.
 #
 # Usage:
-#   ROMMATES_MOBILE_PUBLIC_HOSTS=api.rommates.example.com \
+#   ROMMATES_MOBILE_PUBLIC_HOSTS=rommates-api.example.com \
 #   docker compose -f compose.yaml -f compose.traefik.yaml up -d --build
 services:
   rommates:

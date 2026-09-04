@@ -23,9 +23,9 @@ Cloudflare Tunnel.
 ## 2. Cloudflare and reverse proxy
 
 - [ ] Leave `rommates.orb-ranch.com` and its full web/admin UI behind Cloudflare Access.
-- [ ] Create a separate proxied hostname, for example `api.rommates.orb-ranch.com`.
+- [ ] Create a separate proxied hostname, for example `rommates-api.orb-ranch.com`.
 - [ ] Route that hostname to the same ROMmates container over the private Docker network.
-- [ ] Set `ROMMATES_MOBILE_PUBLIC_HOSTS=api.rommates.orb-ranch.com` in the deployed
+- [ ] Set `ROMMATES_MOBILE_PUBLIC_HOSTS=rommates-api.orb-ranch.com` in the deployed
   Compose environment and recreate the container.
 - [ ] Keep `ROMMATES_ALLOW_ANONYMOUS=false`.
 - [ ] Ensure the container/origin port cannot be reached directly from the public internet.

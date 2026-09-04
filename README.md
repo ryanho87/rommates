@@ -151,7 +151,7 @@ compatibility.
 ### Native iOS access
 
 Keep the browser and administrator UI behind Cloudflare Access. For the native app,
-create a separate HTTPS hostname such as `api.rommates.example.com` and set that exact
+create a separate HTTPS hostname such as `rommates-api.example.com` and set that exact
 hostname in `ROMMATES_MOBILE_PUBLIC_HOSTS`. On requests received through that hostname,
 ROMmates exposes only the native-client route allowlist, accepts only server-issued
 mobile bearer sessions, rejects browser sessions and the bootstrap administrator token,
