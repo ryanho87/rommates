@@ -223,6 +223,7 @@ private struct DeviceDetailView: View {
     let device: Device
     @State private var games: [Game] = []
     @State private var inventory: DeviceInventory?
+    @State private var summary: DeviceSummary?
     @State private var sync: DeviceSyncStatus?
     @State private var scope = "on_device"
     @State private var platform = ""
@@ -230,28 +231,46 @@ private struct DeviceDetailView: View {
     @State private var hasLoadedGames = false
     @State private var didRefreshInventory = false
     @State private var applying = false
+    @State private var showingDownloadConfirmation = false
+    @State private var downloading = false
+    @State private var downloadStatus = ""
+    @State private var downloadedFile: URL?
 
     private var selectedBytes: Int64 {
-        inventory?.selectedPlatforms.reduce(0) { $0 + ($1.bytes ?? 0) }
+        summary?.desiredRomBytes
+            ?? inventory?.selectedPlatforms.reduce(0) { $0 + ($1.bytes ?? 0) }
             ?? games.filter { $0.selected != 0 }.reduce(0) { $0 + $1.size }
     }
+    private var currentBytes: Int64 { summary?.currentRomBytes ?? inventory?.bytes ?? 0 }
+    private var projectedBytes: Int64 { summary?.projectedRomBytes ?? selectedBytes }
+    private var capacityBytes: Int64 { summary?.storageCapacityBytes ?? device.storageCapacityBytes }
+    private var selectedGameCount: Int { summary?.games ?? device.selectedGames }
     private var changes: Int { inventory?.changes ?? 0 }
     private var queryID: String { "\(scope)|\(platform)" }
     private var platformOptions: [String] {
-        var values = inventory?.platforms.map(\.platform) ?? []
-        if !platform.isEmpty && !values.contains(platform) { values.append(platform) }
-        return values
+        var values = Set(inventory?.platforms.map(\.platform) ?? [])
+        values.formUnion(inventory?.presentPlatforms.map(\.platform) ?? [])
+        values.formUnion(inventory?.selectedPlatforms.map(\.platform) ?? [])
+        if !platform.isEmpty { values.insert(platform) }
+        return values.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+    }
+    private var platformMetrics: [DeviceInventory.Platform] {
+        inventory?.presentPlatforms ?? []
     }
 
     var body: some View {
         List {
             Section {
-                VStack(alignment: .leading, spacing: 10) {
+                VStack(alignment: .leading, spacing: 12) {
                     HStack {
                         VStack(alignment: .leading, spacing: 3) {
                             Text(device.deliveryMode == "syncthing" ? "Syncthing delivery" : "Manual download")
                                 .font(.headline)
-                            Text(syncDetail).font(.caption).foregroundStyle(.secondary)
+                            StatusLabel(
+                                text: syncDetail,
+                                icon: syncIcon,
+                                color: syncColor
+                            )
                         }
                         Spacer()
                         if let run = sync?.syncRun, ["pending", "syncing", "offline"].contains(run.state) {
@@ -262,11 +281,54 @@ private struct DeviceDetailView: View {
                     if let run = sync?.syncRun, ["pending", "syncing", "offline"].contains(run.state) {
                         ProgressView(value: run.completion, total: 100)
                     }
-                    if device.storageCapacityBytes > 0 {
-                        ProgressView(value: min(Double(selectedBytes), Double(device.storageCapacityBytes)), total: Double(device.storageCapacityBytes))
-                            .tint(selectedBytes > device.storageCapacityBytes ? .red : ROMTheme.violet)
-                        Text("\(ROMTheme.bytes(selectedBytes)) staged of \(ROMTheme.bytes(device.storageCapacityBytes))")
-                            .font(.caption).foregroundStyle(selectedBytes > device.storageCapacityBytes ? .red : .secondary)
+                    if capacityBytes > 0 {
+                        ProgressView(
+                            value: min(Double(currentBytes), Double(capacityBytes)),
+                            total: Double(capacityBytes)
+                        )
+                        .tint(summary?.overCapacity == true ? ROMTheme.danger : ROMTheme.violet)
+                        HStack(alignment: .firstTextBaseline) {
+                            Text("\(ROMTheme.bytes(currentBytes)) used")
+                                .font(.subheadline.weight(.semibold))
+                            Spacer()
+                            Text("of \(ROMTheme.bytes(capacityBytes))")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    } else {
+                        Text("\(ROMTheme.bytes(currentBytes)) on device")
+                            .font(.subheadline.weight(.semibold))
+                    }
+                    Text("\(selectedGameCount.formatted()) selected ROMs · \(ROMTheme.bytes(selectedBytes)) in roster")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if changes > 0 {
+                        StatusLabel(
+                            text: "\(ROMTheme.bytes(projectedBytes)) after \(changes.formatted()) staged \(changes == 1 ? "change" : "changes")",
+                            icon: "clock.fill",
+                            color: ROMTheme.warning
+                        )
+                    }
+                    if let unrecognized = summary?.unrecognizedRomBytes, unrecognized > 0 {
+                        StatusLabel(
+                            text: "\(ROMTheme.bytes(unrecognized)) not matched to the library",
+                            icon: "questionmark.circle.fill",
+                            color: ROMTheme.warning
+                        )
+                    }
+                    if !platformMetrics.isEmpty {
+                        Divider()
+                        Text("ON DEVICE BY PLATFORM")
+                            .font(.caption2.weight(.bold))
+                            .tracking(0.7)
+                            .foregroundStyle(.secondary)
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 8) {
+                                ForEach(platformMetrics, id: \.platform) { metric in
+                                    DevicePlatformMetric(metric: metric)
+                                }
+                            }
+                        }
                     }
                 }
                 .padding(.vertical, 4)
@@ -288,17 +350,17 @@ private struct DeviceDetailView: View {
                             get: { game.selected != 0 },
                             set: { selected in Task { await select(game, selected: selected) } }
                         )) {
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(game.displayName).lineLimit(1)
-                                HStack {
-                                    Text(game.platform)
-                                    Text("·")
+                            VStack(alignment: .leading, spacing: 5) {
+                                Text(game.displayName).lineLimit(2)
+                                HStack(spacing: 7) {
+                                    PlatformBadge(platform: game.platform)
                                     Text(ROMTheme.bytes(game.size))
                                     if let state = game.deviceState {
-                                        Text("· \(state.replacingOccurrences(of: "_", with: " "))")
+                                        DeviceStateBadge(state: state)
                                     }
                                 }
-                                .font(.caption).foregroundStyle(.secondary)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                             }
                         }
                     }
@@ -312,11 +374,33 @@ private struct DeviceDetailView: View {
                 } label: {
                     Label(applying ? "Applying…" : "Apply Changes", systemImage: "arrow.triangle.2.circlepath")
                 }
-                .disabled(changes == 0 || applying || selectedBytes > device.storageCapacityBytes && device.storageCapacityBytes > 0)
+                .disabled(changes == 0 || applying || projectedBytes > capacityBytes && capacityBytes > 0)
                 Button("Discard Staged Changes", role: .destructive) {
                     Task { await discard() }
                 }
                 .disabled(changes == 0 || applying)
+            }
+            if model.permissions?.download == true {
+                Section {
+                    if let downloadedFile {
+                        ShareLink(item: downloadedFile) {
+                            Label("Share Downloaded ROM Package", systemImage: "square.and.arrow.up")
+                        }
+                    }
+                    Button {
+                        showingDownloadConfirmation = true
+                    } label: {
+                        Label(
+                            downloading ? (downloadStatus.isEmpty ? "Preparing ROM Package…" : downloadStatus) : "Download Selected ROMs",
+                            systemImage: "arrow.down.circle"
+                        )
+                    }
+                    .disabled(downloading || selectedGameCount == 0)
+                } header: {
+                    Text("ROM package")
+                } footer: {
+                    Text("Creates one ZIP with ES-DE platform folders for this device’s selected roster.")
+                }
             }
         }
         .navigationTitle(device.name)
@@ -342,6 +426,16 @@ private struct DeviceDetailView: View {
             await load(refreshDeviceInventory: true)
             await loadSync()
         }
+        .confirmationDialog(
+            "Download \(device.name)’s selected ROMs?",
+            isPresented: $showingDownloadConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Prepare Download") { Task { await downloadSelectedROMs() } }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("ROMmates will validate \(selectedGameCount.formatted()) games and prepare a \(ROMTheme.bytes(selectedBytes)) ZIP. Keep the app open while this large download completes.")
+        }
         .task(id: queryID) { await load() }
         .task(id: hasLoadedGames) {
             guard hasLoadedGames, !didRefreshInventory else { return }
@@ -359,6 +453,17 @@ private struct DeviceDetailView: View {
     private var syncDetail: String {
         if let run = sync?.syncRun { return run.detail }
         return sync?.status ?? (device.deliveryMode == "syncthing" ? "Checking delivery status…" : "Build a package after applying changes.")
+    }
+
+    private var syncColor: Color {
+        if let run = sync?.syncRun, ["pending", "syncing", "offline"].contains(run.state) {
+            return ROMTheme.warning
+        }
+        return sync?.status == "Up to date" ? ROMTheme.success : .secondary
+    }
+
+    private var syncIcon: String {
+        sync?.status == "Up to date" ? "checkmark.circle.fill" : "clock.fill"
     }
 
     private func load(refreshDeviceInventory: Bool = false) async {
@@ -379,12 +484,14 @@ private struct DeviceDetailView: View {
                     .init(name: "platform", value: requestedPlatform),
                     .init(name: "refresh_device_inventory", value: String(refreshDeviceInventory)),
                     .init(name: "limit", value: "500"),
-                ]
+                ],
+                fresh: refreshDeviceInventory
             )
             guard requestedScope == scope, requestedPlatform == platform else { return }
             games = response.items
             inventory = response.deviceInventory
             hasLoadedGames = true
+            summary = try await model.request("/api/devices/\(device.id)/summary", fresh: true)
         } catch let error as URLError where error.code == .cancelled {
         } catch is CancellationError {
         } catch { model.report(error) }
@@ -424,6 +531,77 @@ private struct DeviceDetailView: View {
             )
             await load()
         } catch { model.report(error) }
+    }
+
+    private func downloadSelectedROMs() async {
+        downloading = true
+        downloadedFile = nil
+        downloadStatus = "Preparing package…"
+        defer {
+            downloading = false
+            downloadStatus = ""
+        }
+        do {
+            let reference: JobReference = try await model.request(
+                "/api/devices/\(device.id)/export-ticket", method: "POST"
+            )
+            let ticket = try await waitForExport(jobId: reference.jobId)
+            downloadStatus = "Downloading \(ROMTheme.bytes(ticket.bytes))…"
+            guard let url = model.url(path: ticket.url) else {
+                throw APIError(statusCode: 0, message: "The download address is invalid.")
+            }
+            let (temporary, _) = try await URLSession.shared.download(from: url)
+            let destination = FileManager.default.temporaryDirectory.appending(path: ticket.filename)
+            try? FileManager.default.removeItem(at: destination)
+            try FileManager.default.moveItem(at: temporary, to: destination)
+            downloadedFile = destination
+        } catch {
+            model.report(error, prefix: "ROM package")
+        }
+    }
+
+    private func waitForExport(jobId: Int) async throws -> DeviceExportTicket {
+        let deadline = Date().addingTimeInterval(30 * 60)
+        while Date() < deadline {
+            try Task.checkCancellation()
+            let job: DeviceExportJob = try await model.request(
+                "/api/jobs/\(jobId)", fresh: true
+            )
+            switch job.status {
+            case "complete":
+                guard let ticket = job.result else {
+                    throw APIError(statusCode: 0, message: "The completed package had no download ticket.")
+                }
+                return ticket
+            case "failed", "cancelled":
+                throw APIError(statusCode: 0, message: job.detail)
+            default:
+                downloadStatus = job.detail.isEmpty ? "Preparing package…" : job.detail
+                try await Task.sleep(for: .milliseconds(700))
+            }
+        }
+        throw APIError(statusCode: 0, message: "The package is still preparing. Try again shortly.")
+    }
+}
+
+private struct DevicePlatformMetric: View {
+    let metric: DeviceInventory.Platform
+
+    var body: some View {
+        HStack(spacing: 7) {
+            PlatformBadge(platform: metric.platform)
+            Text("\(metric.count.formatted()) · \(ROMTheme.bytes(metric.bytes ?? 0))")
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(.secondary)
+        }
+        .padding(.trailing, 9)
+        .padding(.vertical, 5)
+        .background(Color(.tertiarySystemBackground), in: Capsule())
+        .overlay {
+            Capsule().stroke(Color.primary.opacity(0.09), lineWidth: 0.5)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(metric.platform), \(metric.count) ROMs, \(ROMTheme.bytes(metric.bytes ?? 0))")
     }
 }
 

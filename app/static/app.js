@@ -60,6 +60,7 @@ const state = {
   deviceId: null,
   deviceScope: "on_device",
   deviceInventoryRefreshRequested: false,
+  deviceInventoriesRefreshed: new Set(),
   deviceOnboarding: false,
   deviceGroupCreating: false,
   syncTargetMembers: [],
@@ -3144,11 +3145,25 @@ async function renderDevices() {
   ).catch(() => []);
   const refreshDeviceInventory = state.deviceInventoryRefreshRequested;
   state.deviceInventoryRefreshRequested = false;
+  if (refreshDeviceInventory) state.deviceInventoriesRefreshed.add(device.id);
+  const needsBackgroundInventoryRefresh = !refreshDeviceInventory
+    && !state.deviceInventoriesRefreshed.has(device.id);
   const gamesPromise = getGames(device.id, state.deviceScope, refreshDeviceInventory);
-  const [response, memberPreviews] = await Promise.all([
-    gamesPromise,
-    Promise.all(target.members.map((member) => navigationApi(`/api/devices/${member.id}/summary`))),
-  ]);
+  let response;
+  let memberPreviews;
+  if (refreshDeviceInventory) {
+    // The filesystem reconciliation mutates the derived summary. Wait for it
+    // before reading metrics so one render cannot mix old and new device state.
+    response = await gamesPromise;
+    memberPreviews = await Promise.all(
+      target.members.map((member) => api(`/api/devices/${member.id}/summary`)),
+    );
+  } else {
+    [response, memberPreviews] = await Promise.all([
+      gamesPromise,
+      Promise.all(target.members.map((member) => api(`/api/devices/${member.id}/summary`))),
+    ]);
+  }
   const preview = isGroup ? {
     games: Number(memberPreviews[0]?.games || 0),
     files: Number(memberPreviews[0]?.files || 0),
@@ -3200,6 +3215,16 @@ async function renderDevices() {
   bindFilters(renderDevices);
   bindDeviceOnboarding();
   bindDeviceGroupCreation();
+  if (needsBackgroundInventoryRefresh) {
+    state.deviceInventoriesRefreshed.add(device.id);
+    window.setTimeout(() => {
+      if (state.view !== "devices" || Number(state.deviceId) !== device.id) return;
+      state.deviceInventoryRefreshRequested = true;
+      renderDevices().catch((error) => {
+        if (error.name !== "AbortError") toast(error.message, "error");
+      });
+    }, 0);
+  }
   view.querySelector("[data-syncthing-share]")?.addEventListener("click", (event) => {
     const menu = event.currentTarget.closest("details");
     if (menu) menu.open = false;

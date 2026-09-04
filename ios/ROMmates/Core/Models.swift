@@ -115,7 +115,22 @@ struct DeviceInventory: Codable, Sendable {
     let files: Int
     let bytes: Int64
     let platforms: [Platform]
+    let presentPlatforms: [Platform]
     let selectedPlatforms: [Platform]
+}
+
+struct DeviceSummary: Codable, Sendable {
+    let games: Int
+    let files: Int
+    let managedFiles: Int
+    let currentRomBytes: Int64
+    let desiredRomBytes: Int64
+    let projectedRomBytes: Int64
+    let unrecognizedRomBytes: Int64?
+    let storageCapacityBytes: Int64
+    let overCapacity: Bool
+    let additions: Int
+    let removals: Int
 }
 
 struct GameDetail: Codable, Sendable {
@@ -290,6 +305,21 @@ struct DownloadTicket: Codable, Sendable {
 
 struct JobReference: Codable, Sendable {
     let jobId: Int
+}
+
+struct DeviceExportJob: Codable, Sendable {
+    let status: String
+    let detail: String
+    let result: DeviceExportTicket?
+}
+
+struct DeviceExportTicket: Codable, Sendable {
+    let url: String
+    let filename: String
+    let files: Int
+    let games: Int
+    let bytes: Int64
+    let expiresAt: Int
 }
 
 struct PushInstallation: Codable, Sendable {

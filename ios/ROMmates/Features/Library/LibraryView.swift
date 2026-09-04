@@ -287,8 +287,7 @@ private struct GameRow: View {
                     .font(.body.weight(.medium))
                     .lineLimit(2)
                 HStack(spacing: 6) {
-                    Text(game.platform)
-                    Text("·")
+                    PlatformBadge(platform: game.platform)
                     Text(ROMTheme.bytes(game.size))
                 }
                 .font(.caption)
@@ -554,12 +553,7 @@ private struct GameDetailHeader: View {
                 .lineLimit(3)
                 .fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 8) {
-                Text(game.platform.uppercased())
-                    .font(.caption2.weight(.semibold))
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 3)
-                    .background(ROMTheme.softViolet, in: Capsule())
-                    .foregroundStyle(ROMTheme.ink)
+                PlatformBadge(platform: game.platform)
                 Text(ROMTheme.bytes(game.size))
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
