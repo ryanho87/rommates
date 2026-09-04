@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from .db import Database
@@ -58,23 +59,52 @@ class MobileReleaseService:
 
         notified = 0
         if existing is None:
-            summary = next(
-                (line.strip().lstrip("-• ") for line in clean_notes.splitlines() if line.strip()),
-                "See what changed in this build.",
-            )
             for user_id in user_ids:
-                notification_id = self.push.notify_user(
-                    user_id,
-                    "new_build",
-                    f"ROMmates build {build} is ready",
-                    summary[:240],
-                    f"release?build={build}",
-                    f"mobile-release:{build}",
-                )
-                notified += int(notification_id is not None)
+                notified += int(self._announce(user_id, row))
 
         return {
             "release": self._payload(row),
             "created": existing is None,
             "notified_users": notified,
         }
+
+    def announce_available(self, user_id: int, app_version: str) -> int:
+        """Catch up an installation that registered after a release was published."""
+        match = re.search(r"\((\d+)\)\s*$", app_version)
+        if not match:
+            return 0
+        installed_build = int(match.group(1))
+        with self.db.connect() as connection:
+            latest = connection.execute(
+                "SELECT build,version,notes,released_at FROM mobile_releases "
+                "ORDER BY build DESC LIMIT 1"
+            ).fetchone()
+        if latest is None or int(latest["build"]) <= installed_build:
+            return 0
+        return self._announce(user_id, latest)
+
+    def _announce(self, user_id: int, release: Any) -> int:
+        build = int(release["build"])
+        dedupe_key = f"mobile-release:{build}"
+        with self.db.connect() as connection:
+            existing = connection.execute(
+                "SELECT 1 FROM user_notifications WHERE user_id=? AND dedupe_key=?",
+                (user_id, dedupe_key),
+            ).fetchone()
+        if existing is not None:
+            return self.push.enqueue_existing(user_id, dedupe_key)
+
+        notes = str(release["notes"])
+        summary = next(
+            (line.strip().lstrip("-• ") for line in notes.splitlines() if line.strip()),
+            "See what changed in this build.",
+        )
+        notification_id = self.push.notify_user(
+            user_id,
+            "new_build",
+            f"ROMmates build {build} is ready",
+            summary[:240],
+            f"release?build={build}",
+            dedupe_key,
+        )
+        return int(notification_id is not None)

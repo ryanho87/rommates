@@ -137,6 +137,25 @@ class MobilePushServiceTests(unittest.TestCase):
         self.assertEqual(republished["notified_users"], 0)
         self.assertFalse(push.drain_once())
 
+    def test_late_installation_receives_existing_newer_release_once(self):
+        provider = FakeProvider()
+        push = MobilePushService(self.settings, self.db, provider=provider)
+        releases = MobileReleaseService(self.db, push)
+        published = releases.publish(3, "1.0", "Release notes")
+        self.assertEqual(published["notified_users"], 0)
+
+        self.register(push)
+        self.assertEqual(releases.announce_available(self.user_id, "1.0 (2)"), 1)
+        self.assertTrue(push.drain_once())
+        self.assertEqual(provider.calls[0][1]["kind"], "new_build")
+        self.assertEqual(releases.announce_available(self.user_id, "1.0 (2)"), 0)
+        self.assertFalse(push.drain_once())
+        with self.db.connect() as connection:
+            notifications = connection.execute(
+                "SELECT COUNT(*) FROM user_notifications WHERE kind='new_build'"
+            ).fetchone()[0]
+        self.assertEqual(notifications, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

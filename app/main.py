@@ -1439,13 +1439,15 @@ def register_mobile_installation(payload: MobileInstallationRequest, request: Re
     principal = request_principal(request)
     if principal.id is None:
         raise HTTPException(status_code=403, detail="A personal account is required")
-    return mobile_push.register(
+    installation = mobile_push.register(
         principal.id,
         payload.installation_id,
         payload.device_token,
         payload.app_version,
         payload.notifications_enabled,
     )
+    mobile_releases.announce_available(principal.id, payload.app_version)
+    return installation
 
 
 @app.delete("/api/v1/mobile/push-installation/{installation_id}")
