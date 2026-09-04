@@ -13,6 +13,7 @@ settings:
     ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
     ENABLE_USER_SCRIPT_SANDBOXING: YES
     CODE_SIGN_STYLE: Automatic
+    DEVELOPMENT_TEAM: 2NKFMTXAX5
   configs:
     Debug:
       CODE_SIGN_ENTITLEMENTS: ROMmates/Resources/ROMmates-Debug.entitlements
@@ -28,6 +29,7 @@ targets:
       path: ROMmates/Resources/Info.plist
       properties:
         CFBundleDisplayName: ROMmates
+        ITSAppUsesNonExemptEncryption: false
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
@@ -36,16 +38,12 @@ targets:
       base:
         SUPPORTS_MACCATALYST: NO
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.utilities
-    scheme:
-      testTargets:
-        - ROMmatesTests
-  ROMmatesTests:
-    type: bundle.unit-test
-    platform: iOS
-    sources:
-      - ROMmatesTests
-    dependencies:
-      - target: ROMmates
-    settings:
-      base:
-        GENERATE_INFOPLIST_FILE: YES
+schemes:
+  ROMmates:
+    build:
+      targets:
+        ROMmates: all
+    run:
+      config: Debug
+    archive:
+      config: Release

@@ -18,18 +18,20 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         NotificationCenter.default.post(name: .rommatesDeviceToken, object: token)
     }
 
-    func userNotificationCenter(
+    nonisolated func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification
     ) async -> UNNotificationPresentationOptions {
         [.banner, .list, .sound]
     }
 
-    func userNotificationCenter(
+    nonisolated func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse
     ) async {
         let path = response.notification.request.content.userInfo["path"] as? String ?? ""
-        NotificationCenter.default.post(name: .rommatesPushOpened, object: path)
+        await MainActor.run {
+            NotificationCenter.default.post(name: .rommatesPushOpened, object: path)
+        }
     }
 }

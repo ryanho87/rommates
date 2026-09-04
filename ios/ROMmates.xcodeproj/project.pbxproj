@@ -23,22 +23,11 @@
 		D870755515C1CD26A0D3C903 /* KeychainStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 79A9D9AFA92712D13BB5AFEF /* KeychainStore.swift */; };
 /* End PBXBuildFile section */
 
-/* Begin PBXContainerItemProxy section */
-		17F183AC8D919943225FA41E /* PBXContainerItemProxy */ = {
-			isa = PBXContainerItemProxy;
-			containerPortal = 68E5ECE17712AA832F05D216 /* Project object */;
-			proxyType = 1;
-			remoteGlobalIDString = 18F4F0060236230B038DF211;
-			remoteInfo = ROMmates;
-		};
-/* End PBXContainerItemProxy section */
-
 /* Begin PBXFileReference section */
 		0A165383013BD998E6BBE58E /* ROMmates-Release.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "ROMmates-Release.entitlements"; sourceTree = "<group>"; };
 		19C6305588E3E4D45FC8424E /* DevicesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevicesView.swift; sourceTree = "<group>"; };
 		234DD675243377D69CD323D0 /* ROMmates.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = ROMmates.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		29B03FC225779E7BAB5993CC /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
-		41ED5705497F1E32839937A7 /* ROMmatesTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = ROMmatesTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		42B656081A87F582B37648C6 /* AccountView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountView.swift; sourceTree = "<group>"; };
 		4F9540B533AD601FB6300048 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		5EC2915DF7F90F4A1033C1B9 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
@@ -72,7 +61,6 @@
 			isa = PBXGroup;
 			children = (
 				234DD675243377D69CD323D0 /* ROMmates.app */,
-				41ED5705497F1E32839937A7 /* ROMmatesTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -99,13 +87,6 @@
 				D8AB952FFF374C7970188807 /* InboxView.swift */,
 			);
 			path = Inbox;
-			sourceTree = "<group>";
-		};
-		5F98AB456DB7BFF122F18521 /* ROMmatesTests */ = {
-			isa = PBXGroup;
-			children = (
-			);
-			path = ROMmatesTests;
 			sourceTree = "<group>";
 		};
 		7D9280761BD0CDD620E7BF87 /* Features */ = {
@@ -135,7 +116,6 @@
 			isa = PBXGroup;
 			children = (
 				8D3D40DC736C6CF2B1C33143 /* ROMmates */,
-				5F98AB456DB7BFF122F18521 /* ROMmatesTests */,
 				12762F96677FB47FD31BC7AE /* Products */,
 			);
 			sourceTree = "<group>";
@@ -198,24 +178,6 @@
 			productReference = 234DD675243377D69CD323D0 /* ROMmates.app */;
 			productType = "com.apple.product-type.application";
 		};
-		807A3BC94A750E795E7089E3 /* ROMmatesTests */ = {
-			isa = PBXNativeTarget;
-			buildConfigurationList = 3C2EAB762C7B8C491E915BD8 /* Build configuration list for PBXNativeTarget "ROMmatesTests" */;
-			buildPhases = (
-				CEB7C4841D353150D3B31B1D /* Sources */,
-			);
-			buildRules = (
-			);
-			dependencies = (
-				B4AC009C820B12B3509A5E69 /* PBXTargetDependency */,
-			);
-			name = ROMmatesTests;
-			packageProductDependencies = (
-			);
-			productName = ROMmatesTests;
-			productReference = 41ED5705497F1E32839937A7 /* ROMmatesTests.xctest */;
-			productType = "com.apple.product-type.bundle.unit-test";
-		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -226,9 +188,7 @@
 				LastUpgradeCheck = 2600;
 				TargetAttributes = {
 					18F4F0060236230B038DF211 = {
-						ProvisioningStyle = Automatic;
-					};
-					807A3BC94A750E795E7089E3 = {
+						DevelopmentTeam = 2NKFMTXAX5;
 						ProvisioningStyle = Automatic;
 					};
 				};
@@ -248,7 +208,6 @@
 			projectRoot = "";
 			targets = (
 				18F4F0060236230B038DF211 /* ROMmates */,
-				807A3BC94A750E795E7089E3 /* ROMmatesTests */,
 			);
 		};
 /* End PBXProject section */
@@ -265,13 +224,6 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
-		CEB7C4841D353150D3B31B1D /* Sources */ = {
-			isa = PBXSourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
 		FB1287E7C609194A674288D9 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -293,14 +245,6 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
-
-/* Begin PBXTargetDependency section */
-		B4AC009C820B12B3509A5E69 /* PBXTargetDependency */ = {
-			isa = PBXTargetDependency;
-			target = 18F4F0060236230B038DF211 /* ROMmates */;
-			targetProxy = 17F183AC8D919943225FA41E /* PBXContainerItemProxy */;
-		};
-/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		10DDB635FA5EF32E13191568 /* Release */ = {
@@ -342,6 +286,7 @@
 				COPY_PHASE_STRIP = NO;
 				CURRENT_PROJECT_VERSION = 1;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = 2NKFMTXAX5;
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
@@ -423,6 +368,7 @@
 				COPY_PHASE_STRIP = NO;
 				CURRENT_PROJECT_VERSION = 1;
 				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = 2NKFMTXAX5;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
@@ -472,50 +418,9 @@
 			};
 			name = Debug;
 		};
-		ADBC6E8F73538A4B09F619B8 /* Debug */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				BUNDLE_LOADER = "$(TEST_HOST)";
-				GENERATE_INFOPLIST_FILE = YES;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-					"@loader_path/Frameworks",
-				);
-				SDKROOT = iphoneos;
-				TARGETED_DEVICE_FAMILY = "1,2";
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/ROMmates.app/ROMmates";
-			};
-			name = Debug;
-		};
-		B59E984F64EF2B7E071A6527 /* Release */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				BUNDLE_LOADER = "$(TEST_HOST)";
-				GENERATE_INFOPLIST_FILE = YES;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-					"@loader_path/Frameworks",
-				);
-				SDKROOT = iphoneos;
-				TARGETED_DEVICE_FAMILY = "1,2";
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/ROMmates.app/ROMmates";
-			};
-			name = Release;
-		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		3C2EAB762C7B8C491E915BD8 /* Build configuration list for PBXNativeTarget "ROMmatesTests" */ = {
-			isa = XCConfigurationList;
-			buildConfigurations = (
-				ADBC6E8F73538A4B09F619B8 /* Debug */,
-				B59E984F64EF2B7E071A6527 /* Release */,
-			);
-			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Debug;
-		};
 		9643EE9F0744C945BC6E9B4C /* Build configuration list for PBXProject "ROMmates" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
