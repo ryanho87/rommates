@@ -236,6 +236,7 @@ private struct DeviceDetailView: View {
     @State private var totalGames = 0
     @State private var loadingGames = true
     @State private var hasLoadedGames = false
+    @State private var didInitializePlatform = false
     @State private var didRefreshInventory = false
     @State private var applying = false
     @State private var showingDownloadConfirmation = false
@@ -263,7 +264,9 @@ private struct DeviceDetailView: View {
         return values.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
     }
     private var platformMetrics: [DeviceInventory.Platform] {
-        inventory?.presentPlatforms ?? []
+        (inventory?.presentPlatforms ?? []).sorted {
+            $0.platform.localizedCaseInsensitiveCompare($1.platform) == .orderedAscending
+        }
     }
     private var syncthingIsReady: Bool {
         sync?.linked ?? (device.syncthingReadyAt != nil)
@@ -527,6 +530,13 @@ private struct DeviceDetailView: View {
             games = response.items
             totalGames = response.total
             inventory = response.deviceInventory
+            if !didInitializePlatform {
+                didInitializePlatform = true
+                if requestedPlatform.isEmpty, let first = platformOptions.first {
+                    platform = first
+                    return
+                }
+            }
             hasLoadedGames = true
             do {
                 summary = try await model.request("/api/devices/\(device.id)/summary", fresh: true)
@@ -641,8 +651,12 @@ private struct DeviceCriteriaBar: View {
         platform.isEmpty ? "All platforms" : platform.uppercased()
     }
 
+    private var defaultPlatform: String {
+        platforms.first ?? ""
+    }
+
     private var hasCustomCriteria: Bool {
-        !platform.isEmpty || sort != .nameAscending
+        platform != defaultPlatform || sort != .nameAscending
     }
 
     var body: some View {
@@ -689,7 +703,7 @@ private struct DeviceCriteriaBar: View {
                 Spacer(minLength: 4)
                 if hasCustomCriteria {
                     Button("Reset") {
-                        platform = ""
+                        platform = defaultPlatform
                         sort = .nameAscending
                     }
                     .font(.caption.weight(.semibold))
@@ -745,13 +759,14 @@ private struct DevicePlatformMetric: View {
     let metric: DeviceInventory.Platform
 
     var body: some View {
-        HStack(spacing: 7) {
+        HStack(spacing: 8) {
             PlatformBadge(platform: metric.platform)
             Text("\(metric.count.formatted()) · \(ROMTheme.bytes(metric.bytes ?? 0))")
                 .font(.caption2.weight(.medium))
                 .foregroundStyle(.secondary)
         }
-        .padding(.trailing, 9)
+        .padding(.leading, 6)
+        .padding(.trailing, 10)
         .padding(.vertical, 5)
         .background(Color(.tertiarySystemBackground), in: Capsule())
         .overlay {

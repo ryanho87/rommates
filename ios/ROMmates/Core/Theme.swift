@@ -87,10 +87,15 @@ struct StatusLabel: View {
     var color: Color = ROMTheme.violet
 
     var body: some View {
-        Label(text, systemImage: icon)
+        HStack(spacing: 6) {
+            Image(systemName: icon)
+                .frame(width: 14)
+            Text(text)
+        }
             .font(.caption.weight(.medium))
             .foregroundStyle(color)
             .lineLimit(1)
+            .accessibilityElement(children: .combine)
     }
 }
 

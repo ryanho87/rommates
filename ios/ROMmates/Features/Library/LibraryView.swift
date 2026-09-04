@@ -34,10 +34,11 @@ struct LibraryView: View {
     @State private var sort: GameSort = .nameAscending
     @State private var loading = true
     @State private var loadingMore = false
+    @State private var platformsLoaded = false
     @State private var error: String?
 
     private static let pageSize = 80
-    private var queryID: String { "\(search)|\(platform)|\(sort.rawValue)" }
+    private var queryID: String { "\(platformsLoaded)|\(search)|\(platform)|\(sort.rawValue)" }
 
     var body: some View {
         NavigationStack {
@@ -96,6 +97,7 @@ struct LibraryView: View {
             .searchable(text: $search, prompt: "Search \(total.formatted()) games")
             .task { await loadPlatforms() }
             .task(id: queryID) {
+                guard platformsLoaded else { return }
                 if !search.isEmpty {
                     try? await Task.sleep(for: .milliseconds(250))
                     guard !Task.isCancelled else { return }
@@ -106,7 +108,16 @@ struct LibraryView: View {
     }
 
     private func loadPlatforms() async {
-        do { platforms = try await model.request("/api/platforms") }
+        defer { platformsLoaded = true }
+        do {
+            let response: [PlatformSummary] = try await model.request("/api/platforms")
+            platforms = response.sorted {
+                $0.platform.localizedCaseInsensitiveCompare($1.platform) == .orderedAscending
+            }
+            if platform.isEmpty, let first = platforms.first {
+                platform = first.platform
+            }
+        }
         catch where error.isRequestCancellation { }
         catch { model.report(error) }
     }
@@ -163,8 +174,12 @@ private struct LibraryCriteriaBar: View {
         platform.isEmpty ? "All platforms" : platform.uppercased()
     }
 
+    private var defaultPlatform: String {
+        platforms.first?.platform ?? ""
+    }
+
     private var hasCustomCriteria: Bool {
-        !search.isEmpty || !platform.isEmpty || sort != .nameAscending
+        !search.isEmpty || platform != defaultPlatform || sort != .nameAscending
     }
 
     var body: some View {
@@ -201,7 +216,7 @@ private struct LibraryCriteriaBar: View {
                 if hasCustomCriteria {
                     Button("Reset") {
                         search = ""
-                        platform = ""
+                        platform = defaultPlatform
                         sort = .nameAscending
                     }
                     .font(.caption.weight(.semibold))
