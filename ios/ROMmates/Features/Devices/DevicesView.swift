@@ -351,7 +351,7 @@ private struct DeviceDetailView: View {
                                 showingSyncthingSetup = true
                             } label: {
                                 Label("Set Up Syncthing", systemImage: "link.badge.plus")
-                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .frame(maxWidth: .infinity, alignment: .center)
                             }
                             .buttonStyle(.borderedProminent)
                             .tint(ROMTheme.violet)
@@ -864,6 +864,33 @@ private struct SyncthingSetupView: View {
                     }
                 } else {
                     Section {
+                        SyncthingPrerequisite(
+                            icon: "arrow.down.app",
+                            title: "Install and open Syncthing",
+                            detail: "Use Syncthing or a compatible client. Open it once and complete any storage-permission prompts."
+                        )
+                        SyncthingPrerequisite(
+                            icon: "externaldrive",
+                            title: "Prepare ROM storage",
+                            detail: "Choose a writable location with enough free space. You’ll select the local ROM folder when accepting the share."
+                        )
+                        SyncthingPrerequisite(
+                            icon: "wifi",
+                            title: "Allow syncing to stay active",
+                            detail: "Keep the handheld online and Syncthing running. Allow local-network and background access; on Android, disable battery optimization during the first sync."
+                        )
+                        SyncthingPrerequisite(
+                            icon: "qrcode",
+                            title: "Copy this handheld’s Device ID",
+                            detail: "In Syncthing, open Actions, then Show ID. Copy the handheld’s ID, not the NUC’s ID."
+                        )
+                    } header: {
+                        Text("Prerequisites")
+                    } footer: {
+                        Text("You do not need to add the NUC manually. After creating the share, return to Syncthing on the handheld, accept the NUC as a remote device, then accept the shared ROM folder and choose its local location.")
+                    }
+
+                    Section {
                         TextField("XXXXXXX-XXXXXXX-…", text: $syncthingDeviceId, axis: .vertical)
                             .font(.body.monospaced())
                             .textInputAutocapitalization(.characters)
@@ -872,7 +899,7 @@ private struct SyncthingSetupView: View {
                     } header: {
                         Text("Handheld device ID")
                     } footer: {
-                        Text("On the handheld, open Syncthing and choose Actions, then Show ID. Paste that Device ID here.")
+                        Text("Paste the complete Device ID exactly as shown. Hyphens are accepted.")
                     }
 
                     Section {
@@ -924,6 +951,31 @@ private struct SyncthingSetupView: View {
         } catch {
             model.report(error, prefix: "Syncthing setup")
         }
+    }
+}
+
+private struct SyncthingPrerequisite: View {
+    let icon: String
+    let title: String
+    let detail: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: icon)
+                .font(.body.weight(.semibold))
+                .foregroundStyle(ROMTheme.violet)
+                .frame(width: 22, alignment: .center)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.body.weight(.semibold))
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.vertical, 3)
+        .accessibilityElement(children: .combine)
     }
 }
 
