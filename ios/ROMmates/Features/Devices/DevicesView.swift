@@ -501,6 +501,19 @@ private struct DeviceDetailView: View {
     private var capacityBytes: Int64 { summary?.storageCapacityBytes ?? device.storageCapacityBytes }
     private var selectedGameCount: Int { summary?.games ?? device.selectedGames }
     private var changes: Int { inventory?.changes ?? 0 }
+    private var exceedsCapacity: Bool {
+        changes > 0 && capacityBytes > 0 && projectedBytes > capacityBytes
+    }
+    private var applyButtonTitle: String {
+        if applying { return "Applying…" }
+        if exceedsCapacity { return "Cannot Apply: Over Capacity" }
+        if changes == 0 { return "No Changes to Apply" }
+        return changes == 1 ? "Apply 1 Change" : "Apply \(changes.formatted()) Changes"
+    }
+    private var applyButtonTint: Color {
+        if exceedsCapacity { return ROMTheme.danger }
+        return changes > 0 ? ROMTheme.violet : .secondary
+    }
     private var queryID: String { "\(scope)|\(platform)|\(sort.rawValue)" }
     private var platformOptions: [String] {
         var values = Set(inventory?.platforms.map(\.platform) ?? [])
@@ -616,6 +629,40 @@ private struct DeviceDetailView: View {
                 .padding(.vertical, 4)
             }
             Section {
+                Button {
+                    Task { await apply() }
+                } label: {
+                    HStack(spacing: 8) {
+                        if applying {
+                            ProgressView()
+                                .controlSize(.small)
+                                .tint(.white)
+                        } else {
+                            Image(systemName: exceedsCapacity ? "exclamationmark.triangle.fill" : "arrow.triangle.2.circlepath")
+                        }
+                        Text(applyButtonTitle)
+                    }
+                    .font(.headline)
+                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .center)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(applyButtonTint)
+                .disabled(changes == 0 || applying || exceedsCapacity)
+
+                if changes > 0 {
+                    Button(changes == 1 ? "Discard Staged Change" : "Discard Staged Changes", role: .destructive) {
+                        Task { await discard() }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .disabled(applying)
+                }
+            } footer: {
+                if exceedsCapacity {
+                    Text("The staged roster is \(ROMTheme.bytes(projectedBytes - capacityBytes)) over this device’s capacity.")
+                        .foregroundStyle(ROMTheme.danger)
+                }
+            }
+            Section {
                 Picker("View", selection: $scope) {
                     Text("Changes").tag("changes")
                     Text("On device").tag("on_device")
@@ -669,20 +716,6 @@ private struct DeviceDetailView: View {
                         }
                     }
                 }
-            } header: {
-                Text(changes == 1 ? "1 staged change" : "\(changes) staged changes")
-            }
-            Section {
-                Button {
-                    Task { await apply() }
-                } label: {
-                    Label(applying ? "Applying…" : "Apply Changes", systemImage: "arrow.triangle.2.circlepath")
-                }
-                .disabled(changes == 0 || applying || projectedBytes > capacityBytes && capacityBytes > 0)
-                Button("Discard Staged Changes", role: .destructive) {
-                    Task { await discard() }
-                }
-                .disabled(changes == 0 || applying)
             }
             if model.permissions?.download == true {
                 Section {
