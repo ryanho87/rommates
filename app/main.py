@@ -1064,6 +1064,7 @@ def role_allows(principal: Principal, method: str, path: str) -> bool:
             path == "/api/devices"
             or path == "/api/device-groups"
             or (path.startswith("/api/device-groups/") and path.endswith("/apply"))
+            or (path.startswith("/api/device-groups/") and path.endswith("/discard-changes"))
             or (path.startswith("/api/devices/") and path.endswith("/apply"))
             or (path.startswith("/api/devices/") and path.endswith("/discard-changes"))
             or (path.startswith("/api/devices/") and path.endswith("/export-ticket"))
@@ -1142,20 +1143,21 @@ def mobile_public_route_allowed(method: str, path: str) -> bool:
         "GET": (
             rf"/api/games/\d+",
             rf"/api/artwork/thumbnails/\d+",
+            rf"/api/device-groups/\d+/(?:summary|preview)",
             rf"/api/devices/\d+/summary",
             rf"/api/devices/\d+/sync-status",
             rf"/api/jobs/\d+",
         ),
         "POST": (
             rf"/api/games/\d+/download-ticket",
-            rf"/api/device-groups/\d+/apply",
+            rf"/api/device-groups/\d+/(?:apply|discard-changes)",
             rf"/api/devices/\d+/(?:apply|discard-changes|export-ticket|syncthing-share)",
             rf"/api/uploads/{_MOBILE_ID}/finalize",
             rf"/api/inbox/\d+/read",
             rf"/api/rom-requests/\d+/cancel",
         ),
         "PUT": (
-            rf"/api/device-groups/\d+",
+            rf"/api/device-groups/\d+(?:/selection|/selections)?",
             rf"/api/devices/\d+/selection",
             rf"/api/uploads/{_MOBILE_ID}/files/\d+",
         ),
@@ -2996,12 +2998,92 @@ def delete_device_group(group_id: int, request: Request):
 def apply_device_group(group_id: int, request: Request):
     principal = request_principal(request)
     group, members = require_device_group_access(group_id, principal)
+    for member in members:
+        library.device_inventory(int(member["id"]), refresh=True)
+    over_capacity = [
+        str(member["name"])
+        for member in members
+        if device_summary_payload(int(member["id"]))["over_capacity"]
+    ]
+    if over_capacity:
+        raise HTTPException(
+            status_code=409,
+            detail="Reduce the shared roster before applying; over capacity: "
+            + ", ".join(over_capacity),
+        )
     jobs = [queue_device_apply_job(int(member["id"]), principal.id) for member in members]
     db.activity("device_apply", f"Queued all devices in {group['name']}")
     return {
         "group_id": group_id,
         "devices": len(members),
         "job_ids": [int(job["job_id"]) for job in jobs],
+    }
+
+
+@app.put("/api/device-groups/{group_id}/selection")
+def update_device_group_selection(
+    group_id: int, payload: SelectionRequest, request: Request
+):
+    _, members = require_device_group_access(group_id, request_principal(request))
+    device_ids = library.set_selection(
+        int(members[0]["id"]), payload.game_id, payload.selected
+    )
+    return {
+        "group_id": group_id,
+        "selected": payload.selected,
+        "devices": len(device_ids),
+    }
+
+
+@app.put("/api/device-groups/{group_id}/selections")
+def update_device_group_selections(
+    group_id: int, payload: BulkSelectionRequest, request: Request
+):
+    _, members = require_device_group_access(group_id, request_principal(request))
+    updated = library.set_selections(
+        int(members[0]["id"]), payload.game_ids, payload.selected
+    )
+    return {
+        "group_id": group_id,
+        "selected": payload.selected,
+        "updated": updated,
+        "devices": len(members),
+    }
+
+
+@app.post("/api/device-groups/{group_id}/discard-changes")
+def discard_device_group_changes(group_id: int, request: Request):
+    require_device_group_access(group_id, request_principal(request))
+    return library.discard_device_group_changes(group_id)
+
+
+@app.get("/api/device-groups/{group_id}/summary")
+def device_group_summary(group_id: int, request: Request):
+    _, members = require_device_group_access(group_id, request_principal(request))
+    return {
+        "group_id": group_id,
+        "members": [
+            {
+                "device_id": int(member["id"]),
+                "summary": device_summary_payload(int(member["id"])),
+            }
+            for member in members
+        ],
+    }
+
+
+@app.get("/api/device-groups/{group_id}/preview")
+def device_group_preview(group_id: int, request: Request):
+    _, members = require_device_group_access(group_id, request_principal(request))
+    return {
+        "group_id": group_id,
+        "members": [
+            {
+                "device_id": int(member["id"]),
+                "preview": device_preview(int(member["id"]), request),
+            }
+            for member in members
+        ],
     }
 
 
@@ -3211,7 +3293,12 @@ def update_selections(device_id: int, payload: BulkSelectionRequest, request: Re
 
 @app.post("/api/devices/{device_id}/discard-changes")
 def discard_device_changes(device_id: int, request: Request):
-    require_device_access(device_id, request_principal(request))
+    device = require_device_access(device_id, request_principal(request))
+    if device["roster_group_id"]:
+        raise HTTPException(
+            status_code=409,
+            detail="Review or discard changes through this device's group",
+        )
     return library.discard_device_changes(device_id)
 
 
@@ -3305,6 +3392,7 @@ def device_summary(device_id: int, request: Request):
 @app.get("/api/devices/{device_id}/preview")
 def device_preview(device_id: int, request: Request):
     require_device_access(device_id, request_principal(request))
+    library.device_inventory(device_id, refresh=True)
     summary = device_summary_payload(device_id)
     with db.connect() as connection:
         addition_games = connection.execute(
@@ -3347,7 +3435,12 @@ def device_preview(device_id: int, request: Request):
 @app.post("/api/devices/{device_id}/apply", status_code=202)
 def apply_device(device_id: int, request: Request):
     principal = request_principal(request)
-    require_device_access(device_id, principal)
+    device = require_device_access(device_id, principal)
+    if device["roster_group_id"]:
+        raise HTTPException(
+            status_code=409,
+            detail="Review and apply changes through this device's group",
+        )
     return queue_device_apply_job(device_id, principal.id)
 
 

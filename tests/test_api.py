@@ -228,10 +228,15 @@ class ApiIntegrationTests(unittest.TestCase):
             ("GET", "/api/onboarding"),
             ("PATCH", "/api/onboarding"),
             ("GET", "/api/device-groups"),
+            ("GET", "/api/device-groups/42/summary"),
+            ("GET", "/api/device-groups/42/preview"),
             ("POST", "/api/device-groups"),
             ("PUT", "/api/device-groups/42"),
             ("DELETE", "/api/device-groups/42"),
             ("POST", "/api/device-groups/42/apply"),
+            ("POST", "/api/device-groups/42/discard-changes"),
+            ("PUT", "/api/device-groups/42/selection"),
+            ("PUT", "/api/device-groups/42/selections"),
             ("GET", "/api/devices/42/summary"),
             ("GET", "/api/jobs/42"),
             ("POST", "/api/devices/42/export-ticket"),
@@ -1097,6 +1102,22 @@ class ApiIntegrationTests(unittest.TestCase):
             {item["roster_group_name"] for item in devices if item["roster_group_id"] == group_id},
             {"Travel handhelds"},
         )
+        self.client.put(
+            f"/api/devices/{source['id']}/storage-capacity",
+            headers=self.headers,
+            json={"storage_capacity_bytes": 1},
+        )
+        with patch.object(self.main, "queue_device_apply_job") as queue:
+            blocked = self.client.post(
+                f"/api/device-groups/{group_id}/apply", headers=self.headers
+            )
+        self.assertEqual(blocked.status_code, 409, blocked.text)
+        queue.assert_not_called()
+        self.client.put(
+            f"/api/devices/{source['id']}/storage-capacity",
+            headers=self.headers,
+            json={"storage_capacity_bytes": 0},
+        )
         with patch.object(
             self.main,
             "queue_device_apply_job",
@@ -1108,11 +1129,50 @@ class ApiIntegrationTests(unittest.TestCase):
         self.assertEqual(applied.status_code, 202, applied.text)
         self.assertEqual(applied.json()["job_ids"], [901, 902])
 
-        self.client.put(
-            f"/api/devices/{clone_payload['id']}/selection",
+        self.assertEqual(
+            self.client.post(
+                f"/api/devices/{source['id']}/apply", headers=self.headers
+            ).status_code,
+            409,
+        )
+        self.assertEqual(
+            self.client.post(
+                f"/api/devices/{clone_payload['id']}/discard-changes",
+                headers=self.headers,
+            ).status_code,
+            409,
+        )
+
+        changed = self.client.put(
+            f"/api/device-groups/{group_id}/selection",
             headers=self.headers,
             json={"game_id": game["id"], "selected": False},
         )
+        self.assertEqual(changed.status_code, 200, changed.text)
+        self.assertEqual(changed.json()["devices"], 2)
+        detail = self.client.get(f"/api/games/{game['id']}", headers=self.headers).json()
+        selection = {item["id"]: bool(item["selected"]) for item in detail["devices"]}
+        self.assertFalse(selection[source["id"]])
+        self.assertFalse(selection[clone_payload["id"]])
+
+        # Older clients may still address a member directly. The invariant is
+        # server-side: even that write must update the group's shared roster.
+        self.client.put(
+            f"/api/devices/{clone_payload['id']}/selection",
+            headers=self.headers,
+            json={"game_id": game["id"], "selected": True},
+        )
+        detail = self.client.get(f"/api/games/{game['id']}", headers=self.headers).json()
+        selection = {item["id"]: bool(item["selected"]) for item in detail["devices"]}
+        self.assertTrue(selection[source["id"]])
+        self.assertTrue(selection[clone_payload["id"]])
+
+        discarded = self.client.post(
+            f"/api/device-groups/{group_id}/discard-changes", headers=self.headers
+        )
+        self.assertEqual(discarded.status_code, 200, discarded.text)
+        self.assertEqual(discarded.json()["devices"], 2)
+        self.assertEqual(discarded.json()["games"], 0)
         detail = self.client.get(f"/api/games/{game['id']}", headers=self.headers).json()
         selection = {item["id"]: bool(item["selected"]) for item in detail["devices"]}
         self.assertFalse(selection[source["id"]])
@@ -1216,6 +1276,19 @@ class ApiIntegrationTests(unittest.TestCase):
         self.assertEqual(listed_group["name"], "Owned handhelds")
         self.assertEqual(listed_group["owner_user_id"], owner_id)
         self.assertEqual({item["id"] for item in listed_group["members"]}, {item["id"] for item in devices})
+        summary = self.client.get(
+            f"/api/device-groups/{group['id']}/summary", headers=self.headers
+        )
+        self.assertEqual(summary.status_code, 200, summary.text)
+        self.assertEqual(
+            {item["device_id"] for item in summary.json()["members"]},
+            {item["id"] for item in devices},
+        )
+        preview = self.client.get(
+            f"/api/device-groups/{group['id']}/preview", headers=self.headers
+        )
+        self.assertEqual(preview.status_code, 200, preview.text)
+        self.assertEqual(len(preview.json()["members"]), 2)
 
         renamed = self.client.put(
             f"/api/device-groups/{group['id']}", headers=self.headers,

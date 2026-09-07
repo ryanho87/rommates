@@ -1931,6 +1931,68 @@ class LibraryService:
             "group": bool(device["roster_group_id"]),
         }
 
+    def discard_device_group_changes(self, group_id: int) -> dict[str, object]:
+        """Restore a shared roster only when every member has the same filesystem state."""
+        with self.db.connect() as connection:
+            members = connection.execute(
+                "SELECT id,name FROM devices WHERE roster_group_id=? ORDER BY id",
+                (group_id,),
+            ).fetchall()
+        if len(members) < 2:
+            raise LibraryError("Device group was not found")
+
+        # Refresh the derived deployment index before choosing a filesystem-backed
+        # baseline. A group has no defensible discard target while its members differ.
+        for member in members:
+            self.device_inventory(int(member["id"]), refresh=True)
+
+        with self.db.write() as connection:
+            deployed_by_device = {
+                int(member["id"]): {
+                    int(row["game_id"])
+                    for row in connection.execute(
+                        "SELECT DISTINCT game_id FROM deployments WHERE device_id=?",
+                        (member["id"],),
+                    )
+                }
+                for member in members
+            }
+            baseline = deployed_by_device[int(members[0]["id"])]
+            out_of_sync = [
+                str(member["name"])
+                for member in members[1:]
+                if deployed_by_device[int(member["id"])] != baseline
+            ]
+            if out_of_sync:
+                raise LibraryError(
+                    "The group’s device folders differ. Apply the shared roster to "
+                    "reconcile every device; staged changes cannot be discarded safely."
+                )
+            member_ids = [int(member["id"]) for member in members]
+            connection.executemany(
+                "DELETE FROM device_selections WHERE device_id=?",
+                ((member_id,) for member_id in member_ids),
+            )
+            if baseline:
+                connection.executemany(
+                    "INSERT INTO device_selections(device_id,game_id) VALUES(?,?)",
+                    (
+                        (member_id, game_id)
+                        for member_id in member_ids
+                        for game_id in sorted(baseline)
+                    ),
+                )
+        self.db.activity(
+            "device", f"Cleared proposed changes for device group {group_id}"
+        )
+        return {
+            "device_ids": member_ids,
+            "devices": len(member_ids),
+            "games": len(baseline),
+            "group": True,
+            "group_id": group_id,
+        }
+
     def clone_device_roster(
         self, source_device_id: int, target_device_id: int, keep_in_sync: bool = False
     ) -> dict[str, object]:

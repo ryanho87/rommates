@@ -2827,20 +2827,9 @@ function devicePickerOptions(selectedId) {
   }).join("");
 }
 
-function deviceGroupPanel(target, previews) {
-  const totalPending = previews.reduce(
-    (sum, item) => sum + Number(item.additions || 0) + Number(item.removals || 0) + Number(item.conversions || 0),
-    0,
-  );
+function deviceGroupPanel(target) {
   const groupOwner = target.group?.owner_display_name || target.group?.owner_username || "Administrators";
-  const rows = target.members.map((member, index) => {
-    const preview = previews[index];
-    const pending = Number(preview.additions || 0) + Number(preview.removals || 0) + Number(preview.conversions || 0);
-    const delivery = member.delivery_mode === "download"
-      ? "Manual package"
-      : member.syncthing_ready_at ? "Syncthing ready" : "Syncthing setup pending";
-    return `<li><div><strong>${escapeHtml(member.name)}</strong><span>${escapeHtml(delivery)}</span></div><span class="device-group-pending ${pending ? "has-changes" : ""}">${pending ? `${pending.toLocaleString()} pending` : "Up to date"}</span><button class="text-button danger-text" type="button" data-remove-group-member="${member.id}">Remove</button></li>`;
-  }).join("");
+  const memberControls = target.members.map((member) => `<li><strong>${escapeHtml(member.name)}</strong><button class="text-button danger-text" type="button" data-remove-group-member="${member.id}">Remove</button></li>`).join("");
   const independent = state.devices.filter(
     (item) => !item.roster_group_id
       && Number(item.owner_user_id || 0) === Number(target.device.owner_user_id || 0),
@@ -2853,10 +2842,10 @@ function deviceGroupPanel(target, previews) {
       <div class="device-group-actions">
         <details data-group-settings><summary>Group settings</summary><div class="device-roster-controls"><label class="field"><span>Group name</span><input type="text" maxlength="64" value="${escapeHtml(deviceTargetName(target))}" data-group-name></label><button class="button secondary small" type="button" data-save-group-name>Save name</button><button class="text-button danger-text" type="button" data-delete-device-group>Delete group</button></div></details>
         <details data-roster-manager><summary>Add devices</summary><div class="device-roster-controls">${choices ? `<div class="device-roster-choices">${choices}</div><button class="button secondary small" type="button" data-link-rosters disabled>Add selected devices</button>` : "<p>No independent devices are available.</p>"}</div></details>
+        <details data-group-members><summary>Edit members</summary><ul class="device-group-members">${memberControls}</ul></details>
       </div>
     </div>
-    <ul class="device-group-members">${rows}</ul>
-    <div class="device-group-footer"><span>${Number(target.device.selected_games || 0).toLocaleString()} selected ROMs</span><span>${totalPending.toLocaleString()} pending file operations</span></div></div>
+    </div>
   </details>`;
 }
 
@@ -3289,7 +3278,7 @@ async function renderDevices() {
       ${isAdmin() && !isGroup && inventory.unmatched_files ? `<p class="device-inventory-note">${deviceMetric(inventory.unmatched_files, inventory.unmatched_files === 1 ? "unmatched file" : "unmatched files", "Physical files that ROMmates cannot associate with the current library index.")}</p>` : ""}
       ${libraryToolbar(false, platformItems, platformCountSuffix)}${table}
     </section>
-    ${isGroup ? deviceGroupPanel(target, memberPreviews) : ""}
+    ${isGroup ? deviceGroupPanel(target) : ""}
     ${deviceAdminDetails(device, target, preview, inventory, isGroup)}`);
   void syncStatusesPromise.then((syncStatuses) => {
     if (!pageRenderIsCurrent(renderVersion, "devices")) return;
@@ -3597,7 +3586,10 @@ async function renderDevices() {
   view.querySelectorAll("[data-device-select]").forEach((checkbox) => checkbox.addEventListener("change", async () => {
     checkbox.disabled = true;
     try {
-      await api(`/api/devices/${device.id}/selection`, { method: "PUT", body: JSON.stringify({ game_id: Number(checkbox.dataset.deviceSelect), selected: checkbox.checked }) });
+      const selectionPath = isGroup
+        ? `/api/device-groups/${target.groupId}/selection`
+        : `/api/devices/${device.id}/selection`;
+      await api(selectionPath, { method: "PUT", body: JSON.stringify({ game_id: Number(checkbox.dataset.deviceSelect), selected: checkbox.checked }) });
       await renderDevices();
     } catch (error) { checkbox.checked = !checkbox.checked; checkbox.disabled = false; toast(error.message, "error"); }
   }));
@@ -3605,7 +3597,10 @@ async function renderDevices() {
     const checkbox = event.target;
     checkbox.disabled = true;
     try {
-      await api(`/api/devices/${device.id}/selections`, {
+      const selectionsPath = isGroup
+        ? `/api/device-groups/${target.groupId}/selections`
+        : `/api/devices/${device.id}/selections`;
+      await api(selectionsPath, {
         method: "PUT",
         body: JSON.stringify({ game_ids: data.items.map((game) => game.id), selected: checkbox.checked }),
       });
@@ -3651,7 +3646,10 @@ async function renderDevices() {
     });
     if (choice === "alternate") {
       try {
-        const result = await api(`/api/devices/${device.id}/discard-changes`, { method: "POST" });
+        const discardPath = isGroup
+          ? `/api/device-groups/${target.groupId}/discard-changes`
+          : `/api/devices/${device.id}/discard-changes`;
+        const result = await api(discardPath, { method: "POST" });
         const conversions = plans.reduce((total, item) => total + Number(item.conversions || 0), 0);
         toast(conversions
           ? `Cleared roster changes for ${result.devices.toLocaleString()} ${result.devices === 1 ? "device" : "devices"}; ${conversions.toLocaleString()} hardlink ${conversions === 1 ? "conversion remains" : "conversions remain"}`

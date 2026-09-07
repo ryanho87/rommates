@@ -47,7 +47,9 @@ struct DevicesView: View {
                         if !groups.isEmpty {
                             Section("Device groups") {
                                 ForEach(groups) { group in
-                                    DeviceGroupRow(group: group, devices: devices)
+                                    NavigationLink(value: group) {
+                                        DeviceGroupRow(group: group)
+                                    }
                                 }
                             }
                         }
@@ -66,6 +68,22 @@ struct DevicesView: View {
             .navigationDestination(for: Device.self) { device in
                 DeviceDetailView(device: device) {
                     Task { await load(fresh: true) }
+                }
+            }
+            .navigationDestination(for: DeviceGroup.self) { group in
+                let members = group.members.compactMap { member in
+                    devices.first(where: { $0.id == member.id })
+                }
+                if let representative = members.first {
+                    DeviceDetailView(device: representative, group: group, groupedDevices: members) {
+                        Task { await load(fresh: true) }
+                    }
+                } else {
+                    ContentUnavailableView(
+                        "Group unavailable",
+                        systemImage: "rectangle.3.group",
+                        description: Text("Refresh Devices to load this group’s members.")
+                    )
                 }
             }
             .toolbar {
@@ -385,55 +403,21 @@ private struct DeviceRowPlaceholder: View {
 
 private struct DeviceGroupRow: View {
     let group: DeviceGroup
-    let devices: [Device]
-
-    var body: some View {
-        DisclosureGroup {
-            ForEach(group.members) { member in
-                if let device = devices.first(where: { $0.id == member.id }) {
-                    NavigationLink(value: device) {
-                        DeviceGroupMemberRow(member: member)
-                    }
-                } else {
-                    DeviceGroupMemberRow(member: member)
-                }
-            }
-        } label: {
-            HStack(spacing: 12) {
-                Image(systemName: "rectangle.3.group.fill")
-                    .foregroundStyle(ROMTheme.violet)
-                    .frame(width: 28)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(group.name).font(.body.weight(.semibold))
-                    Text("\(group.deviceCount) devices · \(group.selectedGames) selected")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .padding(.vertical, 4)
-        }
-        .accessibilityHint("Shows devices that share this game roster")
-    }
-}
-
-private struct DeviceGroupMemberRow: View {
-    let member: DeviceGroupMember
 
     var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: member.deliveryMode == "syncthing" ? "arrow.triangle.2.circlepath" : "arrow.down.circle")
-                .foregroundStyle(.secondary)
-                .frame(width: 24)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(member.name)
-                Text(member.deliveryMode == "syncthing" ?
-                    (member.syncthingReadyAt == nil ? "Syncthing setup pending" : "Syncthing ready") :
-                    "Manual download")
+            Image(systemName: "rectangle.3.group.fill")
+                .foregroundStyle(ROMTheme.violet)
+                .frame(width: 28)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(group.name).font(.body.weight(.semibold))
+                Text("\(group.deviceCount) devices · \(group.selectedGames) selected · one shared roster")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
         }
-        .padding(.leading, 4)
+        .padding(.vertical, 4)
+        .accessibilityHint("Opens the shared roster and storage for every device in this group")
     }
 }
 
@@ -471,10 +455,13 @@ private struct DeviceRow: View {
 private struct DeviceDetailView: View {
     @EnvironmentObject private var model: AppModel
     let device: Device
+    let group: DeviceGroup?
+    let groupedDevices: [Device]
     let didUpdate: () -> Void
     @State private var games: [Game] = []
     @State private var inventory: DeviceInventory?
     @State private var summary: DeviceSummary?
+    @State private var memberSummaries: [Int: DeviceSummary] = [:]
     @State private var sync: DeviceSyncStatus?
     @State private var scope = "on_device"
     @State private var platform = ""
@@ -485,11 +472,31 @@ private struct DeviceDetailView: View {
     @State private var didInitializePlatform = false
     @State private var didRefreshInventory = false
     @State private var applying = false
+    @State private var reviewing = false
+    @State private var previews: [DeviceChangePreview] = []
+    @State private var showingChangeReview = false
     @State private var showingDownloadConfirmation = false
     @State private var downloading = false
     @State private var downloadStatus = ""
     @State private var downloadedFile: URL?
     @State private var showingSyncthingSetup = false
+
+    init(
+        device: Device,
+        group: DeviceGroup? = nil,
+        groupedDevices: [Device] = [],
+        didUpdate: @escaping () -> Void
+    ) {
+        self.device = device
+        self.group = group
+        self.groupedDevices = groupedDevices
+        self.didUpdate = didUpdate
+        _scope = State(initialValue: group == nil ? "on_device" : "selected")
+    }
+
+    private var isGroup: Bool { group != nil }
+    private var targetName: String { group?.name ?? device.name }
+    private var targetDevices: [Device] { isGroup ? groupedDevices : [device] }
 
     private var selectedBytes: Int64 {
         summary?.desiredRomBytes
@@ -500,19 +507,30 @@ private struct DeviceDetailView: View {
     private var projectedBytes: Int64 { summary?.projectedRomBytes ?? selectedBytes }
     private var capacityBytes: Int64 { summary?.storageCapacityBytes ?? device.storageCapacityBytes }
     private var selectedGameCount: Int { summary?.games ?? device.selectedGames }
-    private var changes: Int { inventory?.changes ?? 0 }
+    private var changes: Int {
+        if !memberSummaries.isEmpty {
+            return targetDevices.reduce(0) { total, member in
+                guard let summary = memberSummaries[member.id] else { return total }
+                return total + summary.additions + summary.removals
+            }
+        }
+        return inventory?.changes ?? 0
+    }
     private var exceedsCapacity: Bool {
-        changes > 0 && capacityBytes > 0 && projectedBytes > capacityBytes
+        if isGroup {
+            return targetDevices.contains { member in
+                memberSummaries[member.id]?.overCapacity == true
+            }
+        }
+        return changes > 0 && capacityBytes > 0 && projectedBytes > capacityBytes
     }
-    private var applyButtonTitle: String {
-        if applying { return "Applying…" }
-        if exceedsCapacity { return "Cannot Apply: Over Capacity" }
-        if changes == 0 { return "No Changes to Apply" }
-        return changes == 1 ? "Apply 1 Change" : "Apply \(changes.formatted()) Changes"
+    private var reviewButtonTitle: String {
+        if reviewing { return "Inspecting Changes…" }
+        return changes == 1 ? "Review 1 Change" : "Review \(changes.formatted()) Changes"
     }
-    private var applyButtonTint: Color {
+    private var reviewButtonTint: Color {
         if exceedsCapacity { return ROMTheme.danger }
-        return changes > 0 ? ROMTheme.violet : .secondary
+        return ROMTheme.violet
     }
     private var queryID: String { "\(scope)|\(platform)|\(sort.rawValue)" }
     private var platformOptions: [String] {
@@ -523,7 +541,8 @@ private struct DeviceDetailView: View {
         return values.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
     }
     private var platformMetrics: [DeviceInventory.Platform] {
-        (inventory?.presentPlatforms ?? []).sorted {
+        let values = isGroup ? inventory?.selectedPlatforms ?? [] : inventory?.presentPlatforms ?? []
+        return values.sorted {
             $0.platform.localizedCaseInsensitiveCompare($1.platform) == .orderedAscending
         }
     }
@@ -537,24 +556,32 @@ private struct DeviceDetailView: View {
                 VStack(alignment: .leading, spacing: 12) {
                     HStack {
                         VStack(alignment: .leading, spacing: 3) {
-                            Text(device.deliveryMode == "syncthing" ? "Syncthing delivery" : "Manual download")
+                            Text(isGroup ? "Shared roster" : (device.deliveryMode == "syncthing" ? "Syncthing delivery" : "Manual download"))
                                 .font(.headline)
-                            StatusLabel(
-                                text: syncDetail,
-                                icon: syncIcon,
-                                color: syncColor
-                            )
+                            if isGroup {
+                                StatusLabel(
+                                    text: "Selections stay matched across \(targetDevices.count.formatted()) devices",
+                                    icon: "rectangle.3.group.fill",
+                                    color: ROMTheme.violet
+                                )
+                            } else {
+                                StatusLabel(
+                                    text: syncDetail,
+                                    icon: syncIcon,
+                                    color: syncColor
+                                )
+                            }
                         }
                         Spacer()
-                        if let run = sync?.syncRun, ["pending", "syncing", "offline"].contains(run.state) {
+                        if !isGroup, let run = sync?.syncRun, ["pending", "syncing", "offline"].contains(run.state) {
                             Text(run.completion / 100, format: .percent.precision(.fractionLength(0)))
                                 .font(.headline.monospacedDigit())
                         }
                     }
-                    if let run = sync?.syncRun, ["pending", "syncing", "offline"].contains(run.state) {
+                    if !isGroup, let run = sync?.syncRun, ["pending", "syncing", "offline"].contains(run.state) {
                         ProgressView(value: run.completion, total: 100)
                     }
-                    if capacityBytes > 0 {
+                    if !isGroup, capacityBytes > 0 {
                         ProgressView(
                             value: min(Double(currentBytes), Double(capacityBytes)),
                             total: Double(capacityBytes)
@@ -568,11 +595,11 @@ private struct DeviceDetailView: View {
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
-                    } else {
+                    } else if !isGroup {
                         Text("\(ROMTheme.bytes(currentBytes)) on device")
                             .font(.subheadline.weight(.semibold))
                     }
-                    Text("\(selectedGameCount.formatted()) selected ROMs · \(ROMTheme.bytes(selectedBytes)) in roster")
+                    Text("\(selectedGameCount.formatted()) selected ROMs · \(ROMTheme.bytes(selectedBytes)) in \(isGroup ? "shared roster" : "roster")")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     if changes > 0 {
@@ -582,7 +609,7 @@ private struct DeviceDetailView: View {
                             color: ROMTheme.warning
                         )
                     }
-                    if let unrecognized = summary?.unrecognizedRomBytes, unrecognized > 0 {
+                    if !isGroup, let unrecognized = summary?.unrecognizedRomBytes, unrecognized > 0 {
                         StatusLabel(
                             text: "\(ROMTheme.bytes(unrecognized)) not matched to the library",
                             icon: "questionmark.circle.fill",
@@ -591,7 +618,7 @@ private struct DeviceDetailView: View {
                     }
                     if !platformMetrics.isEmpty {
                         Divider()
-                        Text("ON DEVICE BY PLATFORM")
+                        Text(isGroup ? "SHARED ROSTER BY PLATFORM" : "ON DEVICE BY PLATFORM")
                             .font(.caption2.weight(.bold))
                             .tracking(0.7)
                             .foregroundStyle(.secondary)
@@ -603,7 +630,20 @@ private struct DeviceDetailView: View {
                             }
                         }
                     }
-                    if device.deliveryMode == "syncthing" {
+                    if isGroup {
+                        Divider()
+                        Text("STORAGE BY DEVICE")
+                            .font(.caption2.weight(.bold))
+                            .tracking(0.7)
+                            .foregroundStyle(.secondary)
+                        ForEach(targetDevices) { member in
+                            DeviceGroupStorageRow(
+                                device: member,
+                                summary: memberSummaries[member.id]
+                            )
+                        }
+                    }
+                    if !isGroup, device.deliveryMode == "syncthing" {
                         if !syncthingIsReady {
                             Divider()
                             Button {
@@ -628,44 +668,40 @@ private struct DeviceDetailView: View {
                 }
                 .padding(.vertical, 4)
             }
-            Section {
-                Button {
-                    Task { await apply() }
-                } label: {
-                    HStack(spacing: 8) {
-                        if applying {
-                            ProgressView()
-                                .controlSize(.small)
-                                .tint(.white)
-                        } else {
-                            Image(systemName: exceedsCapacity ? "exclamationmark.triangle.fill" : "arrow.triangle.2.circlepath")
+            if changes > 0 {
+                Section {
+                    Button {
+                        Task { await reviewChanges() }
+                    } label: {
+                        HStack(spacing: 8) {
+                            if reviewing {
+                                ProgressView()
+                                    .controlSize(.small)
+                                    .tint(.white)
+                            } else {
+                                Image(systemName: exceedsCapacity ? "exclamationmark.triangle.fill" : "list.bullet.rectangle")
+                            }
+                            Text(reviewButtonTitle)
                         }
-                        Text(applyButtonTitle)
+                        .font(.headline)
+                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .center)
                     }
-                    .font(.headline)
-                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .center)
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(applyButtonTint)
-                .disabled(changes == 0 || applying || exceedsCapacity)
-
-                if changes > 0 {
-                    Button(changes == 1 ? "Discard Staged Change" : "Discard Staged Changes", role: .destructive) {
-                        Task { await discard() }
+                    .buttonStyle(.borderedProminent)
+                    .tint(reviewButtonTint)
+                    .disabled(reviewing || applying)
+                } footer: {
+                    if exceedsCapacity {
+                        Text(isGroup
+                            ? "At least one device is over capacity. Review the plan to see which one."
+                            : "The staged roster is \(ROMTheme.bytes(projectedBytes - capacityBytes)) over this device’s capacity.")
+                            .foregroundStyle(ROMTheme.danger)
                     }
-                    .frame(maxWidth: .infinity, alignment: .center)
-                    .disabled(applying)
-                }
-            } footer: {
-                if exceedsCapacity {
-                    Text("The staged roster is \(ROMTheme.bytes(projectedBytes - capacityBytes)) over this device’s capacity.")
-                        .foregroundStyle(ROMTheme.danger)
                 }
             }
             Section {
                 Picker("View", selection: $scope) {
                     Text("Changes").tag("changes")
-                    Text("On device").tag("on_device")
+                    Text(isGroup ? "Roster" : "On device").tag(isGroup ? "selected" : "on_device")
                     Text("Library").tag("all")
                 }
                 .pickerStyle(.segmented)
@@ -740,7 +776,7 @@ private struct DeviceDetailView: View {
                 }
             }
         }
-        .navigationTitle(device.name)
+        .navigationTitle(targetName)
         .navigationBarTitleDisplayMode(.inline)
         .refreshable {
             didRefreshInventory = true
@@ -748,7 +784,7 @@ private struct DeviceDetailView: View {
             await loadSync()
         }
         .confirmationDialog(
-            "Download \(device.name)’s selected ROMs?",
+            "Download \(targetName)’s selected ROMs?",
             isPresented: $showingDownloadConfirmation,
             titleVisibility: .visible
         ) {
@@ -756,6 +792,15 @@ private struct DeviceDetailView: View {
             Button("Cancel", role: .cancel) { }
         } message: {
             Text("ROMmates will validate \(selectedGameCount.formatted()) games and prepare a \(ROMTheme.bytes(selectedBytes)) ZIP. Keep the app open while this large download completes.")
+        }
+        .sheet(isPresented: $showingChangeReview) {
+            DeviceChangeReviewView(
+                targetName: targetName,
+                devices: targetDevices,
+                previews: previews,
+                applyChanges: apply,
+                discardChanges: discard
+            )
         }
         .sheet(isPresented: $showingSyncthingSetup) {
             SyncthingSetupView(device: device) {
@@ -830,30 +875,90 @@ private struct DeviceDetailView: View {
                 }
             }
             hasLoadedGames = true
-            do {
-                summary = try await model.request("/api/devices/\(device.id)/summary", fresh: true)
-            } catch let error as URLError where error.code == .cancelled {
-            } catch is CancellationError {
-            } catch {
-                // Storage details enhance the device page, but the primary game
-                // response already contains safe fallbacks for every metric.
-                summary = nil
+            if refreshDeviceInventory, isGroup {
+                await refreshOtherGroupInventories()
             }
+            await loadSummaries()
         } catch let error as URLError where error.code == .cancelled {
         } catch is CancellationError {
         } catch { model.report(error) }
     }
 
     private func loadSync() async {
+        guard !isGroup else { return }
         do { sync = try await model.request("/api/devices/\(device.id)/sync-status", fresh: true) }
         catch { /* Refresh remains available even when Syncthing is offline. */ }
+    }
+
+    private func loadSummaries() async {
+        var loaded: [Int: DeviceSummary] = [:]
+        if let group {
+            do {
+                let response: DeviceGroupSummaryResponse = try await model.request(
+                    "/api/device-groups/\(group.id)/summary", fresh: true
+                )
+                loaded = Dictionary(
+                    uniqueKeysWithValues: response.members.map { ($0.deviceId, $0.summary) }
+                )
+                memberSummaries = loaded
+                summary = loaded[device.id]
+                return
+            } catch let error as URLError where error.code == .cancelled {
+                return
+            } catch is CancellationError {
+                return
+            } catch {
+                // Fall back to per-device summaries for servers predating this endpoint.
+            }
+        }
+        for member in targetDevices {
+            do {
+                let value: DeviceSummary = try await model.request(
+                    "/api/devices/\(member.id)/summary", fresh: true
+                )
+                loaded[member.id] = value
+            } catch let error as URLError where error.code == .cancelled {
+                return
+            } catch is CancellationError {
+                return
+            } catch {
+                // The game response still carries safe roster fallbacks.
+            }
+        }
+        memberSummaries = loaded
+        summary = loaded[device.id]
+    }
+
+    private func refreshOtherGroupInventories() async {
+        for member in targetDevices where member.id != device.id {
+            do {
+                let _: GameList = try await model.request(
+                    "/api/games",
+                    query: [
+                        .init(name: "device_id", value: String(member.id)),
+                        .init(name: "device_scope", value: "selected"),
+                        .init(name: "refresh_device_inventory", value: "true"),
+                        .init(name: "limit", value: "1"),
+                    ],
+                    fresh: true
+                )
+            } catch let error as URLError where error.code == .cancelled {
+                return
+            } catch is CancellationError {
+                return
+            } catch {
+                model.report(error, prefix: member.name)
+            }
+        }
     }
 
     private func select(_ game: Game, selected: Bool) async {
         do {
             let body = try JSONEncoder.rommates.encode(DeviceSelectionBody(gameId: game.id, selected: selected))
             let _: DeviceSelectionResponse = try await model.request(
-                "/api/devices/\(device.id)/selection", method: "PUT", body: body
+                isGroup ? "/api/device-groups/\(group!.id)/selection" : "/api/devices/\(device.id)/selection",
+                method: "PUT",
+                body: body
             )
             await load()
         } catch let error as URLError where error.code == .cancelled {
@@ -861,23 +966,66 @@ private struct DeviceDetailView: View {
         } catch { model.report(error) }
     }
 
-    private func apply() async {
+    private func reviewChanges() async {
+        reviewing = true
+        defer { reviewing = false }
+        var loaded: [DeviceChangePreview] = []
+        do {
+            if let group {
+                let response: DeviceGroupPreviewResponse = try await model.request(
+                    "/api/device-groups/\(group.id)/preview", fresh: true
+                )
+                let byDevice = Dictionary(
+                    uniqueKeysWithValues: response.members.map { ($0.deviceId, $0.preview) }
+                )
+                loaded = targetDevices.compactMap { byDevice[$0.id] }
+            } else {
+                let preview: DeviceChangePreview = try await model.request(
+                    "/api/devices/\(device.id)/preview", fresh: true
+                )
+                loaded = [preview]
+            }
+            previews = loaded
+            showingChangeReview = true
+        } catch { model.report(error, prefix: "Change review") }
+    }
+
+    private func apply() async -> Bool {
         applying = true
         defer { applying = false }
         do {
-            let _: JobReference = try await model.request("/api/devices/\(device.id)/apply", method: "POST")
+            if let group {
+                let _: DeviceGroupApplyResponse = try await model.request(
+                    "/api/device-groups/\(group.id)/apply", method: "POST"
+                )
+            } else {
+                let _: JobReference = try await model.request(
+                    "/api/devices/\(device.id)/apply", method: "POST"
+                )
+            }
             await load()
             await loadSync()
-        } catch { model.report(error) }
+            didUpdate()
+            return true
+        } catch {
+            model.report(error)
+            return false
+        }
     }
 
-    private func discard() async {
+    private func discard() async -> Bool {
         do {
             let _: DiscardResponse = try await model.request(
-                "/api/devices/\(device.id)/discard-changes", method: "POST"
+                isGroup ? "/api/device-groups/\(group!.id)/discard-changes" : "/api/devices/\(device.id)/discard-changes",
+                method: "POST"
             )
             await load()
-        } catch { model.report(error) }
+            didUpdate()
+            return true
+        } catch {
+            model.report(error)
+            return false
+        }
     }
 
     private func downloadSelectedROMs() async {
@@ -928,6 +1076,228 @@ private struct DeviceDetailView: View {
             }
         }
         throw APIError(statusCode: 0, message: "The package is still preparing. Try again shortly.")
+    }
+}
+
+private struct DeviceGroupStorageRow: View {
+    let device: Device
+    let summary: DeviceSummary?
+
+    private var currentBytes: Int64 { summary?.currentRomBytes ?? 0 }
+    private var capacityBytes: Int64 { summary?.storageCapacityBytes ?? device.storageCapacityBytes }
+    private var projectedBytes: Int64 { summary?.projectedRomBytes ?? currentBytes }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(device.name)
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(1)
+                Spacer(minLength: 12)
+                if summary == nil {
+                    Text("Loading storage…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else if capacityBytes > 0 {
+                    Text("\(ROMTheme.bytes(currentBytes)) of \(ROMTheme.bytes(capacityBytes))")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text(ROMTheme.bytes(currentBytes))
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+            }
+            if let summary, capacityBytes > 0 {
+                ProgressView(
+                    value: min(Double(currentBytes), Double(capacityBytes)),
+                    total: Double(capacityBytes)
+                )
+                .tint(summary.overCapacity ? ROMTheme.danger : ROMTheme.violet)
+            }
+            if let summary, projectedBytes != currentBytes {
+                Text("\(ROMTheme.bytes(projectedBytes)) after staged changes")
+                    .font(.caption)
+                    .foregroundStyle(summary.overCapacity ? ROMTheme.danger : ROMTheme.warning)
+            }
+        }
+        .padding(.vertical, 4)
+        .accessibilityElement(children: .combine)
+    }
+}
+
+private struct DeviceChangeReviewView: View {
+    @Environment(\.dismiss) private var dismiss
+    let targetName: String
+    let devices: [Device]
+    let previews: [DeviceChangePreview]
+    let applyChanges: () async -> Bool
+    let discardChanges: () async -> Bool
+    @State private var busy = false
+
+    private var additions: Int { previews.reduce(0) { $0 + $1.additions } }
+    private var removals: Int { previews.reduce(0) { $0 + $1.removals } }
+    private var conversions: Int { previews.reduce(0) { $0 + $1.conversions } }
+    private var overCapacity: Bool { previews.contains(where: \.overCapacity) }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text(devices.count > 1
+                            ? "This plan reconciles every device in \(targetName) together."
+                            : "Review what ROMmates will change on \(targetName).")
+                            .font(.subheadline)
+                        HStack(spacing: 14) {
+                            ChangeCount(value: additions, label: "add", color: ROMTheme.success)
+                            ChangeCount(value: removals, label: "remove", color: ROMTheme.danger)
+                            if conversions > 0 {
+                                ChangeCount(value: conversions, label: "optimize", color: ROMTheme.violet)
+                            }
+                        }
+                        if overCapacity {
+                            StatusLabel(
+                                text: "At least one device needs more free space",
+                                icon: "exclamationmark.triangle.fill",
+                                color: ROMTheme.danger
+                            )
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+
+                ForEach(Array(devices.enumerated()), id: \.element.id) { index, device in
+                    if previews.indices.contains(index) {
+                        DevicePlanSection(device: device, preview: previews[index])
+                    }
+                }
+
+                Section {
+                    Button {
+                        Task { await perform(applyChanges) }
+                    } label: {
+                        Label(
+                            busy ? "Working…" : (devices.count > 1 ? "Apply to All Devices" : "Apply Changes"),
+                            systemImage: "arrow.triangle.2.circlepath"
+                        )
+                        .font(.headline)
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(ROMTheme.violet)
+                    .disabled(busy || overCapacity)
+
+                    Button("Discard Staged Changes", role: .destructive) {
+                        Task { await perform(discardChanges) }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .disabled(busy)
+                } footer: {
+                    Text("Discarding changes updates the desired roster only; it does not remove files from a device.")
+                }
+            }
+            .navigationTitle("Review Changes")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Keep Editing") { dismiss() }
+                        .disabled(busy)
+                }
+            }
+        }
+    }
+
+    private func perform(_ action: () async -> Bool) async {
+        busy = true
+        let succeeded = await action()
+        busy = false
+        if succeeded { dismiss() }
+    }
+}
+
+private struct ChangeCount: View {
+    let value: Int
+    let label: String
+    let color: Color
+
+    var body: some View {
+        Label("\(value.formatted()) \(label)", systemImage: value == 0 ? "minus" : "circle.fill")
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(value == 0 ? Color.secondary : color)
+            .accessibilityLabel("\(value) files to \(label)")
+    }
+}
+
+private struct DevicePlanSection: View {
+    let device: Device
+    let preview: DeviceChangePreview
+
+    var body: some View {
+        Section {
+            LabeledContent("Storage now", value: ROMTheme.bytes(preview.currentRomBytes))
+            LabeledContent("After changes") {
+                Text(ROMTheme.bytes(preview.projectedRomBytes))
+                    .foregroundStyle(preview.overCapacity ? ROMTheme.danger : .primary)
+            }
+            if preview.storageCapacityBytes > 0 {
+                LabeledContent("Capacity", value: ROMTheme.bytes(preview.storageCapacityBytes))
+            }
+            ChangeItemsDisclosure(
+                title: "Additions",
+                items: preview.changes.additions,
+                icon: "plus.circle.fill",
+                color: ROMTheme.success
+            )
+            ChangeItemsDisclosure(
+                title: "Removals",
+                items: preview.changes.removals,
+                icon: "minus.circle.fill",
+                color: ROMTheme.danger
+            )
+            ChangeItemsDisclosure(
+                title: "Storage optimizations",
+                items: preview.changes.conversions,
+                icon: "link.circle.fill",
+                color: ROMTheme.violet
+            )
+        } header: {
+            Text(device.name)
+        }
+    }
+}
+
+private struct ChangeItemsDisclosure: View {
+    let title: String
+    let items: [DeviceChangeItem]
+    let icon: String
+    let color: Color
+
+    var body: some View {
+        if !items.isEmpty {
+            DisclosureGroup {
+                ForEach(items) { item in
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(item.displayName)
+                            .font(.subheadline)
+                            .lineLimit(2)
+                        HStack(spacing: 7) {
+                            PlatformBadge(platform: item.platform)
+                            Text("\(item.files.formatted()) \(item.files == 1 ? "file" : "files")")
+                            if let bytes = item.bytes {
+                                Text(ROMTheme.bytes(bytes))
+                            }
+                        }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 3)
+                }
+            } label: {
+                Label("\(title) (\(items.count.formatted()))", systemImage: icon)
+                    .foregroundStyle(color)
+            }
+        }
     }
 }
 
@@ -1106,6 +1476,7 @@ private struct DeviceGamesEmptyState: View {
         switch scope {
         case "changes": return "No staged changes"
         case "on_device": return "No games on this device"
+        case "selected": return "No games in this roster"
         default: return "No games available"
         }
     }
@@ -1115,6 +1486,7 @@ private struct DeviceGamesEmptyState: View {
         switch scope {
         case "changes": return "Your staged collection matches the device."
         case "on_device": return "Use Library to choose games for this device."
+        case "selected": return "Use Library to choose games for every device in this group."
         default: return "The indexed library will appear here."
         }
     }
@@ -1456,6 +1828,52 @@ private struct CreateDeviceView: View {
 private struct DeviceSelectionBody: Encodable { let gameId: Int; let selected: Bool }
 private struct DeviceSelectionResponse: Decodable, Sendable { let selected: Bool }
 private struct DiscardResponse: Decodable, Sendable { let devices: Int; let games: Int }
+private struct DeviceGroupApplyResponse: Decodable, Sendable {
+    let groupId: Int
+    let devices: Int
+    let jobIds: [Int]
+}
+private struct DeviceGroupSummaryResponse: Decodable, Sendable {
+    struct Member: Decodable, Sendable {
+        let deviceId: Int
+        let summary: DeviceSummary
+    }
+
+    let groupId: Int
+    let members: [Member]
+}
+private struct DeviceGroupPreviewResponse: Decodable, Sendable {
+    struct Member: Decodable, Sendable {
+        let deviceId: Int
+        let preview: DeviceChangePreview
+    }
+
+    let groupId: Int
+    let members: [Member]
+}
+private struct DeviceChangePreview: Decodable, Sendable {
+    struct Changes: Decodable, Sendable {
+        let additions: [DeviceChangeItem]
+        let conversions: [DeviceChangeItem]
+        let removals: [DeviceChangeItem]
+    }
+
+    let currentRomBytes: Int64
+    let projectedRomBytes: Int64
+    let storageCapacityBytes: Int64
+    let overCapacity: Bool
+    let additions: Int
+    let removals: Int
+    let conversions: Int
+    let changes: Changes
+}
+private struct DeviceChangeItem: Decodable, Identifiable, Sendable {
+    let id: Int
+    let displayName: String
+    let platform: String
+    let files: Int
+    let bytes: Int64?
+}
 private struct CreateDeviceBody: Encodable {
     let name: String
     let deploymentMode: String
