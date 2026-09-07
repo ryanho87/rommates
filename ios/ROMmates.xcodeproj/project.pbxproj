@@ -15,6 +15,7 @@
 		5E8AF42F53B592171C30FF8F /* AccountView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42B656081A87F582B37648C6 /* AccountView.swift */; };
 		6EC7FB14AC7E290AFA812B79 /* GuidedTourView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7DB76840A256291CC5C76F2 /* GuidedTourView.swift */; };
 		89B9131342ED4B6729D26B35 /* ROMmatesApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = D73E5EC018867EA0366D1985 /* ROMmatesApp.swift */; };
+		8C1ACE9C38CE2FECF992F079 /* ROMRequestsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D6782823E74DEC9FA2F03B1 /* ROMRequestsView.swift */; };
 		9A23DC5D046EDD787FE0C3DA /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 706C227BE5128A9362A69383 /* AppModel.swift */; };
 		A8FFC3145CB4EF84D32AD34B /* DevicesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19C6305588E3E4D45FC8424E /* DevicesView.swift */; };
 		BE233EA3AAF921C185CBD5F5 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4FBFB7E4C6BBD95F30E8752 /* AppDelegate.swift */; };
@@ -27,6 +28,7 @@
 /* Begin PBXFileReference section */
 		0A165383013BD998E6BBE58E /* ROMmates-Release.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "ROMmates-Release.entitlements"; sourceTree = "<group>"; };
 		19C6305588E3E4D45FC8424E /* DevicesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevicesView.swift; sourceTree = "<group>"; };
+		1D6782823E74DEC9FA2F03B1 /* ROMRequestsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ROMRequestsView.swift; sourceTree = "<group>"; };
 		234DD675243377D69CD323D0 /* ROMmates.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = ROMmates.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		29B03FC225779E7BAB5993CC /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		42B656081A87F582B37648C6 /* AccountView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountView.swift; sourceTree = "<group>"; };
@@ -126,6 +128,7 @@
 			isa = PBXGroup;
 			children = (
 				71109561E3E7C32B9784D00C /* LibraryView.swift */,
+				1D6782823E74DEC9FA2F03B1 /* ROMRequestsView.swift */,
 			);
 			path = Library;
 			sourceTree = "<group>";
@@ -241,6 +244,7 @@
 				D870755515C1CD26A0D3C903 /* KeychainStore.swift in Sources */,
 				5074649BE1F23D29B00F6C86 /* LibraryView.swift in Sources */,
 				C8B31613168998B06B2C9E65 /* Models.swift in Sources */,
+				8C1ACE9C38CE2FECF992F079 /* ROMRequestsView.swift in Sources */,
 				89B9131342ED4B6729D26B35 /* ROMmatesApp.swift in Sources */,
 				C4368A18420E7FA97F6861DB /* RootView.swift in Sources */,
 				4B39679EFCCB9021653BB129 /* Theme.swift in Sources */,
@@ -288,7 +292,7 @@
 				CODE_SIGN_ENTITLEMENTS = "ROMmates/Resources/ROMmates-Release.entitlements";
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 18;
+				CURRENT_PROJECT_VERSION = 19;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_TEAM = 2NKFMTXAX5;
 				ENABLE_NS_ASSERTIONS = NO;
@@ -369,7 +373,7 @@
 				CODE_SIGN_ENTITLEMENTS = "ROMmates/Resources/ROMmates-Debug.entitlements";
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 18;
+				CURRENT_PROJECT_VERSION = 19;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				DEVELOPMENT_TEAM = 2NKFMTXAX5;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;

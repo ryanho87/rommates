@@ -3,6 +3,7 @@ const VIEW_ROUTES = Object.freeze({
   library: "/library",
   artwork: "/artwork",
   transfers: "/transfers",
+  "rom-requests": "/rom-requests",
   duplicates: "/duplicates",
   naming: "/naming",
   devices: "/devices",
@@ -113,6 +114,7 @@ const state = {
   uploadSessions: [],
   uploadPlatform: "",
   uploadProgress: null,
+  romRequests: [],
   trashSelected: new Map(),
   principal: null,
   permissions: { admin: false, manageDevices: false, upload: false, download: false },
@@ -171,6 +173,7 @@ const TOUR_STEPS = {
   admin: [
     { view: "overview", selector: ".overview-strip", title: "Your collection at a glance", description: "Start here to spot scan health, missing artwork, device changes, and save conflicts." },
     { view: "library", selector: "#search-input", title: "Find and manage games", description: "Filter a large library by platform, rating, or name. Use each game's actions to download, rename, or assign devices." },
+    { view: "rom-requests", selector: ".rom-request-list-heading", title: "Review what members need", description: "Move missing-game requests through review and send a useful update when each request is fulfilled or declined." },
     { view: "devices", selector: ".device-target-picker", title: "Choose a device or group", description: "This large selector controls which handheld or device group you are managing." },
     { view: "devices", selector: ".device-mode-toggle", title: "Add ROMs or inspect the device", description: "Switch between the full library and ROMs currently present on the selected device." },
     { view: "devices", selector: ".device-overflow-menu", title: "Device setup and downloads", description: "Create devices and groups, connect Syncthing, or download the selected ROM package, without leaving this page." },
@@ -179,16 +182,19 @@ const TOUR_STEPS = {
   ],
   member: [
     { view: "library", selector: "#search-input", title: "Choose games", description: "Search and filter the catalog, then use the game menu or multi-select to include titles on your devices." },
+    { view: "rom-requests", selector: ".rom-request-create", title: "Ask for what is missing", description: "Request a title by platform, add any edition details, and follow its status here." },
     { view: "devices", selector: ".device-target-picker", title: "Choose your device or group", description: "The selected target stays prominent while you add ROMs, inspect its current files, or prepare a download." },
     { view: "devices", selector: ".device-mode-toggle", title: "Switch ROM views", description: "Add ROMs opens the full catalog. On Device shows the ROMs currently present for this target." },
     { view: "devices", selector: ".device-overflow-menu", title: "Set up or download", description: "Create another device, build a group, connect Syncthing, or download all selected ROMs as one package." },
   ],
   contributor: [
     { view: "library", selector: "#search-input", title: "Browse the collection", description: "Search by title and narrow the catalog to one platform before downloading." },
+    { view: "rom-requests", selector: ".rom-request-create", title: "Ask for what is missing", description: "Request a title by platform, add any edition details, and follow its status here." },
     { view: "transfers", selector: "#page-title", title: "Submit a ROM", description: "Uploads land in a controlled review queue. An administrator approves them before they enter the library." },
   ],
   viewer: [
     { view: "library", selector: "#search-input", title: "Explore the library", description: "Search by title or use platform and status filters to reduce a large catalog quickly." },
+    { view: "rom-requests", selector: ".rom-request-create", title: "Ask for what is missing", description: "Request a title by platform, add any edition details, and follow its status here." },
     { view: "library", selector: ".mobile-actions-menu, .library-table, #view", title: "Download a game", description: "Open a game's action menu to download it. Your account cannot rename, trash, or change device libraries." },
   ],
 };
@@ -320,6 +326,7 @@ function allowedViews() {
   if (isAdmin()) return new Set(Object.keys(VIEW_ROUTES));
   return new Set([
     "library",
+    "rom-requests",
     "account",
     ...(canManageDevices() ? ["devices"] : []),
     ...(canUpload() ? ["transfers"] : []),
@@ -1858,6 +1865,89 @@ async function renderTransfers() {
   state.uploadSessions = response.items;
   setViewHtml(`${uploadPanel()}<section class="transfer-guidance"><h2>Downloads</h2><p>Open Library and use Download on any game. Multi-file games are streamed as a ZIP without building a temporary archive on the server.</p></section>`);
   bindUploadEvents();
+}
+
+function romRequestStatus(status) {
+  const labels = {
+    requested: "Requested",
+    in_progress: "In progress",
+    fulfilled: "Fulfilled",
+    declined: "Declined",
+    cancelled: "Cancelled",
+  };
+  const tones = {
+    requested: "possible",
+    in_progress: "naming-strong",
+    fulfilled: "unique",
+    declined: "exact",
+    cancelled: "cancelled",
+  };
+  return `<span class="badge ${tones[status] || "cancelled"}">${labels[status] || escapeHtml(status)}</span>`;
+}
+
+async function renderRomRequests() {
+  const renderVersion = beginPageRender();
+  setHeading("ROM Requests", isAdmin()
+    ? "Review missing games and keep requesters informed."
+    : "Ask for a missing game and follow its progress.");
+  const response = await api("/api/rom-requests");
+  if (!pageRenderIsCurrent(renderVersion, "rom-requests")) return;
+  state.romRequests = response.items || [];
+  const openCount = Number(response.counts?.requested || 0) + Number(response.counts?.in_progress || 0);
+  const form = state.principal?.bootstrap ? "" : `<section class="rom-request-create">
+    <div class="section-heading"><div><h2>Request a ROM</h2><p>Tell the library administrator what is missing. Region, language, and edition can go in the notes.</p></div></div>
+    <form id="rom-request-form" class="rom-request-form">
+      <label class="field"><span>Game title</span><input class="input" name="title" maxlength="255" required autocomplete="off" placeholder="Game title"></label>
+      <label class="field"><span>Platform</span><select name="platform" required><option value="">Choose platform</option>${state.platforms.map((item) => `<option value="${escapeHtml(item.platform)}">${escapeHtml(item.platform)}</option>`).join("")}</select></label>
+      <label class="field rom-request-details"><span>Notes <small>optional</small></span><textarea class="input" name="details" maxlength="1000" rows="3" placeholder="Preferred region, language, version, or edition"></textarea></label>
+      <button class="button" type="submit">Send request</button>
+    </form>
+  </section>`;
+  const items = state.romRequests.length
+    ? `<div class="rom-request-list">${state.romRequests.map((item) => `<article class="rom-request-card">
+        <div class="rom-request-head"><div><span class="mobile-platform platform-tone-${platformTone(item.platform)}">${escapeHtml(item.platform)}</span><h2>${escapeHtml(item.title)}</h2></div>${romRequestStatus(item.status)}</div>
+        <p class="rom-request-meta">${isAdmin() ? `Requested by ${escapeHtml(item.requester_name)} · ` : ""}${escapeHtml(item.created_at)} UTC</p>
+        ${item.details ? `<p class="rom-request-copy">${escapeHtml(item.details)}</p>` : ""}
+        ${item.resolution_note ? `<div class="rom-request-note"><strong>Update</strong><p>${escapeHtml(item.resolution_note)}</p></div>` : ""}
+        ${response.can_review ? `<form class="rom-request-review" data-rom-request-review="${item.id}">
+          <label class="field"><span>Status</span><select name="status"><option value="requested" ${item.status === "requested" ? "selected" : ""}>Requested</option><option value="in_progress" ${item.status === "in_progress" ? "selected" : ""}>In progress</option><option value="fulfilled" ${item.status === "fulfilled" ? "selected" : ""}>Fulfilled</option><option value="declined" ${item.status === "declined" ? "selected" : ""}>Declined</option></select></label>
+          <label class="field"><span>Message to requester <small>optional</small></span><textarea class="input" name="resolution_note" maxlength="1000" rows="2" placeholder="What changed or why">${escapeHtml(item.resolution_note || "")}</textarea></label>
+          <button class="button secondary" type="submit">Save update</button>
+        </form>` : item.can_cancel ? `<button class="text-button rom-request-cancel" type="button" data-cancel-rom-request="${item.id}">Cancel request</button>` : ""}
+      </article>`).join("")}</div>`
+    : `<div class="empty-state compact"><div><h2>${isAdmin() ? "No ROM requests" : "You haven’t requested anything yet"}</h2><p>${isAdmin() ? "New member requests will appear here." : "Use the form above when a game is missing from the library."}</p></div></div>`;
+  setViewHtml(`<div class="rom-request-page">${form}<div class="section-heading rom-request-list-heading"><div><h2>${isAdmin() ? "Review queue" : "Your requests"}</h2><p>${openCount.toLocaleString()} open · ${state.romRequests.length.toLocaleString()} total</p></div></div>${items}</div>`);
+  view.querySelector("#rom-request-form")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const formData = new FormData(event.currentTarget);
+    const submit = event.currentTarget.querySelector("button[type='submit']");
+    submit.disabled = true;
+    try {
+      await api("/api/rom-requests", { method: "POST", body: JSON.stringify({ title: formData.get("title"), platform: formData.get("platform"), details: formData.get("details") }) });
+      clearNavigationCache();
+      toast("ROM request sent");
+      await renderRomRequests();
+    } catch (error) { submit.disabled = false; toast(error.message, "error"); }
+  });
+  view.querySelectorAll("[data-rom-request-review]").forEach((form) => form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const values = new FormData(form);
+    const submit = form.querySelector("button[type='submit']");
+    submit.disabled = true;
+    try {
+      await api(`/api/rom-requests/${form.dataset.romRequestReview}`, { method: "PATCH", body: JSON.stringify({ status: values.get("status"), resolution_note: values.get("resolution_note") }) });
+      toast("Requester updated");
+      await renderRomRequests();
+    } catch (error) { submit.disabled = false; toast(error.message, "error"); }
+  }));
+  view.querySelectorAll("[data-cancel-rom-request]").forEach((button) => button.addEventListener("click", async () => {
+    button.disabled = true;
+    try {
+      await api(`/api/rom-requests/${button.dataset.cancelRomRequest}/cancel`, { method: "POST" });
+      toast("Request cancelled");
+      await renderRomRequests();
+    } catch (error) { button.disabled = false; toast(error.message, "error"); }
+  }));
 }
 
 async function renderDuplicates() {
@@ -4636,7 +4726,7 @@ async function renderCurrentView() {
   const requestedView = state.view;
   let renderVersion = state.renderVersion;
   try {
-    const renderers = { overview: renderOverview, library: renderLibrary, artwork: renderArtwork, transfers: renderTransfers, duplicates: renderDuplicates, naming: renderNaming, devices: renderDevices, saves: renderSaves, jobs: renderJobs, notifications: renderNotifications, account: renderAccount, users: renderUsers, trash: renderTrash };
+    const renderers = { overview: renderOverview, library: renderLibrary, artwork: renderArtwork, transfers: renderTransfers, "rom-requests": renderRomRequests, duplicates: renderDuplicates, naming: renderNaming, devices: renderDevices, saves: renderSaves, jobs: renderJobs, notifications: renderNotifications, account: renderAccount, users: renderUsers, trash: renderTrash };
     const renderPromise = renderers[requestedView]();
     renderVersion = state.renderVersion;
     await renderPromise;

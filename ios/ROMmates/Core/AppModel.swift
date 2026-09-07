@@ -33,6 +33,7 @@ final class AppModel: ObservableObject {
     @Published var presentedRelease: MobileRelease?
     @Published var inboxUnread = 0
     @Published var selectedTab: AppTab = .library
+    @Published var showingROMRequests = false
     @Published private(set) var guidedTourSteps: [GuidedTourStep] = []
     @Published private(set) var guidedTourIndex: Int?
     @Published var isBusy = false
@@ -334,6 +335,7 @@ final class AppModel: ObservableObject {
         updateAvailable = nil
         presentedRelease = nil
         inboxUnread = 0
+        showingROMRequests = false
         guidedTourSteps = []
         guidedTourIndex = nil
         sessionState = .signedOut
@@ -456,6 +458,10 @@ final class AppModel: ObservableObject {
     private func openPushPath(_ path: String) {
         if path.hasPrefix("release") {
             openTestFlight()
+        }
+        else if path.hasPrefix("rom-requests") {
+            selectedTab = .library
+            showingROMRequests = true
         }
         else if path.hasPrefix("devices") { selectedTab = .devices }
         else if path.hasPrefix("transfers") { selectedTab = .uploads }

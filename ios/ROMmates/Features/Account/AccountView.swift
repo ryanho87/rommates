@@ -93,6 +93,8 @@ struct AccountView: View {
         (key: "device_apply", label: "Device apply problems"),
         (key: "upload_approved", label: "Upload approved"),
         (key: "upload_rejected", label: "Upload not approved"),
+        (key: "rom_request_new", label: "New ROM requests"),
+        (key: "rom_request_updated", label: "ROM request updates"),
     ]
 
     @ViewBuilder

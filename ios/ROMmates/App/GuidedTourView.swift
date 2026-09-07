@@ -29,6 +29,13 @@ enum GuidedTourCatalog {
                 icon: "magnifyingglass",
                 title: "Find your next game",
                 message: "Search by title, filter by platform, sort by ranking or rating, and open a game to see where it belongs."
+            ),
+            GuidedTourStep(
+                id: "rom-requests",
+                tab: .library,
+                icon: "text.badge.plus",
+                title: "Ask for what is missing",
+                message: "Use ROM Requests in the Library toolbar to request a title and follow its status. Add region or edition details when they matter."
             )
         ]
         if permissions.manageDevices {

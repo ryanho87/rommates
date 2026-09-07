@@ -20,6 +20,8 @@ PUSH_EVENTS = (
     "device_apply",
     "upload_approved",
     "upload_rejected",
+    "rom_request_new",
+    "rom_request_updated",
 )
 MAX_ATTEMPTS = 6
 

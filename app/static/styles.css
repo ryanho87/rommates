@@ -1227,6 +1227,31 @@ input[type="checkbox"] { width: 15px; height: 15px; margin: 0; accent-color: var
 .upload-sessions { display: grid; gap: 7px; padding-top: 12px; border-top: 1px solid var(--border); font-size: 0.74rem; }
 .upload-sessions > div { color: var(--text-muted); }
 
+.rom-request-page { display: grid; gap: 14px; }
+.rom-request-create,
+.rom-request-card {
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+.rom-request-form { display: grid; grid-template-columns: minmax(220px, 1fr) minmax(150px, 220px) auto; align-items: end; gap: 12px; }
+.rom-request-details { grid-column: 1 / -1; }
+.rom-request-details textarea,
+.rom-request-review textarea { width: 100%; resize: vertical; }
+.rom-request-list-heading { margin: 6px 2px -4px; }
+.rom-request-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 390px), 1fr)); gap: 12px; }
+.rom-request-head { display: flex; align-items: start; justify-content: space-between; gap: 14px; }
+.rom-request-head > div { display: grid; justify-items: start; gap: 7px; }
+.rom-request-head h2 { margin: 0; font-size: 1rem; line-height: 1.25; }
+.rom-request-meta { margin: 8px 0 0; color: var(--text-faint); font-size: 0.7rem; }
+.rom-request-copy { margin: 12px 0 0; color: var(--text-muted); white-space: pre-wrap; }
+.rom-request-note { margin-top: 12px; padding: 10px 11px; border-left: 3px solid var(--accent); border-radius: var(--radius-sm); background: var(--accent-soft); }
+.rom-request-note strong { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.04em; }
+.rom-request-note p { margin: 3px 0 0; white-space: pre-wrap; }
+.rom-request-review { display: grid; grid-template-columns: minmax(130px, 180px) minmax(200px, 1fr) auto; align-items: end; gap: 10px; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); }
+.rom-request-cancel { margin-top: 12px; }
+
 dialog {
   width: min(520px, calc(100vw - 32px));
   padding: 0;
@@ -1488,6 +1513,10 @@ html.game-detail-open body { overflow: hidden; overscroll-behavior: none; }
 .naming-toolbar > label:not(.search-field) { flex: 0 0 auto; }
 
 @media (max-width: 720px) {
+  .rom-request-form, .rom-request-review { grid-template-columns: 1fr; align-items: stretch; }
+  .rom-request-details { grid-column: 1; }
+  .rom-request-form .button, .rom-request-review .button { width: 100%; }
+  .rom-request-list { grid-template-columns: 1fr; }
   .inbox-popover { position: fixed; right: 10px; bottom: calc(10px + env(safe-area-inset-bottom)); top: auto; left: 10px; width: auto; max-height: 72vh; }
   .device-workspace { gap: 12px; margin-bottom: 12px; padding-bottom: 13px; }
   .device-target-picker select { min-height: 56px; padding-inline: 13px 40px; font-size: 1.05rem; }

@@ -236,6 +236,9 @@ class ApiIntegrationTests(unittest.TestCase):
             ("GET", "/api/jobs/42"),
             ("POST", "/api/devices/42/export-ticket"),
             ("POST", "/api/devices/42/syncthing-share"),
+            ("GET", "/api/rom-requests"),
+            ("POST", "/api/rom-requests"),
+            ("POST", "/api/rom-requests/42/cancel"),
         ):
             self.assertTrue(self.main.mobile_public_route_allowed(method, path))
         self.assertEqual(self.client.get("/api/status", headers=bearer).status_code, 404)
@@ -692,6 +695,98 @@ class ApiIntegrationTests(unittest.TestCase):
         (self.root / "roms/gba/Contributor Upload.gba").unlink()
         cleanup = self.client.post("/api/scan?confirm_prune=true", headers=self.headers)
         self.assertEqual(self.wait_for_job(cleanup.json()["job_id"])["status"], "complete")
+
+    def test_members_can_request_roms_and_admins_can_resolve_them(self):
+        created = self.client.post(
+            "/api/users",
+            headers=self.headers,
+            json={
+                "username": "rom-requester",
+                "display_name": "ROM Requester",
+                "password": "rom-requester-password",
+                "role": "viewer",
+            },
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        user_id = created.json()["id"]
+        try:
+            login = self.client.post(
+                "/api/auth/login",
+                json={"username": "rom-requester", "password": "rom-requester-password"},
+            )
+            self.assertEqual(login.status_code, 200, login.text)
+            changed = self.client.post(
+                "/api/auth/password",
+                json={
+                    "current_password": "rom-requester-password",
+                    "new_password": "rom-requester-password-changed",
+                },
+            )
+            self.assertEqual(changed.status_code, 200, changed.text)
+
+            requested = self.client.post(
+                "/api/rom-requests",
+                json={
+                    "title": "Missing Dreamcast Game",
+                    "platform": "dreamcast",
+                    "details": "US release preferred",
+                },
+            )
+            self.assertEqual(requested.status_code, 201, requested.text)
+            request_id = requested.json()["id"]
+            self.assertEqual(requested.json()["status"], "requested")
+            self.assertTrue(requested.json()["can_cancel"])
+            duplicate = self.client.post(
+                "/api/rom-requests",
+                json={"title": "missing dreamcast game", "platform": "DREAMCAST"},
+            )
+            self.assertEqual(duplicate.status_code, 409, duplicate.text)
+            self.assertEqual(
+                self.client.patch(
+                    f"/api/rom-requests/{request_id}",
+                    json={"status": "fulfilled", "resolution_note": "Added"},
+                ).status_code,
+                403,
+            )
+
+            admin_list = self.client.get("/api/rom-requests", headers=self.headers)
+            self.assertEqual(admin_list.status_code, 200, admin_list.text)
+            self.assertTrue(admin_list.json()["can_review"])
+            self.assertIn(request_id, [item["id"] for item in admin_list.json()["items"]])
+            resolved = self.client.patch(
+                f"/api/rom-requests/{request_id}",
+                headers=self.headers,
+                json={"status": "fulfilled", "resolution_note": "Added to the library."},
+            )
+            self.assertEqual(resolved.status_code, 200, resolved.text)
+            self.assertEqual(resolved.json()["status"], "fulfilled")
+            self.assertFalse(resolved.json()["can_cancel"])
+
+            own = self.client.get("/api/rom-requests").json()
+            self.assertEqual(len(own["items"]), 1)
+            self.assertEqual(own["items"][0]["resolution_note"], "Added to the library.")
+            inbox = self.client.get("/api/inbox").json()
+            self.assertIn("rom_request_updated", {item["kind"] for item in inbox["items"]})
+
+            second = self.client.post(
+                "/api/rom-requests",
+                json={"title": "Another Game", "platform": "gba"},
+            )
+            self.assertEqual(second.status_code, 201, second.text)
+            cancelled = self.client.post(
+                f"/api/rom-requests/{second.json()['id']}/cancel"
+            )
+            self.assertEqual(cancelled.status_code, 200, cancelled.text)
+            self.assertEqual(
+                self.client.post(
+                    f"/api/rom-requests/{second.json()['id']}/cancel"
+                ).status_code,
+                409,
+            )
+        finally:
+            self.client.post("/api/auth/logout")
+            with self.main.db.write() as connection:
+                connection.execute("DELETE FROM users WHERE id=?", (user_id,))
 
     def test_member_can_only_manage_owned_devices_and_jobs(self):
         created_user = self.client.post(

@@ -426,6 +426,25 @@ CREATE TABLE IF NOT EXISTS user_roles (
 );
 CREATE INDEX IF NOT EXISTS idx_user_roles_role ON user_roles(role,user_id);
 
+CREATE TABLE IF NOT EXISTS rom_requests (
+    id INTEGER PRIMARY KEY,
+    requested_by INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    title TEXT NOT NULL,
+    platform TEXT NOT NULL,
+    details TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'requested'
+        CHECK(status IN ('requested','in_progress','fulfilled','declined','cancelled')),
+    resolution_note TEXT NOT NULL DEFAULT '',
+    resolved_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    resolved_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_rom_requests_requester
+ON rom_requests(requested_by,id DESC);
+CREATE INDEX IF NOT EXISTS idx_rom_requests_review
+ON rom_requests(status,id DESC);
+
 CREATE TABLE IF NOT EXISTS user_onboarding (
     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     tour_key TEXT NOT NULL,
@@ -1039,6 +1058,26 @@ class Database:
                 )
                 connection.execute("PRAGMA foreign_keys=ON")
                 connection.execute("INSERT INTO schema_migrations(version) VALUES(37)")
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS rom_requests ("
+                "id INTEGER PRIMARY KEY,requested_by INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,"
+                "title TEXT NOT NULL,platform TEXT NOT NULL,details TEXT NOT NULL DEFAULT '',"
+                "status TEXT NOT NULL DEFAULT 'requested' CHECK(status IN "
+                "('requested','in_progress','fulfilled','declined','cancelled')),"
+                "resolution_note TEXT NOT NULL DEFAULT '',"
+                "resolved_by INTEGER REFERENCES users(id) ON DELETE SET NULL,"
+                "created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+                "updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,resolved_at TEXT)"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_rom_requests_requester "
+                "ON rom_requests(requested_by,id DESC)"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_rom_requests_review "
+                "ON rom_requests(status,id DESC)"
+            )
+            connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(38)")
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:

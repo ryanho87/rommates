@@ -257,6 +257,28 @@ struct UploadFile: Codable, Identifiable, Sendable {
     let receivedSize: Int64
 }
 
+struct ROMRequestList: Codable, Sendable {
+    let items: [ROMRequest]
+    let counts: [String: Int]
+    let canReview: Bool
+}
+
+struct ROMRequest: Codable, Identifiable, Sendable {
+    let id: Int
+    let requestedBy: Int
+    let title: String
+    let platform: String
+    let details: String
+    let status: String
+    let resolutionNote: String
+    let requesterName: String
+    let resolverName: String?
+    let createdAt: String
+    let updatedAt: String
+    let resolvedAt: String?
+    let canCancel: Bool
+}
+
 struct InboxResponse: Codable, Sendable {
     let items: [InboxItem]
     let unread: Int

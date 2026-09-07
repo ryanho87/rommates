@@ -15,7 +15,7 @@ struct InboxView: View {
                     EmptyState(
                         icon: "tray",
                         title: "You’re all caught up",
-                        message: "Device delivery and upload updates will appear here."
+                        message: "Device delivery, uploads, and ROM request updates will appear here."
                     )
                 } else {
                     List(items) { item in
@@ -96,6 +96,7 @@ private struct InboxRow: View {
         if item.kind == "new_build" { return "sparkles" }
         if item.kind.hasPrefix("device") { return "gamecontroller.fill" }
         if item.kind.hasPrefix("upload") { return "arrow.up.doc.fill" }
+        if item.kind.hasPrefix("rom_request") { return "text.badge.checkmark" }
         return "bell.fill"
     }
 }

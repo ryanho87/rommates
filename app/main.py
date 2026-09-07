@@ -939,6 +939,17 @@ class UploadReviewRequest(BaseModel):
     note: str = Field(default="", max_length=500)
 
 
+class ROMRequestCreateRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=255)
+    platform: str = Field(min_length=1, max_length=100)
+    details: str = Field(default="", max_length=1000)
+
+
+class ROMRequestReviewRequest(BaseModel):
+    status: str = Field(pattern="^(requested|in_progress|fulfilled|declined)$")
+    resolution_note: str = Field(default="", max_length=1000)
+
+
 def request_principal(request: Request) -> Principal:
     principal = getattr(request.state, "principal", None)
     if not principal:
@@ -1025,6 +1036,10 @@ def role_allows(principal: Principal, method: str, path: str) -> bool:
         return True
     if path.startswith("/api/inbox"):
         return method in {"GET", "POST"}
+    if path == "/api/rom-requests":
+        return method in {"GET", "POST"}
+    if method == "POST" and path.startswith("/api/rom-requests/") and path.endswith("/cancel"):
+        return True
     if path.startswith("/api/v1/mobile/push-installation"):
         return method in {"PUT", "DELETE"}
     if method == "GET" and (
@@ -1118,6 +1133,8 @@ def mobile_public_route_allowed(method: str, path: str) -> bool:
         ("POST", "/api/uploads"),
         ("GET", "/api/inbox"),
         ("POST", "/api/inbox/read-all"),
+        ("GET", "/api/rom-requests"),
+        ("POST", "/api/rom-requests"),
     }
     if (method, path) in exact:
         return True
@@ -1135,6 +1152,7 @@ def mobile_public_route_allowed(method: str, path: str) -> bool:
             rf"/api/devices/\d+/(?:apply|discard-changes|export-ticket|syncthing-share)",
             rf"/api/uploads/{_MOBILE_ID}/finalize",
             rf"/api/inbox/\d+/read",
+            rf"/api/rom-requests/\d+/cancel",
         ),
         "PUT": (
             rf"/api/device-groups/\d+",
@@ -1278,6 +1296,7 @@ async def transfer_error_handler(_: Request, exc: TransferError):
 @app.get("/library", include_in_schema=False)
 @app.get("/artwork", include_in_schema=False)
 @app.get("/transfers", include_in_schema=False)
+@app.get("/rom-requests", include_in_schema=False)
 @app.get("/duplicates", include_in_schema=False)
 @app.get("/naming", include_in_schema=False)
 @app.get("/devices", include_in_schema=False)
@@ -1640,6 +1659,197 @@ def update_notification_settings(payload: NotificationSettingsRequest):
 @app.post("/api/notifications/test", status_code=202)
 def test_notification():
     return notifications.test()
+
+
+def rom_request_payload(row, principal: Principal) -> dict[str, object]:
+    item = dict(row)
+    item["can_cancel"] = bool(
+        principal.id == item["requested_by"]
+        and item["status"] in {"requested", "in_progress"}
+    )
+    return item
+
+
+@app.get("/api/rom-requests")
+def rom_requests(
+    request: Request,
+    status: str = Query(
+        default="all",
+        pattern="^(all|requested|in_progress|fulfilled|declined|cancelled)$",
+    ),
+):
+    principal = request_principal(request)
+    if principal.id is None and not principal.has_role("admin"):
+        raise HTTPException(status_code=403, detail="A personal account is required")
+    conditions = []
+    values: list[object] = []
+    if not principal.has_role("admin"):
+        conditions.append("r.requested_by=?")
+        values.append(principal.id)
+    if status != "all":
+        conditions.append("r.status=?")
+        values.append(status)
+    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    with db.connect() as connection:
+        rows = connection.execute(
+            "SELECT r.id,r.requested_by,r.title,r.platform,r.details,r.status,"
+            "r.resolution_note,r.resolved_by,r.created_at,r.updated_at,r.resolved_at,"
+            "u.display_name AS requester_name,reviewer.display_name AS resolver_name "
+            "FROM rom_requests r JOIN users u ON u.id=r.requested_by "
+            "LEFT JOIN users reviewer ON reviewer.id=r.resolved_by "
+            f"{where} ORDER BY CASE r.status WHEN 'requested' THEN 0 "
+            "WHEN 'in_progress' THEN 1 ELSE 2 END,r.id DESC",
+            values,
+        ).fetchall()
+        counts_where = [] if principal.has_role("admin") else ["requested_by=?"]
+        counts_values = [] if principal.has_role("admin") else [principal.id]
+        counts_sql = f"WHERE {' AND '.join(counts_where)}" if counts_where else ""
+        counts = {
+            str(row["status"]): int(row["count"])
+            for row in connection.execute(
+                f"SELECT status,COUNT(*) AS count FROM rom_requests {counts_sql} GROUP BY status",
+                counts_values,
+            )
+        }
+    return {
+        "items": [rom_request_payload(row, principal) for row in rows],
+        "counts": counts,
+        "can_review": principal.has_role("admin"),
+    }
+
+
+@app.post("/api/rom-requests", status_code=201)
+def create_rom_request(payload: ROMRequestCreateRequest, request: Request):
+    principal = request_principal(request)
+    if principal.id is None:
+        raise HTTPException(status_code=403, detail="A personal account is required")
+    title = payload.title.strip()
+    platform = payload.platform.strip()
+    details = payload.details.strip()
+    if not title or not platform:
+        raise HTTPException(status_code=422, detail="Title and platform are required")
+    with db.write() as connection:
+        duplicate = connection.execute(
+            "SELECT id FROM rom_requests WHERE requested_by=? "
+            "AND lower(title)=lower(?) AND lower(platform)=lower(?) "
+            "AND status IN ('requested','in_progress')",
+            (principal.id, title, platform),
+        ).fetchone()
+        if duplicate:
+            raise HTTPException(
+                status_code=409,
+                detail="You already have an open request for this ROM",
+            )
+        cursor = connection.execute(
+            "INSERT INTO rom_requests(requested_by,title,platform,details) VALUES(?,?,?,?)",
+            (principal.id, title, platform, details),
+        )
+        request_id = int(cursor.lastrowid)
+        row = connection.execute(
+            "SELECT r.id,r.requested_by,r.title,r.platform,r.details,r.status,"
+            "r.resolution_note,r.resolved_by,r.created_at,r.updated_at,r.resolved_at,"
+            "u.display_name AS requester_name,'' AS resolver_name "
+            "FROM rom_requests r JOIN users u ON u.id=r.requested_by WHERE r.id=?",
+            (request_id,),
+        ).fetchone()
+        admins = connection.execute(
+            "SELECT DISTINCT u.id FROM users u LEFT JOIN user_roles ur ON ur.user_id=u.id "
+            "WHERE u.active=1 AND (u.role='admin' OR ur.role='admin')",
+        ).fetchall()
+    detail = f"{principal.display_name} requested {title} for {platform}."
+    safe_notify(
+        "rom_request",
+        "ROM request needs review",
+        detail,
+        "rom-requests",
+        dedupe_key=f"rom-request:{request_id}:new",
+    )
+    for admin in admins:
+        if int(admin["id"]) == principal.id:
+            continue
+        mobile_push.notify_user(
+            int(admin["id"]),
+            "rom_request_new",
+            "New ROM request",
+            detail,
+            "rom-requests",
+            f"rom-request:{request_id}:new",
+        )
+    db.activity("rom_request", detail)
+    return rom_request_payload(row, principal)
+
+
+@app.patch("/api/rom-requests/{request_id}")
+def review_rom_request(
+    request_id: int,
+    payload: ROMRequestReviewRequest,
+    request: Request,
+):
+    principal = request_principal(request)
+    with db.write() as connection:
+        existing = connection.execute(
+            "SELECT requested_by,title,platform,status,resolution_note "
+            "FROM rom_requests WHERE id=?",
+            (request_id,),
+        ).fetchone()
+        if not existing:
+            raise HTTPException(status_code=404, detail="ROM request was not found")
+        note = payload.resolution_note.strip()
+        resolved = payload.status in {"fulfilled", "declined"}
+        connection.execute(
+            "UPDATE rom_requests SET status=?,resolution_note=?,resolved_by=?,"
+            "resolved_at=CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE NULL END,"
+            "updated_at=CURRENT_TIMESTAMP WHERE id=?",
+            (payload.status, note, principal.id, int(resolved), request_id),
+        )
+        row = connection.execute(
+            "SELECT r.id,r.requested_by,r.title,r.platform,r.details,r.status,"
+            "r.resolution_note,r.resolved_by,r.created_at,r.updated_at,r.resolved_at,"
+            "u.display_name AS requester_name,reviewer.display_name AS resolver_name "
+            "FROM rom_requests r JOIN users u ON u.id=r.requested_by "
+            "LEFT JOIN users reviewer ON reviewer.id=r.resolved_by WHERE r.id=?",
+            (request_id,),
+        ).fetchone()
+    status_label = payload.status.replace("_", " ")
+    detail = note or f"{existing['title']} for {existing['platform']} is now {status_label}."
+    mobile_push.notify_user(
+        int(existing["requested_by"]),
+        "rom_request_updated",
+        f"ROM request {status_label}",
+        detail,
+        "rom-requests",
+        f"rom-request:{request_id}:{payload.status}:{row['updated_at']}",
+    )
+    db.activity(
+        "rom_request",
+        f"Marked {existing['title']} for {existing['platform']} {status_label}",
+    )
+    return rom_request_payload(row, principal)
+
+
+@app.post("/api/rom-requests/{request_id}/cancel")
+def cancel_rom_request(request_id: int, request: Request):
+    principal = request_principal(request)
+    if principal.id is None:
+        raise HTTPException(status_code=404, detail="ROM request was not found")
+    with db.write() as connection:
+        existing = connection.execute(
+            "SELECT title,platform,status FROM rom_requests WHERE id=? AND requested_by=?",
+            (request_id, principal.id),
+        ).fetchone()
+        if not existing:
+            raise HTTPException(status_code=404, detail="ROM request was not found")
+        if existing["status"] not in {"requested", "in_progress"}:
+            raise HTTPException(status_code=409, detail="This request can no longer be cancelled")
+        connection.execute(
+            "UPDATE rom_requests SET status='cancelled',updated_at=CURRENT_TIMESTAMP WHERE id=?",
+            (request_id,),
+        )
+    db.activity(
+        "rom_request",
+        f"{principal.display_name} cancelled {existing['title']} for {existing['platform']}",
+    )
+    return {"cancelled": request_id}
 
 
 @app.get("/api/inbox")

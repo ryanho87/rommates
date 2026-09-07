@@ -94,6 +94,16 @@ struct LibraryView: View {
             }
             .navigationTitle("Library")
             .navigationDestination(for: Game.self) { GameDetailView(game: $0) }
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    Button { model.showingROMRequests = true } label: {
+                        Label("ROM Requests", systemImage: "text.badge.plus")
+                    }
+                }
+            }
+            .sheet(isPresented: $model.showingROMRequests) {
+                ROMRequestsView()
+            }
             .searchable(text: $search, prompt: "Search \(total.formatted()) games")
             .task { await loadPlatforms() }
             .task(id: queryID) {
