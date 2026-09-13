@@ -36,6 +36,20 @@ Before archiving, set the Apple Developer team and confirm the bundle identifier
 `project.yml`. If the identifier changes, use the same value for
 `ROMMATES_APNS_BUNDLE_ID` on the server and regenerate the project.
 
+## Shipping to TestFlight
+
+Two internal TestFlight groups in App Store Connect: **Nightly** gets every build automatically
+(Ryan, Jordan); **Stable** gets only promoted builds (everyone else).
+
+```sh
+ios/scripts/ship.sh                       # nightly: bump build, archive, upload, wait for processing; nothing announced
+ios/scripts/promote.sh 21                 # bless build 21: add to Stable, publish the release on the NUC (notes from ios/releases/21.md, or --body "..")
+ios/scripts/ship.sh --stable              # both at once
+```
+
+Publishing calls `MobileReleaseService.publish` inside the `rommates` container over `ssh nuc`,
+which writes the manifest, drops the Inbox item, and sends the APNs announcement.
+
 ## APNs relay configuration
 
 The provider runs inside the existing ROMmates FastAPI deployment. There is no shared
