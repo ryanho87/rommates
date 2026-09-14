@@ -1144,8 +1144,7 @@ def mobile_public_route_allowed(method: str, path: str) -> bool:
             rf"/api/games/\d+",
             rf"/api/artwork/thumbnails/\d+",
             rf"/api/device-groups/\d+/(?:summary|preview)",
-            rf"/api/devices/\d+/summary",
-            rf"/api/devices/\d+/sync-status",
+            rf"/api/devices/\d+/(?:preview|summary|sync-status)",
             rf"/api/jobs/\d+",
         ),
         "POST": (

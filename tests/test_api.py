@@ -237,6 +237,7 @@ class ApiIntegrationTests(unittest.TestCase):
             ("POST", "/api/device-groups/42/discard-changes"),
             ("PUT", "/api/device-groups/42/selection"),
             ("PUT", "/api/device-groups/42/selections"),
+            ("GET", "/api/devices/42/preview"),
             ("GET", "/api/devices/42/summary"),
             ("GET", "/api/jobs/42"),
             ("POST", "/api/devices/42/export-ticket"),
