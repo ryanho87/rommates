@@ -77,9 +77,12 @@ class SaveFile:
 
 
 class SaveSnapshotService:
-    def __init__(self, settings: Settings, db: Database):
+    def __init__(self, settings: Settings, db: Database, vault_id: int | None = None):
         self.settings = settings
         self.db = db
+        self.vault_id = vault_id
+        self._settings_table = "save_settings" if vault_id is None else "save_vault_settings"
+        self._settings_id = 1 if vault_id is None else vault_id
         self._operation_lock = threading.RLock()
 
     @property
@@ -100,10 +103,11 @@ class SaveSnapshotService:
             raise LibraryError("Save source and snapshot storage must be separate directories")
         with self.db.write() as connection:
             connection.execute(
-                "INSERT OR IGNORE INTO save_settings("
+                f"INSERT OR IGNORE INTO {self._settings_table}("
                 "id,enabled,interval_minutes,retention_recent,retention_daily,retention_weekly,retention_monthly"
-                ") VALUES(1,1,?,?,?,?,?)",
+                ") VALUES(?,1,?,?,?,?,?)",
                 (
+                    self._settings_id,
                     self.settings.save_snapshot_interval_minutes,
                     self.settings.save_retention_recent,
                     self.settings.save_retention_daily,
@@ -117,7 +121,7 @@ class SaveSnapshotService:
 
     def settings_payload(self) -> dict[str, object]:
         with self.db.connect() as connection:
-            row = connection.execute("SELECT * FROM save_settings WHERE id=1").fetchone()
+            row = connection.execute(f"SELECT * FROM {self._settings_table} WHERE id=?", (self._settings_id,)).fetchone()
         payload = dict(row) if row else {}
         payload.update(
             {
@@ -150,13 +154,15 @@ class SaveSnapshotService:
             assignments = ",".join(f"{key}=?" for key in normalized)
             with self.db.write() as connection:
                 connection.execute(
-                    f"UPDATE save_settings SET {assignments},updated_at=CURRENT_TIMESTAMP WHERE id=1",
-                    [*normalized.values()],
+                    f"UPDATE {self._settings_table} SET {assignments},updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                    [*normalized.values(), self._settings_id],
                 )
         return self.settings_payload()
 
     def _source_paths(self) -> list[Path]:
         root = self.settings.saves_root
+        if root.is_symlink():
+            raise LibraryError("The save source must not be a symbolic link")
         if not root.is_dir():
             raise LibraryError(
                 f"Save vault is unavailable at {root}. Mount the shared Emulation directory there."
@@ -167,6 +173,8 @@ class SaveSnapshotService:
                 if path.is_symlink():
                     continue
                 relative = path.relative_to(root)
+                if root.resolve() not in path.resolve().parents:
+                    raise LibraryError("A save path escaped the configured save vault")
                 if self._ignored_relative(relative):
                     continue
                 if path.is_file():
@@ -344,7 +352,8 @@ class SaveSnapshotService:
         with self._operation_lock:
             with self.db.write() as connection:
                 connection.execute(
-                    "UPDATE save_settings SET last_attempt_at=CURRENT_TIMESTAMP WHERE id=1"
+                    f"UPDATE {self._settings_table} SET last_attempt_at=CURRENT_TIMESTAMP WHERE id=?",
+                    (self._settings_id,),
                 )
             if progress_callback:
                 progress_callback(1, "Waiting for the save source to become quiet")
@@ -375,7 +384,8 @@ class SaveSnapshotService:
             tree_hash = self._tree_hash(files)
             with self.db.connect() as connection:
                 latest = connection.execute(
-                    "SELECT * FROM save_snapshots ORDER BY id DESC LIMIT 1"
+                    "SELECT * FROM save_snapshots WHERE vault_id IS ? ORDER BY id DESC LIMIT 1",
+                    (self.vault_id,),
                 ).fetchone()
                 previous_files = {
                     row["relpath"]: row["sha256"]
@@ -408,8 +418,8 @@ class SaveSnapshotService:
             with self.db.write() as connection:
                 connection.execute(
                     "INSERT INTO save_snapshots("
-                    "trigger,note,tree_hash,file_count,logical_bytes,new_bytes,added_count,changed_count,removed_count,source_root"
-                    ") VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    "trigger,note,tree_hash,file_count,logical_bytes,new_bytes,added_count,changed_count,removed_count,source_root,vault_id"
+                    ") VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         trigger,
                         note.strip()[:500],
@@ -421,6 +431,7 @@ class SaveSnapshotService:
                         changed,
                         removed,
                         str(self.settings.saves_root.resolve()),
+                        self.vault_id,
                     ),
                 )
                 snapshot_id = connection.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
@@ -451,10 +462,10 @@ class SaveSnapshotService:
 
     def list_snapshots(self, limit: int = 100, offset: int = 0) -> dict[str, object]:
         with self.db.connect() as connection:
-            total = connection.execute("SELECT COUNT(*) AS count FROM save_snapshots").fetchone()["count"]
+            total = connection.execute("SELECT COUNT(*) AS count FROM save_snapshots WHERE vault_id IS ?", (self.vault_id,)).fetchone()["count"]
             rows = connection.execute(
-                "SELECT * FROM save_snapshots ORDER BY id DESC LIMIT ? OFFSET ?",
-                (limit, offset),
+                "SELECT * FROM save_snapshots WHERE vault_id IS ? ORDER BY id DESC LIMIT ? OFFSET ?",
+                (self.vault_id, limit, offset),
             ).fetchall()
         return {"items": [dict(row) for row in rows], "total": total, "limit": limit, "offset": offset}
 
@@ -516,6 +527,8 @@ class SaveSnapshotService:
         root = self.settings.saves_root.resolve()
         conflict_relpath = path.relative_to(root).as_posix()
         canonical = path.with_name(f"{match.group('base')}{match.group('extension') or ''}")
+        if canonical.is_symlink() or root not in canonical.resolve().parents:
+            raise LibraryError("The current save path escaped the configured save vault")
         try:
             conflict_stat = path.stat()
             conflict_hash = self._hash_path(path)
@@ -584,7 +597,8 @@ class SaveSnapshotService:
         total = len(items)
         with self.db.connect() as connection:
             history = [dict(row) for row in connection.execute(
-                "SELECT * FROM save_conflict_resolutions ORDER BY id DESC LIMIT 50"
+                "SELECT * FROM save_conflict_resolutions WHERE vault_id IS ? ORDER BY id DESC LIMIT 50",
+                (self.vault_id,),
             )]
         return {
             "items": items[offset:offset + limit],
@@ -656,13 +670,14 @@ class SaveSnapshotService:
                 connection.execute(
                     "INSERT INTO save_conflict_resolutions("
                     "canonical_relpath,conflict_relpath,device_id,device_name,decision,"
-                    "canonical_sha256,conflict_sha256,safety_snapshot_id"
-                    ") VALUES(?,?,?,?,?,?,?,?)",
+                    "canonical_sha256,conflict_sha256,safety_snapshot_id,vault_id"
+                    ") VALUES(?,?,?,?,?,?,?,?,?)",
                     (
                         record["canonical_relpath"], record["conflict_relpath"],
                         device_id[:64], device_name[:255], decision,
                         expected_canonical_sha256, expected_conflict_sha256,
                         snapshot["snapshot_id"],
+                        self.vault_id,
                     ),
                 )
             if progress_callback:
@@ -966,7 +981,7 @@ class SaveSnapshotService:
     ) -> dict[str, object]:
         with self.db.connect() as connection:
             snapshot = connection.execute(
-                "SELECT * FROM save_snapshots WHERE id=?", (snapshot_id,)
+                "SELECT * FROM save_snapshots WHERE id=? AND vault_id IS ?", (snapshot_id, self.vault_id)
             ).fetchone()
             if not snapshot:
                 raise LibraryError("Save snapshot was not found")
@@ -1012,7 +1027,7 @@ class SaveSnapshotService:
     def compare(self, snapshot_id: int) -> dict[str, object]:
         with self.db.connect() as connection:
             snapshot = connection.execute(
-                "SELECT source_root FROM save_snapshots WHERE id=?", (snapshot_id,)
+                "SELECT source_root FROM save_snapshots WHERE id=? AND vault_id IS ?", (snapshot_id, self.vault_id)
             ).fetchone()
             if not snapshot:
                 raise LibraryError("Save snapshot was not found")
@@ -1060,7 +1075,7 @@ class SaveSnapshotService:
         with self._operation_lock:
             with self.db.connect() as connection:
                 snapshot = connection.execute(
-                    "SELECT source_root FROM save_snapshots WHERE id=?", (snapshot_id,)
+                    "SELECT source_root FROM save_snapshots WHERE id=? AND vault_id IS ?", (snapshot_id, self.vault_id)
                 ).fetchone()
             if not snapshot:
                 raise LibraryError("Save snapshot was not found")
@@ -1226,17 +1241,22 @@ class SaveSnapshotService:
     def pin(self, snapshot_id: int, pinned: bool) -> dict[str, object]:
         with self.db.write() as connection:
             changed = connection.execute(
-                "UPDATE save_snapshots SET pinned=? WHERE id=?", (int(pinned), snapshot_id)
+                "UPDATE save_snapshots SET pinned=? WHERE id=? AND vault_id IS ?", (int(pinned), snapshot_id, self.vault_id)
             ).rowcount
         if not changed:
             raise LibraryError("Save snapshot was not found")
         return {"snapshot_id": snapshot_id, "pinned": pinned}
 
     def prune_retention(self) -> int:
+        with self._operation_lock:
+            return self._prune_retention()
+
+    def _prune_retention(self) -> int:
         settings = self.settings_payload()
         with self.db.connect() as connection:
             rows = [dict(row) for row in connection.execute(
-                "SELECT id,pinned,created_at FROM save_snapshots ORDER BY id DESC"
+                "SELECT id,pinned,created_at FROM save_snapshots WHERE vault_id IS ? ORDER BY id DESC",
+                (self.vault_id,),
             )]
             resolution_snapshots = {
                 row["safety_snapshot_id"]
@@ -1282,6 +1302,10 @@ class SaveSnapshotService:
         return len(remove)
 
     def garbage_collect_blobs(self) -> int:
+        with self._operation_lock:
+            return self._garbage_collect_blobs()
+
+    def _garbage_collect_blobs(self) -> int:
         with self.db.connect() as connection:
             referenced = {
                 row["sha256"] for row in connection.execute("SELECT DISTINCT sha256 FROM save_snapshot_files")
@@ -1303,7 +1327,8 @@ class SaveSnapshotService:
             return False
         with self.db.connect() as connection:
             attempt = connection.execute(
-                "SELECT last_attempt_at FROM save_settings WHERE id=1"
+                f"SELECT last_attempt_at FROM {self._settings_table} WHERE id=?",
+                (self._settings_id,),
             ).fetchone()
         if not attempt or not attempt["last_attempt_at"]:
             return True

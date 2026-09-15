@@ -5,6 +5,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from pathlib import PurePosixPath
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
@@ -291,6 +292,82 @@ class SyncthingService:
             raise ValueError("Syncthing could not be reached") from exc
         except (OSError, json.JSONDecodeError) as exc:
             raise ValueError("Syncthing returned an unreadable response") from exc
+
+    def share_save_vault(self, storage_key: str, remote_device_id: str) -> dict[str, object]:
+        """Share only an exact private vault. ROM and legacy folders are untouched."""
+        if not self.configured:
+            raise ValueError("Syncthing API is not configured")
+        try:
+            folders = self._get("/rest/config/folders")
+            status = self._get("/rest/system/status")
+            devices = self._get("/rest/config/devices")
+            if not isinstance(folders, list) or not isinstance(devices, list) or not isinstance(status, dict):
+                raise ValueError("Syncthing returned an invalid configuration")
+            local_id = str(status.get("myID") or "")
+            if not local_id or remote_device_id == local_id or not any(
+                item.get("deviceID") == remote_device_id for item in devices if isinstance(item, dict)
+            ):
+                raise ValueError("Connect the handheld's Syncthing device from Devices first")
+            mapped_roms = PurePosixPath(self._syncthing_device_path("_save_vault_", folders))
+            source = str(mapped_roms.parents[2] / "save-vaults" / storage_key)
+            folder_id = f"rommates-saves-{storage_key}"
+            folder = next((dict(item) for item in folders if isinstance(item, dict) and item.get("id") == folder_id), None)
+            if folder and str(folder.get("path") or "").rstrip("/") != source:
+                raise ValueError("The private save share has an unexpected path; ask an administrator to review it")
+            # Reject ancestor/descendant shares so no private vault can silently
+            # become part of an existing broad Syncthing share.
+            for item in folders:
+                if not isinstance(item, dict) or item.get("id") == folder_id:
+                    continue
+                other_path = str(item.get("path") or "").rstrip("/")
+                if other_path and (source == other_path or source.startswith(other_path + "/") or other_path.startswith(source + "/")):
+                    raise ValueError("An existing Syncthing folder overlaps this private save vault; ask an administrator to review its scope")
+            created = folder is None
+            if folder is None:
+                folder = self._get("/rest/config/defaults/folder")
+                if not isinstance(folder, dict):
+                    raise ValueError("Syncthing returned an invalid folder template")
+                folder = {**folder, "id": folder_id, "label": "Private saves", "path": source, "devices": []}
+            peers = [dict(item) for item in folder.get("devices", []) if isinstance(item, dict)]
+            for device_id in (local_id, remote_device_id):
+                if not any(item.get("deviceID") == device_id for item in peers):
+                    peers.append({"deviceID": device_id})
+            folder.update({"type": "sendreceive", "devices": peers, "paused": False})
+            self._send_json("/rest/config/folders", folder)
+            # Once configuration is saved, a failed rescan must not hide the
+            # successful share or lose its ownership record in ROMmates.
+            try:
+                self._post(f"/rest/db/scan?{urlencode({'folder': folder_id})}")
+            except (OSError, ValueError):
+                pass
+            with self._lock:
+                self._cached = None
+                self._cached_at = 0.0
+            return {"device_id": remote_device_id, "folder_id": folder_id, "created": created}
+        except (HTTPError, URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+            raise ValueError("Syncthing could not configure the private save share; check its connection and API access") from exc
+
+    def disconnect_save_vault(self, storage_key: str, remote_device_id: str) -> None:
+        if not self.configured:
+            raise ValueError("Syncthing API is not configured")
+        try:
+            folders = self._get("/rest/config/folders")
+            if not isinstance(folders, list):
+                raise ValueError("Syncthing returned an invalid configuration")
+            folder_id = f"rommates-saves-{storage_key}"
+            folder = next((dict(item) for item in folders if isinstance(item, dict) and item.get("id") == folder_id), None)
+            if folder is None:
+                return
+            source = str(PurePosixPath(self._syncthing_device_path("_save_vault_", folders)).parents[2] / "save-vaults" / storage_key)
+            if str(folder.get("path") or "").rstrip("/") != source:
+                raise ValueError("The private save share has an unexpected path; ask an administrator to review it")
+            folder["devices"] = [item for item in folder.get("devices", []) if isinstance(item, dict) and item.get("deviceID") != remote_device_id]
+            self._send_json("/rest/config/folders", folder)
+            with self._lock:
+                self._cached = None
+                self._cached_at = 0.0
+        except (HTTPError, URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+            raise ValueError("Syncthing could not disconnect the private save share") from exc
 
     def device_sync_status(
         self,

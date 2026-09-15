@@ -78,6 +78,7 @@ const state = {
   jobReportId: null,
   jobIssueOffset: 0,
   saveTab: "current",
+  saveVaultId: null,
   saveSearch: "",
   saveOffset: 0,
   saveSort: "modified_desc",
@@ -328,7 +329,7 @@ function allowedViews() {
     "library",
     "rom-requests",
     "account",
-    ...(canManageDevices() ? ["devices"] : []),
+    ...(canManageDevices() ? ["devices", "saves"] : []),
     ...(canUpload() ? ["transfers"] : []),
   ]);
 }
@@ -592,7 +593,17 @@ function clearNavigationCache() {
   state.navigationCache.clear();
 }
 
+function saveApiPath(path) {
+  if (state.view === "saves" && state.saveVaultId && /^\/api\/saves(?:[/?]|$)/.test(path)) {
+    const url = new URL(path, window.location.origin);
+    if (!url.searchParams.has("vault_id")) url.searchParams.set("vault_id", state.saveVaultId);
+    return url.pathname + url.search;
+  }
+  return path;
+}
+
 async function api(path, options = {}) {
+  path = saveApiPath(path);
   const { cacheTtl = 0, ...fetchOptions } = options;
   const token = storedAccessToken();
   const method = String(fetchOptions.method || "GET").toUpperCase();
@@ -671,6 +682,7 @@ function prefetchNavigationData() {
 }
 
 async function downloadApiFile(path, filename) {
+  path = saveApiPath(path);
   const token = storedAccessToken();
   const response = await fetch(path, {
     headers: token ? { Authorization: `Bearer ${token}` } : {},
@@ -742,6 +754,11 @@ async function requestJob(path, options, queuedMessage) {
 
 async function refreshStatus() {
   state.status = await api("/api/status");
+  if (state.principal?.id !== state.status.user?.id || state.principal?.role !== state.status.user?.role) {
+    state.saveVaultId = null;
+    state.saveSnapshotId = null;
+    state.infinitePages.clear();
+  }
   state.principal = state.status.user;
   state.permissions = {
     admin: hasRole("admin") && !state.principal?.must_change_password,
@@ -3764,6 +3781,32 @@ async function renderTrash() {
   }));
 }
 
+function bindPrivateSaveSetup() {
+  view.querySelector("[data-enable-private-saves]")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    try {
+      const vault = await api("/api/save-vaults", { method: "POST" });
+      state.saveVaultId = vault.id;
+      state.saveSnapshotId = null;
+      state.infinitePages.clear();
+      await renderSaves();
+    } catch (error) { toast(error.message, "error"); button.disabled = false; }
+  });
+}
+
+function saveDeviceConnectionsHtml(overview) {
+  if (!overview.vault_id) return "";
+  const devices = overview.devices || [];
+  const rows = devices.map((item) => `<tr><td class="name-cell">${escapeHtml(item.name)}</td><td>${item.connected_at
+    ? `<span class="badge unique">Share configured</span><span class="path-line">Accept the share on your handheld</span><button class="text-button" data-disconnect-saves="${item.id}" data-device-name="${escapeHtml(item.name)}">Disconnect</button>`
+    : item.syncthing_device_id ? `<button class="button secondary small" data-connect-saves="${item.id}">Connect saves</button>`
+    : '<span class="meta">Set up Syncthing from Devices first</span>'}</td></tr>`).join("");
+  return `<details class="save-device-connections" ${devices.some((item) => item.connected_at) ? "" : "open"}><summary>Connected devices (${devices.filter((item) => item.connected_at).length})</summary><p>Accept the Private saves share in Syncthing on each handheld and choose its Emulation/saves folder. Use Send &amp; Receive, then point RetroArch at the retroarch directory and standalone emulators at their own directories.</p>${devices.length
+    ? `<div class="table-wrap"><table><thead><tr><th>Device</th><th>Save connection</th></tr></thead><tbody>${rows}</tbody></table></div>`
+    : '<p>No devices yet. <button class="text-button" data-save-open-devices>Open Devices</button> to add one.</p>'}</details>`;
+}
+
 function saveTabs(overview) {
   const matching = overview.matching || { orphan: 0, possible: 0, ambiguous: 0 };
   const reviewCount = matching.orphan + matching.possible + matching.ambiguous;
@@ -3831,7 +3874,7 @@ function saveHeader(overview) {
   const settings = overview.settings;
   const latest = overview.latest_snapshot;
   return `<div class="save-strip">
-    <div class="save-source"><div><span class="badge ${settings.available ? "unique" : "exact"}">${settings.available ? "Source available" : "Source unavailable"}</span><strong>Syncthing save vault</strong></div><code title="${escapeHtml(settings.source_root)}">${escapeHtml(settings.source_root)}</code><span class="meta">${latest ? `Last snapshot ${escapeHtml(latest.created_at)} UTC` : "No snapshots yet"}</span></div>
+    <div class="save-source"><div><span class="badge ${settings.available ? "unique" : "exact"}">${settings.available ? "Ready" : "Source unavailable"}</span><strong>${overview.vault_id ? "Private saves" : "Existing shared saves"}</strong></div>${isAdmin() ? `<code title="${escapeHtml(settings.source_root)}">${escapeHtml(settings.source_root)}</code>` : ""}<span class="meta">${latest ? `Last snapshot ${escapeHtml(latest.created_at)} UTC` : "No snapshots yet"}</span></div>
     <form class="snapshot-now" data-snapshot-form><label class="field"><span>Snapshot note (optional)</span><input class="input" name="note" maxlength="500" placeholder="Before a long trip, before testing a core…"></label><button class="button" ${settings.available ? "" : "disabled"}>Snapshot now</button></form>
   </div>`;
 }
@@ -3911,7 +3954,16 @@ function saveSettingsHtml(settings) {
 
 async function renderSaves() {
   const renderVersion = beginPageRender();
-  setHeading("Saves", "Inspect, version, and restore the shared emulator save vault.");
+  setHeading("Saves", "Sync your progress across devices, keep backups, and resolve conflicting saves.");
+  const vaults = await navigationApi("/api/save-vaults");
+  if (!pageRenderIsCurrent(renderVersion, "saves")) return;
+  if (state.saveVaultId && !vaults.items.some((item) => item.id === Number(state.saveVaultId))) state.saveVaultId = null;
+  if (!isAdmin() && !state.saveVaultId) state.saveVaultId = vaults.items[0]?.id || null;
+  if (!isAdmin() && !state.saveVaultId) {
+    setViewHtml(`<div class="empty-state"><div><h2>Your saves, across your devices</h2><p>Enable private saves to connect your handhelds, keep automatic snapshots, and review conflicts. Your saves stay separate from other users.</p><button class="button" data-enable-private-saves>Enable private saves</button></div></div>`);
+    bindPrivateSaveSetup();
+    return;
+  }
   const overview = await navigationApi("/api/saves");
   let content = "";
   let currentData = null;
@@ -3971,7 +4023,36 @@ async function renderSaves() {
     content = saveSettingsHtml(overview.settings);
   }
   if (!pageRenderIsCurrent(renderVersion, "saves")) return;
-  setViewHtml(`${saveHeader(overview)}${saveTabs(overview)}${content}`);
+  const vaultSelector = isAdmin() ? `<div class="toolbar"><label class="field"><span>Save vault</span><select class="select" data-save-vault><option value="" ${!state.saveVaultId ? "selected" : ""}>Existing shared saves</option>${vaults.items.map((item) => `<option value="${item.id}" ${Number(state.saveVaultId) === item.id ? "selected" : ""}>${escapeHtml(item.owner_name)} · Private saves</option>`).join("")}</select></label>${!vaults.items.some((item) => item.owner_user_id === state.principal?.id) && !state.principal?.bootstrap ? '<button class="button secondary" data-enable-private-saves>Enable my private saves</button>' : ""}</div>` : "";
+  const connections = saveDeviceConnectionsHtml(overview);
+  setViewHtml(`${vaultSelector}${saveHeader(overview)}${connections}${saveTabs(overview)}${content}`);
+  bindPrivateSaveSetup();
+  view.querySelector("[data-save-vault]")?.addEventListener("change", (event) => {
+    state.saveVaultId = Number(event.target.value) || null;
+    state.saveSnapshotId = null;
+    state.saveOffset = state.saveSnapshotOffset = state.saveMatchOffset = state.saveConflictOffset = 0;
+    state.infinitePages.clear();
+    renderSaves().catch((error) => toast(error.message, "error"));
+  });
+  view.querySelector("[data-save-open-devices]")?.addEventListener("click", () => navigateTo("devices"));
+  view.querySelectorAll("[data-connect-saves]").forEach((button) => button.addEventListener("click", async () => {
+    button.disabled = true;
+    try {
+      const result = await api(`/api/save-vaults/${overview.vault_id}/devices/${button.dataset.connectSaves}`, { method: "POST" });
+      toast(result.instructions);
+      await renderSaves();
+    } catch (error) { toast(error.message, "error"); button.disabled = false; }
+  }));
+  view.querySelectorAll("[data-disconnect-saves]").forEach((button) => button.addEventListener("click", async () => {
+    const confirmed = await confirmAction({ title: `Disconnect saves from ${button.dataset.deviceName}?`, content: "<p>This stops sharing private saves with this device. Existing files and snapshots stay in place. It does not erase files already downloaded to the handheld.</p>", confirmLabel: "Disconnect saves", cancelLabel: "Keep connected" });
+    if (!confirmed) return;
+    button.disabled = true;
+    try {
+      await api(`/api/save-vaults/${overview.vault_id}/devices/${button.dataset.disconnectSaves}`, { method: "DELETE" });
+      toast("Save connection removed. Your files and snapshots are preserved.");
+      await renderSaves();
+    } catch (error) { toast(error.message, "error"); button.disabled = false; }
+  }));
   view.querySelectorAll("[data-save-tab]").forEach((button) => button.addEventListener("click", () => {
     state.saveTab = button.dataset.saveTab;
     state.saveOffset = 0;

@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 from urllib.parse import quote
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from mcp.server.transport_security import TransportSecuritySettings
@@ -30,6 +30,7 @@ from .naming import NamingService
 from .notifications import NotificationService
 from .rankings import RankingService
 from .saves import SaveSnapshotService
+from .save_vaults import SaveVaultService
 from .screenscraper import ScreenScraperService
 from .syncthing import SyncthingService
 from .transfers import MAX_MANIFEST_BYTES, TransferError, TransferService
@@ -68,6 +69,7 @@ migrate_legacy_storage()
 db = Database(settings.database_path)
 library = LibraryService(settings, db)
 saves = SaveSnapshotService(settings, db)
+save_vaults = SaveVaultService(settings, db)
 naming = NamingService(db, settings.library_root, library, saves)
 screenscraper = ScreenScraperService(settings, db)
 artwork_thumbnails = ArtworkThumbnailCache(settings, db)
@@ -405,7 +407,13 @@ def run_job(
                     "UPDATE jobs SET status='complete',progress=100,detail=?,result_json=?,completed_at=CURRENT_TIMESTAMP WHERE id=?",
                     (job_result_detail(kind, result, detail), json.dumps(result), job_id),
                 )
-            notify_job_result(kind, detail, result)
+            with db.connect() as connection:
+                save_job = connection.execute("SELECT vault_id,requested_by FROM jobs WHERE id=?", (job_id,)).fetchone()
+            if save_job["vault_id"] and save_job["requested_by"]:
+                if not (isinstance(result, dict) and result.get("unchanged")):
+                    private_save_notice(save_job["requested_by"], "Save operation completed", job_result_detail(kind, result, detail), f"save-job:{job_id}")
+            else:
+                notify_job_result(kind, detail, result)
     except JobCancelled as exc:
         persist_issues()
         with db.write() as connection:
@@ -442,7 +450,11 @@ def enqueue_job(
     coalesce: bool = False,
     requested_by: int | None = None,
 ) -> int:
+    source = getattr(operation, "__self__", None)
+    vault_id = source.vault_id if isinstance(source, SaveSnapshotService) else None
     with db.write() as connection:
+        if vault_id is not None and requested_by is None:
+            requested_by = connection.execute("SELECT owner_user_id FROM save_vaults WHERE id=?", (vault_id,)).fetchone()["owner_user_id"]
         if coalesce:
             active = connection.execute(
                 "SELECT id FROM jobs WHERE kind=? AND detail=? "
@@ -458,8 +470,8 @@ def enqueue_job(
         if active_count >= 25:
             raise LibraryError("Too many jobs are already queued; wait for one to finish")
         connection.execute(
-            "INSERT INTO jobs(kind,status,detail,requested_by) VALUES(?,'queued',?,?)",
-            (kind, detail, requested_by),
+            "INSERT INTO jobs(kind,status,detail,requested_by,vault_id) VALUES(?,'queued',?,?,?)",
+            (kind, detail, requested_by, vault_id),
         )
         job_id = connection.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
     cancellation = threading.Event()
@@ -586,15 +598,48 @@ mcp_http_app = mcp_server.streamable_http_app(
 )
 
 
+def private_save_notice(owner_id: int, title: str, detail: str, key: str) -> None:
+    with db.write() as connection:
+        connection.execute(
+            "INSERT OR IGNORE INTO user_notifications(user_id,kind,title,detail,path,dedupe_key) VALUES(?,?,?,?,?,?)",
+            (owner_id, "save", title, detail, "saves", key),
+        )
+
+
+def check_private_saves(check_conflicts: bool = False) -> None:
+    for vault in save_vaults.list():
+        try:
+            service = save_vaults.service(vault["id"])
+            if service.due_for_automatic_snapshot():
+                with db.connect() as connection:
+                    active = connection.execute(
+                        "SELECT 1 FROM jobs WHERE vault_id=? AND kind IN ('save_snapshot','save_restore') "
+                        "AND status IN ('queued','running','cancelling') LIMIT 1", (vault["id"],),
+                    ).fetchone()
+                if not active:
+                    enqueue_job("save_snapshot", "Creating scheduled private save snapshot", service.create_snapshot, "automatic", "")
+            if check_conflicts:
+                for conflict in service.conflicts(limit=500, device_names=_vault_device_names(service))["items"]:
+                    source = conflict.get("device_name") or conflict.get("device_id") or "another device"
+                    private_save_notice(
+                        vault["owner_user_id"], "Save conflict needs review",
+                        f"{conflict['canonical_relpath']} has a competing version from {source}.",
+                        f"vault:{vault['id']}:conflict:{conflict['conflict_relpath']}:{conflict['conflict_sha256']}",
+                    )
+        except Exception as exc:
+            db.activity("save_snapshot", f"Private vault {vault['id']} could not be checked: {exc}")
+
+
 def save_scheduler(stop: threading.Event) -> None:
     next_conflict_check = 0.0
     while not stop.wait(30):
+        check_private_saves(time.monotonic() >= next_conflict_check)
         try:
             if saves.due_for_automatic_snapshot():
                 with db.connect() as connection:
                     active = connection.execute(
                         "SELECT 1 FROM jobs WHERE kind IN ('save_snapshot','save_restore') "
-                        "AND status IN ('queued','running','cancelling') LIMIT 1"
+                        "AND vault_id IS NULL AND status IN ('queued','running','cancelling') LIMIT 1"
                     ).fetchone()
                 if not active:
                     enqueue_job(
@@ -970,6 +1015,7 @@ def permission_payload(principal: Principal) -> dict[str, bool]:
     return {
         "admin": principal.has_role("admin") and ready,
         "manage_devices": can_manage_devices(principal) and ready,
+        "manage_saves": can_manage_devices(principal) and ready,
         "upload": (
             principal.has_role("admin") or principal.has_role("contributor")
         ) and ready,
@@ -1052,6 +1098,12 @@ def role_allows(principal: Principal, method: str, path: str) -> bool:
     ):
         return True
     if principal.has_role("member"):
+        if path == "/api/save-vaults":
+            return method in {"GET", "POST"}
+        if re.fullmatch(r"/api/save-vaults/\d+/devices/\d+", path):
+            return method in {"POST", "DELETE"}
+        if path == "/api/saves" or path.startswith("/api/saves/"):
+            return method in {"GET", "POST", "PUT"}
         if method == "GET" and (
             path == "/api/devices"
             or path.startswith("/api/device-groups")
@@ -1114,6 +1166,19 @@ def mobile_public_route_allowed(method: str, path: str) -> bool:
     if method in {"GET", "HEAD"} and path.startswith("/api/downloads/"):
         return True
     exact = {
+        ("GET", "/api/save-vaults"),
+        ("POST", "/api/save-vaults"),
+        ("GET", "/api/saves"),
+        ("GET", "/api/saves/current"),
+        ("GET", "/api/saves/conflicts"),
+        ("POST", "/api/saves/conflicts/resolve"),
+        ("GET", "/api/saves/unmatched"),
+        ("POST", "/api/saves/impacts"),
+        ("POST", "/api/saves/orphans/delete"),
+        ("GET", "/api/saves/settings"),
+        ("PUT", "/api/saves/settings"),
+        ("GET", "/api/saves/snapshots"),
+        ("POST", "/api/saves/snapshots"),
         ("GET", "/api/v1/mobile/bootstrap"),
         ("GET", "/api/v1/mobile/releases"),
         ("PUT", "/api/v1/mobile/push-installation"),
@@ -1141,6 +1206,7 @@ def mobile_public_route_allowed(method: str, path: str) -> bool:
         return True
     patterns = {
         "GET": (
+            r"/api/saves/snapshots/\d+(?:/compare|/files/.+)?",
             rf"/api/games/\d+",
             rf"/api/artwork/thumbnails/\d+",
             rf"/api/device-groups/\d+/(?:summary|preview)",
@@ -1148,6 +1214,8 @@ def mobile_public_route_allowed(method: str, path: str) -> bool:
             rf"/api/jobs/\d+",
         ),
         "POST": (
+            r"/api/save-vaults/\d+/devices/\d+",
+            r"/api/saves/snapshots/\d+/restore",
             rf"/api/games/\d+/download-ticket",
             rf"/api/device-groups/\d+/(?:apply|discard-changes)",
             rf"/api/devices/\d+/(?:apply|discard-changes|export-ticket|syncthing-share)",
@@ -1156,11 +1224,13 @@ def mobile_public_route_allowed(method: str, path: str) -> bool:
             rf"/api/rom-requests/\d+/cancel",
         ),
         "PUT": (
+            r"/api/saves/snapshots/\d+/pin",
             rf"/api/device-groups/\d+(?:/selection|/selections)?",
             rf"/api/devices/\d+/selection",
             rf"/api/uploads/{_MOBILE_ID}/files/\d+",
         ),
         "DELETE": (
+            r"/api/save-vaults/\d+/devices/\d+",
             rf"/api/device-groups/\d+",
             rf"/api/v1/mobile/push-installation/{_MOBILE_ID}",
         ),
@@ -1932,7 +2002,10 @@ def status(request: Request):
             "(SELECT COUNT(*) AS item_count FROM games GROUP BY bundle_hash HAVING COUNT(*)>1)"
         ).fetchone()["count"]
         save_snapshots = connection.execute(
-            "SELECT COUNT(*) AS count FROM save_snapshots"
+            "SELECT COUNT(*) AS count FROM save_snapshots s WHERE "
+            "(?=1 AND s.vault_id IS NULL) OR s.vault_id IN "
+            "(SELECT id FROM save_vaults WHERE owner_user_id=?)",
+            (int(principal.has_role("admin")), principal.id),
         ).fetchone()["count"]
     return {
         **dict(counts),
@@ -2044,10 +2117,10 @@ def dashboard():
         trash_count = connection.execute("SELECT COUNT(*) AS count FROM trash_items").fetchone()["count"]
         catalog_count = connection.execute("SELECT COUNT(*) AS count FROM naming_catalogs").fetchone()["count"]
         latest_snapshot = connection.execute(
-            "SELECT * FROM save_snapshots ORDER BY id DESC LIMIT 1"
+            "SELECT * FROM save_snapshots WHERE vault_id IS NULL ORDER BY id DESC LIMIT 1"
         ).fetchone()
         snapshot_count = connection.execute(
-            "SELECT COUNT(*) AS count FROM save_snapshots"
+            "SELECT COUNT(*) AS count FROM save_snapshots WHERE vault_id IS NULL"
         ).fetchone()["count"]
     try:
         save_source = saves.source_summary()
@@ -3175,10 +3248,19 @@ def device_syncthing_status(
 def share_device_with_syncthing(
     device_id: int, payload: DeviceSyncthingShareRequest, request: Request
 ):
+    with save_vaults._lock:
+        return _share_device_with_syncthing(device_id, payload, request)
+
+
+def _share_device_with_syncthing(device_id: int, payload: DeviceSyncthingShareRequest, request: Request):
     principal = request_principal(request)
     device = require_device_access(device_id, principal)
     if device["delivery_mode"] != "syncthing":
         raise HTTPException(status_code=400, detail="This device uses manual downloads")
+    with db.connect() as connection:
+        save_link = connection.execute("SELECT syncthing_device_id FROM save_vault_devices WHERE device_id=?", (device_id,)).fetchone()
+    if save_link and save_link["syncthing_device_id"].replace("-", "").upper() != payload.device_id.strip().replace("-", "").upper():
+        raise HTTPException(status_code=409, detail="Disconnect this device from private saves before changing its Syncthing device ID")
     try:
         result = syncthing.share_device_folder(
             str(device["name"]),
@@ -3205,10 +3287,14 @@ def share_device_with_syncthing(
 def update_device_owner(device_id: int, payload: DeviceOwnerRequest, request: Request):
     principal = request_principal(request)
     require_device_access(device_id, principal)
-    with db.write() as connection:
+    with save_vaults._lock, db.write() as connection:
         current_device = connection.execute(
             "SELECT name,roster_group_id,owner_user_id FROM devices WHERE id=?", (device_id,)
         ).fetchone()
+        if current_device and payload.owner_user_id != current_device["owner_user_id"] and connection.execute(
+            "SELECT 1 FROM save_vault_devices WHERE device_id=?", (device_id,)
+        ).fetchone():
+            raise HTTPException(status_code=409, detail="Disconnect this device from private saves on the Saves page before changing its owner")
         if (
             current_device
             and current_device["roster_group_id"]
@@ -3675,10 +3761,108 @@ def download_device_export(token: str):
     )
 
 
+def require_save_service(request: Request, vault_id: int | None = Query(None, ge=1)) -> SaveSnapshotService:
+    principal = request_principal(request)
+    if vault_id is None and principal.has_role("admin"):
+        return saves
+    if vault_id is None:
+        own = save_vaults.list(principal.id) if principal.id is not None else []
+        if not own:
+            raise HTTPException(status_code=404, detail="Enable your private saves first")
+        vault_id = own[0]["id"]
+    try:
+        vault = save_vaults.get(vault_id)
+    except LibraryError:
+        raise HTTPException(status_code=404, detail="Save vault was not found") from None
+    if not principal.has_role("admin") and vault["owner_user_id"] != principal.id:
+        raise HTTPException(status_code=404, detail="Save vault was not found")
+    return save_vaults.service(vault_id)
+
+
+@app.get("/api/save-vaults")
+def list_save_vaults(request: Request):
+    principal = request_principal(request)
+    items = save_vaults.list(None if principal.has_role("admin") else principal.id)
+    return {"items": items, "legacy_available": principal.has_role("admin")}
+
+
+@app.post("/api/save-vaults", status_code=201)
+def create_save_vault(request: Request):
+    principal = request_principal(request)
+    if principal.id is None:
+        raise HTTPException(status_code=400, detail="Sign in with a personal account to enable private saves")
+    return save_vaults.create(principal.id)
+
+
+@app.post("/api/save-vaults/{vault_id}/devices/{device_id}")
+def connect_save_device(vault_id: int, device_id: int, request: Request):
+    service = require_save_service(request, vault_id)
+    device = require_device_access(device_id, request_principal(request))
+    vault = save_vaults.get(vault_id)
+    if device["owner_user_id"] != vault["owner_user_id"]:
+        raise HTTPException(status_code=400, detail="Only the owner's devices can use this private vault")
+    if not device["syncthing_device_id"]:
+        raise HTTPException(status_code=400, detail="Connect this device to Syncthing from Devices first")
+    # Serialize config read/modify/write, including duplicate submissions and
+    # device-ID ownership checks. Never reuse a legacy or parent save share.
+    with save_vaults._lock:
+        device = require_device_access(device_id, request_principal(request))
+        if device["owner_user_id"] != vault["owner_user_id"]:
+            raise HTTPException(status_code=409, detail="Device ownership changed; refresh the Saves page")
+        with db.connect() as connection:
+            conflict = connection.execute(
+                "SELECT 1 FROM save_vault_devices WHERE syncthing_device_id=? AND vault_id<>? "
+                "UNION ALL SELECT 1 FROM devices WHERE syncthing_device_id=? AND owner_user_id IS NOT ?",
+                (device["syncthing_device_id"], vault_id, device["syncthing_device_id"], vault["owner_user_id"]),
+            ).fetchone()
+        if conflict:
+            raise HTTPException(status_code=409, detail="This Syncthing device is already connected to another user's saves")
+        if not service.available():
+            raise HTTPException(status_code=409, detail="The private save directory is unavailable")
+        try:
+            result = syncthing.share_save_vault(
+                vault["storage_key"], device["syncthing_device_id"],
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        with db.write() as connection:
+            connection.execute(
+                "INSERT INTO save_vault_devices(device_id,vault_id,syncthing_device_id) VALUES(?,?,?) "
+                "ON CONFLICT(device_id) DO UPDATE SET syncthing_device_id=excluded.syncthing_device_id,"
+                "connected_at=CURRENT_TIMESTAMP",
+                (device_id, vault_id, result["device_id"]),
+            )
+    return {"device_id": device_id, "folder_id": result["folder_id"], "folder_type": "sendreceive",
+            "instructions": "Accept the Private saves folder on your handheld and point it at Emulation/saves. Use Send & Receive and configure your emulators to save there."}
+
+
+@app.delete("/api/save-vaults/{vault_id}/devices/{device_id}")
+def disconnect_save_device(vault_id: int, device_id: int, request: Request):
+    require_save_service(request, vault_id)
+    require_device_access(device_id, request_principal(request))
+    with save_vaults._lock:
+        with db.connect() as connection:
+            link = connection.execute("SELECT * FROM save_vault_devices WHERE device_id=? AND vault_id=?", (device_id, vault_id)).fetchone()
+            if not link:
+                raise HTTPException(status_code=404, detail="Save connection was not found")
+            duplicate = connection.execute(
+                "SELECT 1 FROM save_vault_devices WHERE vault_id=? AND syncthing_device_id=? AND device_id<>?",
+                (vault_id, link["syncthing_device_id"], device_id),
+            ).fetchone()
+        if not duplicate:
+            try:
+                syncthing.disconnect_save_vault(save_vaults.get(vault_id)["storage_key"], link["syncthing_device_id"])
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+        with db.write() as connection:
+            connection.execute("DELETE FROM save_vault_devices WHERE device_id=? AND vault_id=?", (device_id, vault_id))
+    return {"disconnected": True, "files_preserved": True}
+
+
 @app.get("/api/saves")
-def save_overview():
+def save_overview(saves: SaveSnapshotService = Depends(require_save_service)):
     snapshots = saves.list_snapshots(limit=1)
-    conflicts = saves.conflicts(limit=1, device_names=_syncthing_device_names())
+    conflicts = saves.conflicts(limit=1, device_names=_vault_device_names(saves))
     return {
         "settings": saves.settings_payload(),
         "inventory": saves.source_summary(),
@@ -3686,6 +3870,8 @@ def save_overview():
         "snapshot_count": snapshots["total"],
         "matching": saves.match_summary(),
         "conflicts": {"total": conflicts["total"], "identical": conflicts["identical"]},
+        "vault_id": saves.vault_id,
+        "devices": save_vaults.devices(saves.vault_id) if saves.vault_id else [],
     }
 
 
@@ -3700,8 +3886,16 @@ def _syncthing_device_names(refresh_if_empty: bool = False) -> dict[str, str]:
     }
 
 
+def _vault_device_names(service: SaveSnapshotService) -> dict[str, str]:
+    if service.vault_id is None:
+        return _syncthing_device_names()
+    return {device["syncthing_device_id"]: device["name"] for device in save_vaults.devices(service.vault_id)
+            if device["connected_at"] and device["syncthing_device_id"]}
+
+
 @app.get("/api/saves/current")
 def current_saves(
+    saves: SaveSnapshotService = Depends(require_save_service),
     search: str = "",
     limit: int = Query(250, ge=1, le=1000),
     offset: int = Query(0, ge=0),
@@ -3715,15 +3909,16 @@ def current_saves(
 
 @app.get("/api/saves/conflicts")
 def save_conflicts(
+    saves: SaveSnapshotService = Depends(require_save_service),
     search: str = "",
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ):
-    return saves.conflicts(search, limit, offset, _syncthing_device_names(refresh_if_empty=True))
+    return saves.conflicts(search, limit, offset, _vault_device_names(saves))
 
 
 @app.post("/api/saves/conflicts/resolve", status_code=202)
-def resolve_save_conflict(payload: SaveConflictResolveRequest):
+def resolve_save_conflict(payload: SaveConflictResolveRequest, saves: SaveSnapshotService = Depends(require_save_service)):
     job_id = enqueue_job(
         "save_conflict",
         f"Resolving save conflict for {Path(payload.conflict_relpath).name}",
@@ -3740,6 +3935,7 @@ def resolve_save_conflict(payload: SaveConflictResolveRequest):
 
 @app.get("/api/saves/unmatched")
 def unmatched_saves(
+    saves: SaveSnapshotService = Depends(require_save_service),
     search: str = "",
     status: str = Query("all", pattern="^(all|orphan|possible|ambiguous)$"),
     limit: int = Query(200, ge=1, le=1000),
@@ -3749,12 +3945,12 @@ def unmatched_saves(
 
 
 @app.post("/api/saves/impacts")
-def save_impacts(payload: SaveImpactRequest):
+def save_impacts(payload: SaveImpactRequest, saves: SaveSnapshotService = Depends(require_save_service)):
     return {"items": saves.save_impacts(payload.game_ids)}
 
 
 @app.post("/api/saves/orphans/delete", status_code=202)
-def delete_orphan_saves(payload: SaveOrphanDeleteRequest):
+def delete_orphan_saves(payload: SaveOrphanDeleteRequest, saves: SaveSnapshotService = Depends(require_save_service)):
     job_id = enqueue_job(
         "save_delete",
         "Creating safety snapshot before deleting orphan saves",
@@ -3765,23 +3961,24 @@ def delete_orphan_saves(payload: SaveOrphanDeleteRequest):
 
 
 @app.get("/api/saves/settings")
-def save_settings():
+def save_settings(saves: SaveSnapshotService = Depends(require_save_service)):
     return saves.settings_payload()
 
 
 @app.put("/api/saves/settings")
-def update_save_settings(payload: SaveSettingsRequest):
+def update_save_settings(payload: SaveSettingsRequest, saves: SaveSnapshotService = Depends(require_save_service)):
     result = saves.update_settings(payload.model_dump())
     pruned = saves.prune_retention()
     return {**result, "pruned": pruned}
 
 
 @app.post("/api/saves/snapshots", status_code=202)
-def create_save_snapshot(payload: SaveSnapshotRequest):
+def create_save_snapshot(payload: SaveSnapshotRequest, saves: SaveSnapshotService = Depends(require_save_service)):
     with db.connect() as connection:
         active = connection.execute(
             "SELECT id FROM jobs WHERE kind IN ('save_snapshot','save_restore') "
-            "AND status IN ('queued','running','cancelling') ORDER BY id DESC LIMIT 1"
+            "AND vault_id IS ? AND status IN ('queued','running','cancelling') ORDER BY id DESC LIMIT 1",
+            (saves.vault_id,),
         ).fetchone()
     if active:
         return {"job_id": active["id"], "already_running": True}
@@ -3797,6 +3994,7 @@ def create_save_snapshot(payload: SaveSnapshotRequest):
 
 @app.get("/api/saves/snapshots")
 def save_snapshots(
+    saves: SaveSnapshotService = Depends(require_save_service),
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ):
@@ -3806,6 +4004,7 @@ def save_snapshots(
 @app.get("/api/saves/snapshots/{snapshot_id}")
 def save_snapshot_detail(
     snapshot_id: int,
+    saves: SaveSnapshotService = Depends(require_save_service),
     search: str = "",
     limit: int = Query(250, ge=1, le=1000),
     offset: int = Query(0, ge=0),
@@ -3814,16 +4013,17 @@ def save_snapshot_detail(
 
 
 @app.get("/api/saves/snapshots/{snapshot_id}/compare")
-def compare_save_snapshot(snapshot_id: int):
+def compare_save_snapshot(snapshot_id: int, saves: SaveSnapshotService = Depends(require_save_service)):
     return saves.compare(snapshot_id)
 
 
 @app.get("/api/saves/snapshots/{snapshot_id}/files/{relpath:path}")
-def download_save_snapshot_file(snapshot_id: int, relpath: str):
+def download_save_snapshot_file(snapshot_id: int, relpath: str, saves: SaveSnapshotService = Depends(require_save_service)):
     with db.connect() as connection:
         row = connection.execute(
-            "SELECT sha256 FROM save_snapshot_files WHERE snapshot_id=? AND relpath=?",
-            (snapshot_id, relpath),
+            "SELECT f.sha256 FROM save_snapshot_files f JOIN save_snapshots s ON s.id=f.snapshot_id "
+            "WHERE snapshot_id=? AND relpath=? AND s.vault_id IS ?",
+            (snapshot_id, relpath, saves.vault_id),
         ).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Snapshot file was not found")
@@ -3834,12 +4034,12 @@ def download_save_snapshot_file(snapshot_id: int, relpath: str):
 
 
 @app.put("/api/saves/snapshots/{snapshot_id}/pin")
-def pin_save_snapshot(snapshot_id: int, payload: SavePinRequest):
+def pin_save_snapshot(snapshot_id: int, payload: SavePinRequest, saves: SaveSnapshotService = Depends(require_save_service)):
     return saves.pin(snapshot_id, payload.pinned)
 
 
 @app.post("/api/saves/snapshots/{snapshot_id}/restore", status_code=202)
-def restore_save_snapshot(snapshot_id: int, payload: SaveRestoreRequest):
+def restore_save_snapshot(snapshot_id: int, payload: SaveRestoreRequest, saves: SaveSnapshotService = Depends(require_save_service)):
     if not payload.retroarch_closed:
         raise HTTPException(
             status_code=400,
@@ -3847,12 +4047,13 @@ def restore_save_snapshot(snapshot_id: int, payload: SaveRestoreRequest):
         )
     with db.connect() as connection:
         if not connection.execute(
-            "SELECT 1 FROM save_snapshots WHERE id=?", (snapshot_id,)
+            "SELECT 1 FROM save_snapshots WHERE id=? AND vault_id IS ?", (snapshot_id, saves.vault_id)
         ).fetchone():
             raise HTTPException(status_code=404, detail="Save snapshot was not found")
         active = connection.execute(
             "SELECT id FROM jobs WHERE kind IN ('save_snapshot','save_restore') "
-            "AND status IN ('queued','running','cancelling') ORDER BY id DESC LIMIT 1"
+            "AND vault_id IS ? AND status IN ('queued','running','cancelling') ORDER BY id DESC LIMIT 1",
+            (saves.vault_id,),
         ).fetchone()
     if active:
         return {"job_id": active["id"], "already_running": True}

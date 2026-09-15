@@ -70,6 +70,86 @@ class ApiIntegrationTests(unittest.TestCase):
             time.sleep(0.02)
         self.fail("Job did not complete")
 
+    def test_private_save_api_isolates_members_legacy_snapshots_jobs_and_shares(self):
+        def login_as(name):
+            self.client.cookies.clear()
+            response = self.client.post("/api/auth/login", json={"username": name, "password": "private-save-test-password"})
+            self.assertEqual(response.status_code, 200, response.text)
+
+        users = []
+        for name in ("save-alice", "save-bob"):
+            user = self.main.auth.create_user(name, name, "private-save-test-password", "member")
+            with self.main.db.write() as connection:
+                connection.execute("UPDATE users SET must_change_password=0 WHERE id=?", (user["id"],))
+            users.append(user)
+        legacy_path = self.root / "saves/retroarch/LegacyPrivateTest.srm"
+        legacy_path.parent.mkdir(parents=True, exist_ok=True)
+        legacy_path.write_bytes(b"leave legacy alone")
+        legacy_id = self.main.saves.create_snapshot()["snapshot_id"]
+        login_as("save-alice")
+        self.assertEqual(self.client.get("/api/save-vaults").json()["items"], [])
+        self.assertEqual(self.client.get("/api/saves").status_code, 404)
+        created = self.client.post("/api/save-vaults")
+        self.assertEqual(created.status_code, 201, created.text)
+        alice_id = created.json()["id"]
+        self.assertEqual(self.client.post("/api/save-vaults").json()["id"], alice_id)
+        alice = self.main.save_vaults.service(alice_id)
+        alice_path = alice.settings.saves_root / "retroarch/Pokemon.srm"
+        alice_path.write_bytes(b"alice progress")
+        alice_device = self.client.post("/api/devices", json={"name": "save-test-alice"}).json()
+        snapshot = self.client.post("/api/saves/snapshots", json={"note": "Alice backup"})
+        self.assertEqual(snapshot.status_code, 202, snapshot.text)
+        job_id = snapshot.json()["job_id"]
+        job = self.wait_for_job(job_id)
+        self.assertEqual(job["status"], "complete", job)
+        alice_snapshot = job["result"]["snapshot_id"]
+        self.assertEqual(self.client.get(f"/api/jobs/{job_id}").json()["requested_by"], users[0]["id"])
+        self.assertEqual(self.client.get("/api/saves/current").json()["items"][0]["relpath"], "retroarch/Pokemon.srm")
+        self.assertEqual([item["id"] for item in self.client.get("/api/saves/snapshots").json()["items"]], [alice_snapshot])
+        self.assertEqual(self.client.get(f"/api/saves/snapshots/{alice_snapshot}/files/retroarch/Pokemon.srm").content, b"alice progress")
+        self.assertEqual(self.client.get(f"/api/saves/snapshots/{legacy_id}/files/retroarch/LegacyPrivateTest.srm").status_code, 404)
+        self.assertEqual(self.client.post(f"/api/saves/snapshots/{legacy_id}/restore", json={"retroarch_closed": True, "expected_tree_hash": "0" * 64}).status_code, 404)
+
+        login_as("save-bob")
+        bob_id = self.client.post("/api/save-vaults").json()["id"]
+        bob = self.main.save_vaults.service(bob_id)
+        bob_path = bob.settings.saves_root / "retroarch/Pokemon.srm"
+        bob_path.write_bytes(b"bob progress")
+        self.assertEqual([item["id"] for item in self.client.get("/api/save-vaults").json()["items"]], [bob_id])
+        self.assertEqual(self.client.get("/api/saves/snapshots").json()["items"], [])
+        self.assertEqual(self.client.get(f"/api/jobs/{job_id}").status_code, 404)
+        for suffix in ("", "/current", "/conflicts", "/unmatched", "/settings", "/snapshots", f"/snapshots/{alice_snapshot}", f"/snapshots/{alice_snapshot}/compare", f"/snapshots/{alice_snapshot}/files/retroarch/Pokemon.srm"):
+            response = self.client.get(f"/api/saves{suffix}?vault_id={alice_id}")
+            self.assertEqual(response.status_code, 404, response.text)
+        self.assertEqual(self.client.get(f"/api/saves/snapshots/{alice_snapshot}/files/retroarch/Pokemon.srm").status_code, 404)
+        self.assertEqual(self.client.put(f"/api/saves/snapshots/{alice_snapshot}/pin", json={"pinned": True}).status_code, 400)
+        self.assertEqual(self.client.post(f"/api/save-vaults/{alice_id}/devices/{alice_device['id']}").status_code, 404)
+        self.assertEqual(self.client.post(f"/api/save-vaults/{bob_id}/devices/{alice_device['id']}").status_code, 404)
+
+        login_as("save-alice")
+        with self.main.db.write() as connection:
+            connection.execute("UPDATE devices SET syncthing_device_id='ALICE-REMOTE' WHERE id=?", (alice_device["id"],))
+        with patch.object(self.main.syncthing, "share_save_vault", return_value={"device_id": "ALICE-REMOTE", "folder_id": "private-folder"}) as share:
+            response = self.client.post(f"/api/save-vaults/{alice_id}/devices/{alice_device['id']}")
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(response.json()["folder_type"], "sendreceive")
+            share.assert_called_once_with(created.json()["storage_key"], "ALICE-REMOTE")
+        self.assertTrue(self.client.get("/api/saves").json()["devices"][0]["connected_at"])
+        blocked_transfer = self.client.put(f"/api/devices/{alice_device['id']}/owner", headers=self.headers, json={"owner_user_id": users[1]["id"]})
+        self.assertEqual(blocked_transfer.status_code, 409)
+        with patch.object(self.main.syncthing, "disconnect_save_vault") as disconnect:
+            response = self.client.delete(f"/api/save-vaults/{alice_id}/devices/{alice_device['id']}")
+            self.assertEqual(response.status_code, 200, response.text)
+            disconnect.assert_called_once_with(created.json()["storage_key"], "ALICE-REMOTE")
+        self.assertIsNone(self.client.get("/api/saves").json()["devices"][0]["connected_at"])
+        self.assertEqual(alice_path.read_bytes(), b"alice progress")
+        self.assertEqual(legacy_path.read_bytes(), b"leave legacy alone")
+        self.assertEqual(bob_path.read_bytes(), b"bob progress")
+        admin_default = self.client.get("/api/saves", headers=self.headers).json()
+        self.assertIsNone(admin_default["vault_id"])
+        self.assertEqual(self.client.get(f"/api/saves?vault_id={alice_id}", headers=self.headers).json()["vault_id"], alice_id)
+        self.client.cookies.clear()
+
     def test_private_api_requires_token(self):
         unauthorized = self.client.get("/api/status")
         self.assertEqual(unauthorized.status_code, 401)
@@ -245,6 +325,12 @@ class ApiIntegrationTests(unittest.TestCase):
             ("GET", "/api/rom-requests"),
             ("POST", "/api/rom-requests"),
             ("POST", "/api/rom-requests/42/cancel"),
+            ("GET", "/api/save-vaults"),
+            ("POST", "/api/save-vaults"),
+            ("GET", "/api/saves/current"),
+            ("GET", "/api/saves/snapshots/42/files/retroarch/test.srm"),
+            ("POST", "/api/save-vaults/42/devices/12"),
+            ("DELETE", "/api/save-vaults/42/devices/12"),
         ):
             self.assertTrue(self.main.mobile_public_route_allowed(method, path))
         self.assertEqual(self.client.get("/api/status", headers=bearer).status_code, 404)

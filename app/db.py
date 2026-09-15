@@ -1078,6 +1078,37 @@ class Database:
                 "ON rom_requests(status,id DESC)"
             )
             connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(38)")
+            connection.executescript("""
+                CREATE TABLE IF NOT EXISTS save_vaults (
+                    id INTEGER PRIMARY KEY,
+                    storage_key TEXT NOT NULL UNIQUE,
+                    owner_user_id INTEGER NOT NULL UNIQUE REFERENCES users(id),
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE TABLE IF NOT EXISTS save_vault_settings (
+                    id INTEGER PRIMARY KEY REFERENCES save_vaults(id),
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    interval_minutes INTEGER NOT NULL DEFAULT 360,
+                    retention_recent INTEGER NOT NULL DEFAULT 24,
+                    retention_daily INTEGER NOT NULL DEFAULT 30,
+                    retention_weekly INTEGER NOT NULL DEFAULT 12,
+                    retention_monthly INTEGER NOT NULL DEFAULT 12,
+                    last_attempt_at TEXT,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE TABLE IF NOT EXISTS save_vault_devices (
+                    device_id INTEGER PRIMARY KEY REFERENCES devices(id),
+                    vault_id INTEGER NOT NULL REFERENCES save_vaults(id),
+                    syncthing_device_id TEXT NOT NULL,
+                    connected_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            for table in ("save_snapshots", "save_conflict_resolutions", "jobs"):
+                columns = {row["name"] for row in connection.execute(f"PRAGMA table_info({table})")}
+                if "vault_id" not in columns:
+                    connection.execute(f"ALTER TABLE {table} ADD COLUMN vault_id INTEGER REFERENCES save_vaults(id)")
+                connection.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_vault ON {table}(vault_id,id)")
+            connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(39)")
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:

@@ -19,6 +19,46 @@ class FakeResponse(io.BytesIO):
 
 
 class SyncthingServiceTests(unittest.TestCase):
+    def test_private_save_share_is_exact_two_way_and_preserves_legacy_and_roms(self):
+        service = SyncthingService(self.settings(devices_root=Path("/emulation/devices")))
+        legacy = {"id": "legacy-saves", "path": "/media/Emulation/saves", "type": "sendreceive", "devices": [{"deviceID": "ADMIN"}]}
+        roms = {"id": "roms", "path": "/media/Emulation/devices/device-one/roms", "type": "sendonly"}
+        folders = [legacy, roms]
+        payloads = {
+            "/rest/config/folders": folders,
+            "/rest/system/status": {"myID": "NUC"},
+            "/rest/config/devices": [{"deviceID": "ALICE"}, {"deviceID": "ALICE-TWO"}],
+            "/rest/config/defaults/folder": {"type": "sendonly", "devices": [{"deviceID": "UNRELATED-DEFAULT"}]},
+        }
+        with patch.object(service, "_get", side_effect=lambda path: payloads[path]), patch.object(service, "_send_json") as send, patch.object(service, "_post"):
+            result = service.share_save_vault("vault-example", "ALICE")
+            created = send.call_args.args[1]
+            self.assertEqual(created["path"], "/media/Emulation/save-vaults/vault-example")
+            self.assertEqual(created["type"], "sendreceive")
+            self.assertEqual({item["deviceID"] for item in created["devices"]}, {"NUC", "ALICE"})
+            folders.append(created)
+            service.share_save_vault("vault-example", "ALICE-TWO")
+            updated = send.call_args.args[1]
+            self.assertEqual({item["deviceID"] for item in updated["devices"]}, {"NUC", "ALICE", "ALICE-TWO"})
+            self.assertEqual(legacy["devices"], [{"deviceID": "ADMIN"}])
+            self.assertEqual(roms["type"], "sendonly")
+            self.assertEqual(result["folder_id"], "rommates-saves-vault-example")
+
+    def test_private_save_share_rejects_overlapping_or_redirected_folder(self):
+        service = SyncthingService(self.settings(syncthing_devices_root=Path("/media/Emulation/devices")))
+        payloads = {
+            "/rest/config/folders": [{"id": "broad", "path": "/media/Emulation"}],
+            "/rest/system/status": {"myID": "NUC"},
+            "/rest/config/devices": [{"deviceID": "ALICE"}],
+        }
+        with patch.object(service, "_get", side_effect=lambda path: payloads[path]), patch.object(service, "_send_json") as send:
+            with self.assertRaisesRegex(ValueError, "overlaps"):
+                service.share_save_vault("vault-example", "ALICE")
+            payloads["/rest/config/folders"] = [{"id": "rommates-saves-vault-example", "path": "/media/Emulation/saves"}]
+            with self.assertRaisesRegex(ValueError, "unexpected path"):
+                service.share_save_vault("vault-example", "ALICE")
+            send.assert_not_called()
+
     def settings(self, **overrides):
         values = {
             "library_root": Path("/roms"),

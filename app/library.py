@@ -907,7 +907,8 @@ class LibraryService:
         if not present_paths:
             # Nothing discovered: treat as an unavailable mount rather than a deletion.
             return []
-        stale = [row for row in known if row["path"] not in present_paths]
+        save_devices = {row["device_id"] for row in connection.execute("SELECT device_id FROM save_vault_devices")}
+        stale = [row for row in known if row["path"] not in present_paths and row["id"] not in save_devices]
         if stale:
             placeholders = ",".join("?" for _ in stale)
             connection.execute(
