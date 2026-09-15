@@ -53,6 +53,9 @@ private struct MainTabView: View {
                     DevicesView()
                         .tabItem { Label("Devices", systemImage: "gamecontroller") }
                         .tag(AppTab.devices)
+                    SavesView()
+                        .tabItem { Label("Saves", systemImage: "externaldrive.badge.checkmark") }
+                        .tag(AppTab.saves)
                 }
                 if model.permissions?.upload == true {
                     UploadsView()

@@ -60,6 +60,13 @@ enum GuidedTourCatalog {
                     icon: "arrow.triangle.2.circlepath.circle.fill",
                     title: "Apply when you are ready",
                     message: "Switches stage your desired roster. Review the change count, then apply it when you are ready. Syncthing handles delivery."
+                ),
+                GuidedTourStep(
+                    id: "saves",
+                    tab: .saves,
+                    icon: "externaldrive.badge.checkmark",
+                    title: "Keep your progress safe",
+                    message: "Saves lets you enable a private folder, connect your handhelds, and recover snapshots or resolve conflicting versions. Existing shared saves stay separate."
                 )
             ])
         }

@@ -65,6 +65,10 @@ directory disappears, so the connection can still be managed.
   use their own vault and administrators use the existing shared source.
 
 The authenticated native API permits these routes with the same ownership
-checks. The native app needs its own Saves screens to expose these features.
+checks. The native app's Saves tab exposes opt-in, device connections, current
+files, snapshots, and conflict recovery. It always sends an explicit private vault
+ID, including when signed in with a restricted administrator session. Native save
+settings and individual snapshot-file downloads remain available through the web
+interface rather than the app.
 Sharing a vault between different users and migrating the legacy source are
 not enabled in this release.

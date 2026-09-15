@@ -6,6 +6,7 @@ import UserNotifications
 enum AppTab: Hashable, Sendable {
     case library
     case devices
+    case saves
     case uploads
     case inbox
     case account
@@ -464,6 +465,7 @@ final class AppModel: ObservableObject {
             showingROMRequests = true
         }
         else if path.hasPrefix("devices") { selectedTab = .devices }
+        else if path.hasPrefix("saves") { selectedTab = .saves }
         else if path.hasPrefix("transfers") { selectedTab = .uploads }
         else { selectedTab = .inbox }
     }

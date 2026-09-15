@@ -2,7 +2,7 @@
 
 Native SwiftUI client for non-administrator ROMmates accounts. Tabs are selected from
 the authenticated account's existing roles: Library for everyone, Devices for Member,
-Uploads for Contributor, plus Inbox and Account. Role names and authorization remain
+Saves for Member, Uploads for Contributor, plus Inbox and Account. Role names and authorization remain
 owned by the server.
 
 ## Current checkpoint
@@ -19,6 +19,12 @@ owned by the server.
   server-driven TestFlight announcements and release notes.
 - Push registration uses the production entitlement in Release builds and development
   in Debug builds.
+- Private Saves: explicit opt-in, handheld save-share connections, paginated current
+  files and snapshot history, snapshot creation/pinning, restore previews, conflict
+  version selection, and server job status. Every save operation uses an explicit
+  private vault ID; existing legacy saves are never migrated by the app.
+- Saves is available to Member accounts (including restricted native administrator
+  sessions). With all roles enabled, iOS puts additional tabs under More.
 - Debug and optimized Release device builds pass with Xcode. Physical-device behavior,
   including production APNs delivery, is exercised through the internal TestFlight group.
 
@@ -37,6 +43,25 @@ Before archiving, set the Apple Developer team and confirm the bundle identifier
 `ROMMATES_APNS_BUNDLE_ID` on the server and regenerate the project.
 
 ## Shipping to TestFlight
+
+For a direct development install instead of TestFlight, build Debug and install on
+an unlocked, paired iPhone with Developer Mode enabled:
+
+```sh
+xcodebuild -project ios/ROMmates.xcodeproj -scheme ROMmates -configuration Debug \
+  -destination 'generic/platform=iOS' -derivedDataPath /tmp/rommates-device \
+  -allowProvisioningUpdates build
+xcrun devicectl list devices
+xcrun devicectl device install app --device DEVICE_ID \
+  /tmp/rommates-device/Build/Products/Debug-iphoneos/ROMmates.app
+```
+
+This replaces the installed app with the development-signed version of the same
+bundle ID. It does not upload, promote, or announce a TestFlight release. Debug uses
+development APNs, so a production-only APNs server may not deliver pushes to this
+build; in-app Inbox and job polling remain available. Do not change production APNs
+configuration just to test this build. Run `ROMmatesTests` in the ROMmates scheme
+for save response decoding and restore/conflict request-contract checks.
 
 Two internal TestFlight groups in App Store Connect: **Nightly** gets every build automatically
 (Ryan, Jordan); **Stable** gets only promoted builds (everyone else).

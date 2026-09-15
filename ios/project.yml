@@ -40,6 +40,16 @@ targets:
         TARGETED_DEVICE_FAMILY: "1"
         SUPPORTS_MACCATALYST: NO
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.utilities
+  ROMmatesTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - ROMmatesTests
+    dependencies:
+      - target: ROMmates
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
 schemes:
   ROMmates:
     build:
@@ -49,3 +59,6 @@ schemes:
       config: Debug
     archive:
       config: Release
+    test:
+      targets:
+        - ROMmatesTests
