@@ -17,5 +17,11 @@ dev = [
   "pytest==8.4.1",
 ]
 
+# The repository root holds both `app` and `ios`, which setuptools' flat-layout
+# auto-discovery refuses to guess between. Name the Python package explicitly so
+# `pip install -e .` keeps working as sibling directories are added.
+[tool.setuptools]
+packages = ["app"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
