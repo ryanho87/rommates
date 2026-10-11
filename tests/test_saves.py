@@ -473,3 +473,46 @@ class SaveSnapshotTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DraSticMatchingTests(unittest.TestCase):
+    """DraStic ships on most Android handhelds and keeps the ROM stem."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        root = Path(self.temp.name)
+        self.settings = Settings(
+            library_root=root / "roms",
+            devices_root=root / "devices",
+            trash_root=root / "trash",
+            database_path=root / "db.sqlite",
+            saves_root=root / "saves",
+            snapshots_root=root / "snapshots",
+            scan_on_start=False,
+        )
+        self.db = Database(self.settings.database_path)
+        self.db.initialize()
+        self.service = SaveSnapshotService(self.settings, self.db)
+
+    def test_drastic_saves_are_matchable_by_filename(self):
+        for relpath in (
+            "drastic/Pokemon HeartGold.dsv",
+            "drastic/backup/Pokemon HeartGold.dsv",
+        ):
+            with self.subTest(relpath=relpath):
+                record = self.service._classify(relpath)
+                self.assertEqual(record["kind"], "save")
+                self.assertEqual(record["match_strategy"], "filename")
+                self.assertTrue(record["matchable"])
+                self.assertEqual(record["content_name"], "Pokemon HeartGold")
+                self.assertIn("nds", record["platforms"])
+
+    def test_resolve_relpath_rejects_paths_outside_the_source(self):
+        (self.settings.saves_root / "drastic").mkdir(parents=True)
+        real = self.settings.saves_root / "drastic" / "Game.dsv"
+        real.write_bytes(b"save")
+        self.assertEqual(self.service.resolve_relpath("drastic/Game.dsv"), real.resolve())
+        self.assertIsNone(self.service.resolve_relpath("../escape.dsv"))
+        self.assertIsNone(self.service.resolve_relpath("drastic/missing.dsv"))
+        self.assertIsNone(self.service.resolve_relpath("drastic"))

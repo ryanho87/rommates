@@ -2420,6 +2420,82 @@ class ApiIntegrationTests(unittest.TestCase):
         self.assertEqual(rename_job["result"]["new_name"], "Renamed Game")
 
 
+    def test_conflict_device_names_fall_back_to_registered_devices(self):
+        """A cold or unreachable Syncthing must not leave a bare device ID on screen."""
+        with self.main.db.write() as connection:
+            connection.execute(
+                "INSERT INTO devices(name,path,syncthing_device_id) VALUES(?,?,?) "
+                "ON CONFLICT(path) DO UPDATE SET syncthing_device_id=excluded.syncthing_device_id",
+                ("origin-handheld", "origin-handheld", "F6G43OM-TNYC6PJ-SPRCS6F"),
+            )
+        try:
+            with patch.object(self.main.syncthing, "peek", return_value={"devices": []}):
+                names = self.main._syncthing_device_names()
+            self.assertEqual(names.get("F6G43OM-TNYC6PJ-SPRCS6F"), "origin-handheld")
+
+            # A live Syncthing name still wins over the stored label.
+            live = {"devices": [{"device_id": "F6G43OM-TNYC6PJ-SPRCS6F", "name": "live-name"}]}
+            with patch.object(self.main.syncthing, "peek", return_value=live):
+                names = self.main._syncthing_device_names()
+            self.assertEqual(names.get("F6G43OM-TNYC6PJ-SPRCS6F"), "live-name")
+        finally:
+            with self.main.db.write() as connection:
+                connection.execute("DELETE FROM devices WHERE path='origin-handheld'")
+
+    def test_save_origins_reports_the_writing_device(self):
+        save = self.root / "saves/retroarch/mGBA/Origin Probe.srm"
+        save.parent.mkdir(parents=True, exist_ok=True)
+        save.write_bytes(b"save-data")
+        with self.main.db.write() as connection:
+            connection.execute(
+                "INSERT INTO devices(name,path,syncthing_device_id) VALUES(?,?,?) "
+                "ON CONFLICT(path) DO UPDATE SET syncthing_device_id=excluded.syncthing_device_id",
+                ("origin-handheld", "origin-handheld", "F6G43OM-TNYC6PJ-SPRCS6F"),
+            )
+        try:
+            with patch.object(
+                self.main.syncthing, "file_origins",
+                return_value={"retroarch/mGBA/Origin Probe.srm": "F6G43OM"},
+            ):
+                with patch.object(self.main.syncthing, "peek", return_value={"devices": []}):
+                    response = self.client.post(
+                        "/api/saves/origins",
+                        headers=self.headers,
+                        json={"relpaths": [
+                            "retroarch/mGBA/Origin Probe.srm",
+                            "../escape.srm",
+                            "retroarch/mGBA/missing.srm",
+                        ]},
+                    )
+            self.assertEqual(response.status_code, 200)
+            origins = response.json()["origins"]
+            # Only the real file inside the source is reported.
+            self.assertEqual(list(origins), ["retroarch/mGBA/Origin Probe.srm"])
+            entry = origins["retroarch/mGBA/Origin Probe.srm"]
+            self.assertEqual(entry["device_id"], "F6G43OM")
+            self.assertEqual(entry["device_name"], "origin-handheld")
+        finally:
+            save.unlink(missing_ok=True)
+            with self.main.db.write() as connection:
+                connection.execute("DELETE FROM devices WHERE path='origin-handheld'")
+
+    def test_save_origins_degrades_when_syncthing_fails(self):
+        save = self.root / "saves/retroarch/mGBA/Quiet.srm"
+        save.parent.mkdir(parents=True, exist_ok=True)
+        save.write_bytes(b"save-data")
+        try:
+            with patch.object(self.main.syncthing, "file_origins", side_effect=RuntimeError("down")):
+                response = self.client.post(
+                    "/api/saves/origins",
+                    headers=self.headers,
+                    json={"relpaths": ["retroarch/mGBA/Quiet.srm"]},
+                )
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()["origins"], {})
+        finally:
+            save.unlink(missing_ok=True)
+
+
 class StartupTokenTests(unittest.TestCase):
     """A missing token disables authentication entirely, so startup must reject it.
 

@@ -5,7 +5,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
@@ -22,6 +22,8 @@ class SyncthingService:
         self._lock = threading.Lock()
         self._cached_at = 0.0
         self._cached: dict[str, object] | None = None
+        # (folder_id, relpath, mtime_ns) -> short Syncthing device id.
+        self._origin_cache: dict[tuple[str, str, int], str] = {}
 
     @property
     def configured(self) -> bool:
@@ -608,3 +610,96 @@ class SyncthingService:
                 time.monotonic() - self._cached_at >= self.settings.syncthing_cache_seconds
             )
             return payload
+
+    def _save_folder_id(self, source_root: Path, storage_key: str = "") -> str:
+        """Locate the Syncthing folder that holds a save source.
+
+        Syncthing usually runs in its own container, so its folder paths share
+        only a suffix with the paths ROMmates sees. Private vaults have a known
+        folder id; the legacy shared source is matched on the longest common
+        trailing path segments.
+        """
+        if storage_key:
+            return f"rommates-saves-{storage_key}"
+        folders = self._get("/rest/config/folders")
+        if not isinstance(folders, list):
+            return ""
+        wanted = [part for part in PurePosixPath(str(source_root)).parts if part not in ("/", "")]
+        best_id = ""
+        best_score = 0
+        for folder in folders:
+            if not isinstance(folder, dict):
+                continue
+            folder_id = str(folder.get("id") or "").strip()
+            raw = self._normalized_path(folder.get("path"))
+            if not folder_id or not raw:
+                continue
+            have = [part for part in PurePosixPath(raw).parts if part not in ("/", "")]
+            score = 0
+            while score < min(len(have), len(wanted)) and have[-1 - score] == wanted[-1 - score].casefold():
+                score += 1
+            # Require at least the leaf directory name to agree.
+            if score > best_score:
+                best_id, best_score = folder_id, score
+        return best_id if best_score else ""
+
+    def file_origins(
+        self,
+        source_root: Path,
+        entries: list[tuple[str, int]],
+        storage_key: str = "",
+        deadline_seconds: float = 8.0,
+    ) -> dict[str, str]:
+        """Map each relpath to the Syncthing device that last modified it.
+
+        Entries are (relpath, mtime_ns); mtime keys the cache so a changed file
+        is looked up again. Always best effort: an unreachable or unconfigured
+        Syncthing yields an empty map rather than failing the caller.
+        """
+        if not self.configured or not entries:
+            return {}
+        try:
+            folder_id = self._save_folder_id(Path(source_root), storage_key)
+        except (HTTPError, URLError, OSError, ValueError):
+            return {}
+        if not folder_id:
+            return {}
+
+        results: dict[str, str] = {}
+        pending: list[tuple[str, int]] = []
+        with self._lock:
+            for relpath, mtime_ns in entries:
+                cached = self._origin_cache.get((folder_id, relpath, mtime_ns))
+                if cached is not None:
+                    results[relpath] = cached
+                else:
+                    pending.append((relpath, mtime_ns))
+        if not pending:
+            return results
+
+        stop_at = time.monotonic() + deadline_seconds
+
+        def lookup(item: tuple[str, int]) -> tuple[str, int, str]:
+            relpath, mtime_ns = item
+            if time.monotonic() >= stop_at:
+                return relpath, mtime_ns, ""
+            query = urlencode({"folder": folder_id, "file": relpath})
+            try:
+                payload = self._get(f"/rest/db/file?{query}")
+            except (HTTPError, URLError, OSError, ValueError):
+                return relpath, mtime_ns, ""
+            source = payload.get("global") if isinstance(payload, dict) else None
+            if not isinstance(source, dict):
+                return relpath, mtime_ns, ""
+            return relpath, mtime_ns, str(source.get("modifiedBy") or "").strip()
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            for relpath, mtime_ns, device_id in pool.map(lookup, pending):
+                if not device_id:
+                    continue
+                results[relpath] = device_id
+                with self._lock:
+                    if len(self._origin_cache) > 20000:
+                        self._origin_cache.clear()
+                    self._origin_cache[(folder_id, relpath, mtime_ns)] = device_id
+        return results

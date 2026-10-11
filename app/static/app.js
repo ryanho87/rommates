@@ -79,6 +79,8 @@ const state = {
   jobIssueOffset: 0,
   saveTab: "current",
   saveVaultId: null,
+  // Guards against a stale origin lookup writing into a re-rendered table.
+  saveOriginToken: 0,
   saveSearch: "",
   saveOffset: 0,
   saveSort: "modified_desc",
@@ -3890,7 +3892,34 @@ function currentSavesHtml(data, inventory) {
   if (!data.items.length) {
     return `${emulatorSummary}${toolbar}<div class="empty-state save-empty"><div><h2>${state.saveSearch ? "No saves match this search" : "No save files found"}</h2><p>${state.saveSearch ? "Try part of the filename, emulator, or relative directory." : "No emulator save data has arrived through Syncthing yet."}</p></div></div>`;
   }
-  return `${emulatorSummary}${toolbar}<div class="table-wrap"><table><thead><tr>${saveSortHeader("path", "Save path")}${saveSortHeader("emulator", "Emulator")}${saveSortHeader("type", "Type")}${saveSortHeader("size", "Size")}${saveSortHeader("modified", "Modified")}</tr></thead><tbody>${data.items.map((item) => `<tr><td class="name-cell"><code class="save-path">${escapeHtml(item.relpath)}</code>${item.core ? `<span class="path-line">${escapeHtml(item.core)}</span>` : ""}</td><td>${escapeHtml(item.emulator)}</td><td><span class="badge ${item.kind === "save" ? "unique" : item.kind === "state" ? "possible" : "cancelled"}">${escapeHtml(item.kind)}</span></td><td class="meta">${formatBytes(item.size)}</td><td class="meta">${new Date(Number(item.mtime_ns) / 1e6).toLocaleString()}</td></tr>`).join("")}</tbody></table></div>${infiniteFooter(data, data.total === 1 ? "vault file" : "vault files")}`;
+  return `${emulatorSummary}${toolbar}<div class="table-wrap"><table><thead><tr>${saveSortHeader("path", "Save path")}${saveSortHeader("emulator", "Emulator")}${saveSortHeader("type", "Type")}${saveSortHeader("size", "Size")}${saveSortHeader("modified", "Modified")}<th>Last written by</th></tr></thead><tbody>${data.items.map((item) => `<tr><td class="name-cell"><code class="save-path">${escapeHtml(item.relpath)}</code>${item.core ? `<span class="path-line">${escapeHtml(item.core)}</span>` : ""}</td><td>${escapeHtml(item.emulator)}</td><td><span class="badge ${item.kind === "save" ? "unique" : item.kind === "state" ? "possible" : "cancelled"}">${escapeHtml(item.kind)}</span></td><td class="meta">${formatBytes(item.size)}</td><td class="meta">${new Date(Number(item.mtime_ns) / 1e6).toLocaleString()}</td><td class="meta save-origin" data-save-origin="${escapeHtml(item.relpath)}">—</td></tr>`).join("")}</tbody></table></div>${infiniteFooter(data, data.total === 1 ? "vault file" : "vault files")}`;
+}
+
+// Syncthing only reports the modifying device one file at a time, so the files
+// table renders immediately and this fills the "Last written by" column
+// afterwards. Failures stay silent: the column simply keeps its placeholder.
+async function fillSaveOrigins() {
+  const cells = [...view.querySelectorAll("[data-save-origin]")];
+  if (!cells.length) return;
+  const relpaths = cells.map((cell) => cell.dataset.saveOrigin);
+  const token = ++state.saveOriginToken;
+  let data;
+  try {
+    data = await api("/api/saves/origins", {
+      method: "POST",
+      body: JSON.stringify({ relpaths: relpaths.slice(0, 500) }),
+    });
+  } catch {
+    return;
+  }
+  // A later render already replaced these cells.
+  if (token !== state.saveOriginToken) return;
+  for (const cell of cells) {
+    const origin = data.origins?.[cell.dataset.saveOrigin];
+    if (!origin) continue;
+    cell.textContent = origin.device_name || origin.device_id;
+    if (!origin.device_name) cell.title = "Unrecognised Syncthing device";
+  }
 }
 
 const SAVE_SORT_DEFAULT_DIRECTIONS = {
@@ -4026,6 +4055,7 @@ async function renderSaves() {
   const vaultSelector = isAdmin() ? `<div class="toolbar"><label class="field"><span>Save vault</span><select class="select" data-save-vault><option value="" ${!state.saveVaultId ? "selected" : ""}>Existing shared saves</option>${vaults.items.map((item) => `<option value="${item.id}" ${Number(state.saveVaultId) === item.id ? "selected" : ""}>${escapeHtml(item.owner_name)} · Private saves</option>`).join("")}</select></label>${!vaults.items.some((item) => item.owner_user_id === state.principal?.id) && !state.principal?.bootstrap ? '<button class="button secondary" data-enable-private-saves>Enable my private saves</button>' : ""}</div>` : "";
   const connections = saveDeviceConnectionsHtml(overview);
   setViewHtml(`${vaultSelector}${saveHeader(overview)}${connections}${saveTabs(overview)}${content}`);
+  fillSaveOrigins();
   bindPrivateSaveSetup();
   view.querySelector("[data-save-vault]")?.addEventListener("change", (event) => {
     state.saveVaultId = Number(event.target.value) || null;

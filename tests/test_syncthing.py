@@ -5,6 +5,7 @@ import json
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from urllib.error import URLError
 
 from app.config import Settings
 from app.syncthing import SyncthingService
@@ -354,3 +355,79 @@ class SyncthingServiceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SyncthingFolderMatchTests(unittest.TestCase):
+    """Syncthing usually runs in its own container with different mount paths."""
+
+    def _service(self, **overrides):
+        settings = Settings(
+            library_root=Path("/emulation/roms"),
+            devices_root=Path("/emulation/devices"),
+            trash_root=Path("/emulation/trash"),
+            database_path=Path("/data/db.sqlite"),
+            saves_root=Path("/emulation/saves"),
+            syncthing_url="http://syncthing:8384",
+            syncthing_api_key="key",
+            **overrides,
+        )
+        return SyncthingService(settings)
+
+    FOLDERS = [
+        {"id": "aaaaa-bbbbb", "path": "/media/Emulation/devices/rg_rotate/roms"},
+        {"id": "wc0mo-tslmc", "path": "/media/Emulation/saves"},
+        {"id": "other", "path": "/config/Sync"},
+    ]
+
+    def test_matches_the_saves_folder_across_a_different_mount_prefix(self):
+        service = self._service()
+        with patch.object(SyncthingService, "_get", return_value=self.FOLDERS):
+            self.assertEqual(service._save_folder_id(Path("/emulation/saves")), "wc0mo-tslmc")
+
+    def test_private_vaults_use_their_deterministic_folder_id(self):
+        service = self._service()
+        self.assertEqual(
+            service._save_folder_id(Path("/emulation/save-vaults/vault-x"), "vault-x"),
+            "rommates-saves-vault-x",
+        )
+
+    def test_no_match_returns_empty_rather_than_guessing(self):
+        service = self._service()
+        with patch.object(SyncthingService, "_get", return_value=[{"id": "x", "path": "/config/Sync"}]):
+            self.assertEqual(service._save_folder_id(Path("/emulation/saves")), "")
+
+    def test_origins_are_empty_when_syncthing_is_not_configured(self):
+        settings = Settings(
+            library_root=Path("/emulation/roms"),
+            devices_root=Path("/emulation/devices"),
+            trash_root=Path("/emulation/trash"),
+            database_path=Path("/data/db.sqlite"),
+            saves_root=Path("/emulation/saves"),
+        )
+        service = SyncthingService(settings)
+        self.assertEqual(service.file_origins(Path("/emulation/saves"), [("a.srm", 1)]), {})
+
+    def test_origins_report_the_modifying_device_and_cache_by_mtime(self):
+        service = self._service()
+        calls = []
+
+        def fake_get(self_inner, path):
+            calls.append(path)
+            if path == "/rest/config/folders":
+                return SyncthingFolderMatchTests.FOLDERS
+            return {"global": {"modifiedBy": "F6G43OM"}}
+
+        with patch.object(SyncthingService, "_get", fake_get):
+            first = service.file_origins(Path("/emulation/saves"), [("retroarch/mGBA/Game.srm", 11)])
+            self.assertEqual(first, {"retroarch/mGBA/Game.srm": "F6G43OM"})
+            lookups = len([c for c in calls if c.startswith("/rest/db/file")])
+            service.file_origins(Path("/emulation/saves"), [("retroarch/mGBA/Game.srm", 11)])
+            self.assertEqual(len([c for c in calls if c.startswith("/rest/db/file")]), lookups)
+            # A changed file is looked up again rather than served from the cache.
+            service.file_origins(Path("/emulation/saves"), [("retroarch/mGBA/Game.srm", 22)])
+            self.assertEqual(len([c for c in calls if c.startswith("/rest/db/file")]), lookups + 1)
+
+    def test_an_unreachable_syncthing_degrades_to_no_origins(self):
+        service = self._service()
+        with patch.object(SyncthingService, "_get", side_effect=URLError("down")):
+            self.assertEqual(service.file_origins(Path("/emulation/saves"), [("a.srm", 1)]), {})

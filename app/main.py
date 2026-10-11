@@ -3875,15 +3875,32 @@ def save_overview(saves: SaveSnapshotService = Depends(require_save_service)):
     }
 
 
+def _registered_device_names() -> dict[str, str]:
+    """Syncthing identities ROMmates already knows, straight from the catalog."""
+    with db.connect() as connection:
+        return {
+            row["syncthing_device_id"]: row["name"]
+            for row in connection.execute(
+                "SELECT syncthing_device_id,name FROM devices WHERE syncthing_device_id<>''"
+            )
+        }
+
+
 def _syncthing_device_names(refresh_if_empty: bool = False) -> dict[str, str]:
     status = syncthing.peek()
     if refresh_if_empty and syncthing.configured and status.get("checking"):
         status = syncthing.status()
-    return {
+    live = {
         str(device.get("device_id") or ""): str(device.get("name") or "")
         for device in status.get("devices", [])
         if isinstance(device, dict) and device.get("device_id")
     }
+    # The live status is a cache that is empty while cold and unavailable when
+    # Syncthing is unreachable, which previously left conflicts labelled with a
+    # bare device ID. Registered devices always resolve, so fill the gaps.
+    names = _registered_device_names()
+    names.update({key: value for key, value in live.items() if value})
+    return names
 
 
 def _vault_device_names(service: SaveSnapshotService) -> dict[str, str]:
@@ -3915,6 +3932,48 @@ def save_conflicts(
     offset: int = Query(0, ge=0),
 ):
     return saves.conflicts(search, limit, offset, _vault_device_names(saves))
+
+
+class SaveOriginsRequest(BaseModel):
+    relpaths: list[str] = Field(max_length=500)
+
+
+@app.post("/api/saves/origins")
+def save_origins(payload: SaveOriginsRequest, saves: SaveSnapshotService = Depends(require_save_service)):
+    """Report which device last wrote each save, for the rows now on screen.
+
+    Syncthing only exposes this one file at a time, so the browser asks after
+    the table has rendered instead of blocking the listing. Unknown files are
+    simply omitted: Syncthing may be unconfigured, unreachable, or not tracking
+    that path.
+    """
+    root = saves.settings.saves_root
+    entries: list[tuple[str, int]] = []
+    for relpath in dict.fromkeys(payload.relpaths):
+        path = saves.resolve_relpath(relpath)
+        if path is None:
+            continue
+        try:
+            entries.append((relpath, path.stat().st_mtime_ns))
+        except OSError:
+            continue
+    storage_key = ""
+    if saves.vault_id is not None:
+        storage_key = save_vaults.get(saves.vault_id)["storage_key"]
+    try:
+        origins = syncthing.file_origins(root, entries, storage_key)
+    except Exception:
+        origins = {}
+    names = _vault_device_names(saves)
+    items: dict[str, dict[str, str]] = {}
+    for relpath, device_id in origins.items():
+        name = ""
+        for known_id, known_name in names.items():
+            if known_id.casefold().startswith(device_id.casefold()) or device_id.casefold().startswith(known_id.casefold()):
+                name = known_name
+                break
+        items[relpath] = {"device_id": device_id, "device_name": name}
+    return {"origins": items, "available": syncthing.configured}
 
 
 @app.post("/api/saves/conflicts/resolve", status_code=202)

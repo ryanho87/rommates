@@ -56,6 +56,10 @@ CORE_PLATFORMS = {
 # emulators (notably Dolphin and Ryujinx) use game/title identifiers and are
 # inventoried and snapshotted, but deliberately excluded from filename matching.
 EMULATOR_PLATFORMS = {
+    # DraStic keeps the ROM stem and writes <stem>.dsv, including under its
+    # backup/ directory. It ships on most Android handhelds, so without this its
+    # saves classify as game_id and can never match a ROM.
+    "drastic": frozenset({"nds"}),
     "melonds": frozenset({"nds"}),
     "mgba": frozenset({"gba", "gb", "gbc"}),
     "duckstation": frozenset({"psx", "ps1"}),
@@ -193,6 +197,26 @@ class SaveSnapshotService:
             if folded.startswith("._"):
                 return True
         return False
+
+    def resolve_relpath(self, relpath: str) -> Path | None:
+        """Resolve a caller-supplied relpath inside the save source, or None.
+
+        Returns None rather than raising for anything that is not a real file
+        contained by the source, so callers can skip unknown input quietly.
+        """
+        root = self.settings.saves_root
+        if not root.is_dir():
+            return None
+        candidate = (root / relpath)
+        try:
+            resolved = candidate.resolve()
+        except OSError:
+            return None
+        if candidate.is_symlink() or root.resolve() not in resolved.parents:
+            return None
+        if not resolved.is_file():
+            return None
+        return resolved
 
     def _classify(self, relpath: str) -> dict[str, object]:
         """Describe both the legacy WebDAV tree and the shared emulator vault."""
