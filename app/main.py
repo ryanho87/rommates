@@ -786,7 +786,7 @@ class DeviceDeploymentModeRequest(BaseModel):
 
 
 class DeviceRomLayoutRequest(BaseModel):
-    layout: str = Field(pattern="^(esde|nextui)$")
+    layout: str = Field(pattern="^(esde|nextui|batocera)$")
 
 
 class DeviceCreateRequest(BaseModel):
@@ -796,7 +796,7 @@ class DeviceCreateRequest(BaseModel):
     clone_device_id: int | None = Field(default=None, ge=1)
     keep_in_sync: bool = False
     storage_capacity_bytes: int = Field(default=0, ge=0, le=1_125_899_906_842_624)
-    rom_layout: str = Field(default="esde", pattern="^(esde|nextui)$")
+    rom_layout: str = Field(default="esde", pattern="^(esde|nextui|batocera)$")
 
 
 class DeviceOwnerRequest(BaseModel):
@@ -2391,7 +2391,8 @@ def games(
                     for row in connection.execute(
                         "SELECT DISTINCT gf.game_id,dif.device_id,d.name "
                         "FROM game_files gf JOIN device_inventory_files dif "
-                        "ON (dif.relpath=gf.device_relpath OR dif.relpath=gf.nextui_relpath) "
+                        "ON (dif.relpath=gf.device_relpath OR dif.relpath=gf.nextui_relpath "
+                        "OR dif.relpath=gf.batocera_relpath) "
                         "JOIN devices d ON d.id=dif.device_id "
                         f"WHERE gf.game_id IN ({placeholders}) AND {visible_device('d')} "
                         "AND (SELECT COUNT(DISTINCT ugf.game_id) FROM game_files ugf "
@@ -2567,7 +2568,8 @@ def duplicate_groups(
             "SELECT id,name FROM devices ORDER BY name COLLATE NOCASE"
         )]
         file_rows = connection.execute(
-            f"SELECT game_id,device_relpath,nextui_relpath FROM game_files WHERE game_id IN ({game_placeholders})",
+            f"SELECT game_id,device_relpath,nextui_relpath,batocera_relpath FROM game_files "
+            f"WHERE game_id IN ({game_placeholders})",
             game_ids,
         ).fetchall()
     devices_by_game: dict[int, list[str]] = {game_id: [] for game_id in game_ids}
@@ -2584,7 +2586,7 @@ def duplicate_groups(
     # path under either naming scheme is on a device.
     for row in file_rows:
         files_by_game[row["game_id"]].extend(
-            value for value in (row["device_relpath"], row["nextui_relpath"]) if value
+            value for value in (row["device_relpath"], row["nextui_relpath"], row["batocera_relpath"]) if value
         )
     save_impacts = saves.save_impacts(game_ids)
     items_by_group: dict[str, list[dict[str, object]]] = {key: [] for key in keys}

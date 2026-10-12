@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS game_files (
     relpath TEXT NOT NULL,
     device_relpath TEXT NOT NULL DEFAULT '',
     nextui_relpath TEXT NOT NULL DEFAULT '',
+    batocera_relpath TEXT NOT NULL DEFAULT '',
     size INTEGER NOT NULL,
     sha256 TEXT NOT NULL,
     kind TEXT NOT NULL,
@@ -195,7 +196,7 @@ CREATE TABLE IF NOT EXISTS devices (
     path TEXT NOT NULL UNIQUE,
     deployment_mode TEXT NOT NULL DEFAULT 'hardlink' CHECK(deployment_mode IN ('copy','hardlink')),
     delivery_mode TEXT NOT NULL DEFAULT 'syncthing' CHECK(delivery_mode IN ('syncthing','download')),
-    rom_layout TEXT NOT NULL DEFAULT 'esde' CHECK(rom_layout IN ('esde','nextui')),
+    rom_layout TEXT NOT NULL DEFAULT 'esde' CHECK(rom_layout IN ('esde','nextui','batocera')),
     roster_group_id INTEGER REFERENCES device_roster_groups(id) ON DELETE SET NULL,
     owner_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
     syncthing_ready_at TEXT,
@@ -1144,6 +1145,33 @@ class Database:
                 "CREATE INDEX IF NOT EXISTS idx_game_files_nextui_relpath ON game_files(nextui_relpath)"
             )
             connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(40)")
+
+            # Batocera / Knulli folder names. Mostly identical to ES-DE's short
+            # names, but not always: megadrive, gamecube and 3ds among others.
+            game_file_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(game_files)")
+            }
+            if "batocera_relpath" not in game_file_columns:
+                connection.execute(
+                    "ALTER TABLE game_files ADD COLUMN batocera_relpath TEXT NOT NULL DEFAULT ''"
+                )
+            from .batocera import batocera_device_relpath
+
+            rows = connection.execute(
+                "SELECT gf.rowid,g.platform,gf.relpath FROM game_files gf "
+                "JOIN games g ON g.id=gf.game_id WHERE gf.batocera_relpath=''"
+            ).fetchall()
+            connection.executemany(
+                "UPDATE game_files SET batocera_relpath=? WHERE rowid=?",
+                (
+                    (batocera_device_relpath(row["platform"], row["relpath"]), row["rowid"])
+                    for row in rows
+                ),
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_game_files_batocera_relpath ON game_files(batocera_relpath)"
+            )
+            connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(41)")
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:

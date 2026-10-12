@@ -3108,6 +3108,7 @@ function deviceLayoutControl(device) {
 const ROM_LAYOUT_CHOICES = [
   { value: "esde", label: "ES-DE", hint: "Short system folders such as gba/ and snes/." },
   { value: "nextui", label: "NextUI / MinUI", hint: "Tagged folders such as Game Boy Advance (GBA)/." },
+  { value: "batocera", label: "Batocera / Knulli", hint: "Batocera system folders such as megadrive/ and gamecube/." },
 ];
 
 // A layout only changes the folder each file sits in, so switching moves the

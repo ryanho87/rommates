@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import unittest
 
+from app.batocera import batocera_device_relpath, batocera_supports, batocera_system_name
 from app.nextui import nextui_device_relpath, nextui_supports, nextui_system_name
 from app.rom_layouts import (
+    BATOCERA,
     ESDE,
     NEXTUI,
+    ROM_LAYOUTS,
+    relpath_case,
     device_relpath_for,
     layout_supports,
     normalize_layout,
@@ -102,6 +106,64 @@ class NextUiSourceFidelityTests(unittest.TestCase):
         from app.nextui import _FOLDERS
 
         self.assertEqual(len(_FOLDERS), len(set(_FOLDERS)))
+
+
+class BatoceraFolderTests(unittest.TestCase):
+    """Batocera/Knulli use their es_systems.yml keys as folder names.
+
+    Most match ES-DE's short names, so pin the ones that do not: these are the
+    folders a Knulli handheld would silently fail to list.
+    """
+
+    def test_folders_that_differ_from_esde(self):
+        self.assertEqual(batocera_system_name("genesis"), "megadrive")
+        self.assertEqual(batocera_system_name("gc"), "gamecube")
+        self.assertEqual(batocera_system_name("n3ds"), "3ds")
+        self.assertEqual(batocera_system_name("wonderswan"), "wswan")
+        self.assertEqual(batocera_system_name("wonderswancolor"), "wswanc")
+
+    def test_folders_identical_to_esde_pass_through(self):
+        for platform in ("gba", "snes", "nes", "gb", "gbc", "psx", "nds", "n64", "psp", "dreamcast", "wii", "xbox360"):
+            with self.subTest(platform=platform):
+                self.assertEqual(batocera_system_name(platform), platform)
+                self.assertTrue(batocera_supports(platform))
+
+    def test_human_readable_names_resolve_through_the_esde_aliases(self):
+        self.assertEqual(batocera_system_name("Sega Genesis"), "megadrive")
+        self.assertEqual(batocera_system_name("Nintendo GameCube"), "gamecube")
+        self.assertEqual(batocera_system_name("Game Boy Advance"), "gba")
+
+    def test_unknown_platforms_keep_their_library_folder(self):
+        self.assertFalse(batocera_supports("n3ds-encrypted"))
+        self.assertEqual(batocera_system_name("n3ds-encrypted"), "n3ds-encrypted")
+
+    def test_hyphenated_batocera_keys_survive_normalisation(self):
+        self.assertEqual(batocera_system_name("snes-msu1"), "snes-msu1")
+        self.assertTrue(batocera_supports("snes-msu1"))
+
+    def test_only_the_first_path_component_is_rewritten(self):
+        self.assertEqual(
+            batocera_device_relpath("genesis", "genesis/Sonic/disc.bin"),
+            "megadrive/Sonic/disc.bin",
+        )
+
+
+class BatoceraRegistryTests(unittest.TestCase):
+    def test_batocera_is_a_registered_layout(self):
+        self.assertIn(BATOCERA, ROM_LAYOUTS)
+        self.assertEqual(normalize_layout("Batocera"), BATOCERA)
+        self.assertEqual(relpath_column(BATOCERA), "batocera_relpath")
+        self.assertEqual(device_relpath_for(BATOCERA, "gc", "gc/Melee.iso"), "gamecube/Melee.iso")
+
+    def test_per_row_case_covers_every_non_default_layout(self):
+        case = relpath_case("d", "gf")
+        self.assertIn("WHEN 'nextui' THEN gf.nextui_relpath", case)
+        self.assertIn("WHEN 'batocera' THEN gf.batocera_relpath", case)
+        self.assertTrue(case.endswith("ELSE gf.device_relpath END"))
+
+    def test_layout_supports_consults_the_batocera_map(self):
+        self.assertTrue(layout_supports(BATOCERA, "genesis"))
+        self.assertFalse(layout_supports(BATOCERA, "n3ds-encrypted"))
 
 
 if __name__ == "__main__":

@@ -21,6 +21,7 @@ from typing import Callable, Iterable
 from .config import Settings
 from .db import Database
 from .esde import esde_device_relpath
+from .batocera import batocera_device_relpath
 from .nextui import nextui_device_relpath
 from .rom_layouts import ESDE, LAYOUT_LABELS, ROM_LAYOUTS, layout_supports, relpath_column, system_name_for
 
@@ -1068,14 +1069,15 @@ class LibraryService:
                     ).fetchone()["id"]
                     connection.execute("DELETE FROM game_files WHERE game_id=?", (game_id,))
                     connection.executemany(
-                        "INSERT INTO game_files(game_id,relpath,device_relpath,nextui_relpath,size,sha256,kind) "
-                        "VALUES(?,?,?,?,?,?,?)",
+                        "INSERT INTO game_files(game_id,relpath,device_relpath,nextui_relpath,batocera_relpath,"
+                        "size,sha256,kind) VALUES(?,?,?,?,?,?,?,?)",
                         (
                             (
                                 game_id,
                                 item.relpath,
                                 esde_device_relpath(candidate.platform, item.relpath),
                                 nextui_device_relpath(candidate.platform, item.relpath),
+                                batocera_device_relpath(candidate.platform, item.relpath),
                                 item.size,
                                 item.sha256,
                                 item.kind,
@@ -1401,12 +1403,13 @@ class LibraryService:
                 )
                 for old, target in mapping.items():
                     connection.execute(
-                        "UPDATE game_files SET relpath=?,device_relpath=?,nextui_relpath=? "
+                        "UPDATE game_files SET relpath=?,device_relpath=?,nextui_relpath=?,batocera_relpath=? "
                         "WHERE game_id=? AND relpath=?",
                         (
                             _rel(root, target),
                             esde_device_relpath(game["platform"], _rel(root, target)),
                             nextui_device_relpath(game["platform"], _rel(root, target)),
+                            batocera_device_relpath(game["platform"], _rel(root, target)),
                             game_id,
                             _rel(root, old),
                         ),
@@ -1585,12 +1588,12 @@ class LibraryService:
                 }
                 files_by_game: dict[int, list[str]] = {game_id: [] for game_id in all_ids}
                 for row in connection.execute(
-                    f"SELECT game_id,device_relpath,nextui_relpath FROM game_files "
+                    f"SELECT game_id,device_relpath,nextui_relpath,batocera_relpath FROM game_files "
                     f"WHERE game_id IN ({placeholders})",
                     all_ids,
                 ):
                     files_by_game[row["game_id"]].extend(
-                        value for value in (row["device_relpath"], row["nextui_relpath"]) if value
+                        value for value in (row["device_relpath"], row["nextui_relpath"], row["batocera_relpath"]) if value
                     )
                 device_ids = [row["id"] for row in connection.execute("SELECT id FROM devices")]
 
@@ -1857,10 +1860,11 @@ class LibraryService:
                 "SELECT DISTINCT gf.game_id,dif.relpath AS relpath "
                 "FROM device_inventory_files dif JOIN game_files gf "
                 "ON dif.relpath=gf.device_relpath OR dif.relpath=gf.nextui_relpath "
+                "OR dif.relpath=gf.batocera_relpath "
                 "WHERE dif.device_id=? AND dif.relpath IN ("
                 "SELECT dif2.relpath FROM device_inventory_files dif2 "
                 "JOIN game_files gf2 ON dif2.relpath=gf2.device_relpath "
-                "OR dif2.relpath=gf2.nextui_relpath "
+                "OR dif2.relpath=gf2.nextui_relpath OR dif2.relpath=gf2.batocera_relpath "
                 "WHERE dif2.device_id=? GROUP BY dif2.relpath "
                 "HAVING COUNT(DISTINCT gf2.game_id)=1)",
                 (device_id, device_id),
@@ -2298,7 +2302,8 @@ class LibraryService:
                 rows = connection.execute(
                     f"SELECT dp.game_id,dp.relpath AS old_relpath,gf.{new_column} AS new_relpath "
                     "FROM deployments dp JOIN game_files gf ON gf.game_id=dp.game_id "
-                    "AND (gf.device_relpath=dp.relpath OR gf.nextui_relpath=dp.relpath) "
+                    "AND (gf.device_relpath=dp.relpath OR gf.nextui_relpath=dp.relpath "
+                    "OR gf.batocera_relpath=dp.relpath) "
                     "WHERE dp.device_id=? ORDER BY dp.relpath",
                     (device_id,),
                 ).fetchall()

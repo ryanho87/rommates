@@ -928,6 +928,60 @@ class LibraryServiceTests(unittest.TestCase):
         self.assertEqual((result["moved"], result["unchanged"], result["skipped"]), (0, 0, 0))
         self.assertEqual(result["layout"], "nextui")
 
+    def test_batocera_device_deploys_into_batocera_system_folders(self):
+        self.write("genesis/Sonic.md", b"md-rom")
+        self.write("gc/Melee.iso", b"gc-rom")
+        self.write("gba/Minish Cap.gba", b"gba-rom")
+        self.write("n3ds-encrypted/Game.zip", b"zip-rom")
+        self.service.scan()
+        device = self.service.create_device("brick", rom_layout="batocera")
+        device_id = device["id"]
+        for name in ("Sonic", "Melee", "Minish Cap", "Game"):
+            self.service.set_selection(device_id, self.game_id(name), True)
+
+        self.service.apply_device(device_id)
+
+        device_roms = Path(device["roms_path"])
+        # Folders Batocera spells differently from ES-DE.
+        self.assertTrue((device_roms / "megadrive/Sonic.md").is_file())
+        self.assertTrue((device_roms / "gamecube/Melee.iso").is_file())
+        self.assertFalse((device_roms / "genesis").exists())
+        self.assertFalse((device_roms / "gc").exists())
+        # Identical names pass through; unknown ones keep the library folder.
+        self.assertTrue((device_roms / "gba/Minish Cap.gba").is_file())
+        self.assertTrue((device_roms / "n3ds-encrypted/Game.zip").is_file())
+        report = self.service.device_layout_platforms(device_id)
+        by_platform = {item["platform"]: item for item in report["items"]}
+        self.assertEqual(by_platform["genesis"]["folder"], "megadrive")
+        self.assertFalse(by_platform["n3ds-encrypted"]["supported"])
+
+    def test_relayout_between_nextui_and_batocera_moves_files_in_place(self):
+        self.write("genesis/Sonic.md", b"md-rom")
+        self.write("snes/Zelda.sfc", b"snes-rom")
+        self.service.scan()
+        device = self.service.create_device("brick")
+        device_id = device["id"]
+        for name in ("Sonic", "Zelda"):
+            self.service.set_selection(device_id, self.game_id(name), True)
+        self.service.apply_device(device_id)
+        device_roms = Path(device["roms_path"])
+        inode = (device_roms / "genesis/Sonic.md").stat().st_ino
+
+        self.assertEqual(self.service.relayout_device(device_id, "nextui")["moved"], 2)
+        self.assertTrue((device_roms / "Sega Genesis (MD)/Sonic.md").is_file())
+        self.assertTrue((device_roms / "Super Nintendo Entertainment System (SFC)/Zelda.sfc").is_file())
+
+        result = self.service.relayout_device(device_id, "batocera")
+        self.assertEqual((result["moved"], result["skipped"], result["missing"]), (2, 0, 0))
+        self.assertTrue((device_roms / "megadrive/Sonic.md").is_file())
+        self.assertTrue((device_roms / "snes/Zelda.sfc").is_file())
+        self.assertFalse((device_roms / "Sega Genesis (MD)").exists())
+        self.assertFalse((device_roms / "Super Nintendo Entertainment System (SFC)").exists())
+        # Still the same inode across two renames: never copied.
+        self.assertEqual((device_roms / "megadrive/Sonic.md").stat().st_ino, inode)
+        again = self.service.apply_device(device_id)
+        self.assertEqual((again["copied"], again["linked"], again["removed"]), (0, 0, 0))
+
     def test_discard_device_changes_restores_the_managed_roster(self):
         self.write("gba/Keep Deployed.gba", b"keep")
         self.write("gba/Discard Addition.gba", b"discard")

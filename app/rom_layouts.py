@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from .batocera import batocera_device_relpath, batocera_supports, batocera_system_name
 from .esde import esde_device_relpath, esde_system_name
 from .nextui import nextui_device_relpath, nextui_supports, nextui_system_name
 
@@ -8,11 +9,13 @@ from .nextui import nextui_device_relpath, nextui_supports, nextui_system_name
 # keep the paths they already have on disk.
 ESDE = "esde"
 NEXTUI = "nextui"
-ROM_LAYOUTS = (ESDE, NEXTUI)
+BATOCERA = "batocera"
+ROM_LAYOUTS = (ESDE, NEXTUI, BATOCERA)
 
 LAYOUT_LABELS = {
     ESDE: "ES-DE",
     NEXTUI: "NextUI / MinUI",
+    BATOCERA: "Batocera / Knulli",
 }
 
 # Each layout's denormalised column on game_files. The device path only ever
@@ -21,16 +24,19 @@ LAYOUT_LABELS = {
 _COLUMNS = {
     ESDE: "device_relpath",
     NEXTUI: "nextui_relpath",
+    BATOCERA: "batocera_relpath",
 }
 
 _RELPATH = {
     ESDE: esde_device_relpath,
     NEXTUI: nextui_device_relpath,
+    BATOCERA: batocera_device_relpath,
 }
 
 _SYSTEM = {
     ESDE: esde_system_name,
     NEXTUI: nextui_system_name,
+    BATOCERA: batocera_system_name,
 }
 
 
@@ -57,6 +63,7 @@ def relpath_case(device_alias: str = "d", files_alias: str = "gf") -> str:
     """
     return (
         f"CASE {device_alias}.rom_layout WHEN '{NEXTUI}' THEN {files_alias}.nextui_relpath "
+        f"WHEN '{BATOCERA}' THEN {files_alias}.batocera_relpath "
         f"ELSE {files_alias}.device_relpath END"
     )
 
@@ -76,6 +83,9 @@ def layout_supports(layout: object, platform: str) -> bool:
     them, so it is treated as supporting everything. NextUI only lists folders it
     has an emulator for.
     """
-    if normalize_layout(layout) == NEXTUI:
+    normalized = normalize_layout(layout)
+    if normalized == NEXTUI:
         return nextui_supports(platform)
+    if normalized == BATOCERA:
+        return batocera_supports(platform)
     return True
