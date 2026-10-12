@@ -3049,6 +3049,7 @@ function deviceWorkspaceControls(device, target, preview, memberPreviews, invent
       <div class="device-platform-summary"><span class="device-fact-label">${isGroup ? "Shared roster by platform" : "On-device storage by platform"}</span><div>${platformSummary}</div></div>
       <div class="device-sync-summary" data-device-sync-summary>${deviceSyncSummaryMarkup(sync)}</div>
     </section>
+    ${isGroup ? "" : deviceLayoutControl(device)}
     <div class="device-mode-row">
       <div class="device-mode-toggle" role="group" aria-label="ROM list">
         <button type="button" class="device-mode-chip ${state.deviceScope === homeScope ? "active" : ""}" data-device-scope="${homeScope}" aria-pressed="${state.deviceScope === homeScope}">On Device</button>
@@ -3081,11 +3082,8 @@ function deviceAdminDetails(device, target, preview, inventory, isGroup) {
       ${preview.missing ? deviceMetric(preview.missing, "managed files missing", "Recorded deployments no longer present in the device directory.") : ""}
       ${preview.unknown ? deviceMetric(preview.unknown, "storage states unknown", "Storage identity could not be inspected.") : ""}`
     : `${deviceMetric(preview.managed_files, isGroup ? "managed across group" : "managed files", "Files recorded as deployed by ROMmates.")}`;
-  const layoutControl = isGroup ? "" : `<label class="field"><span>ROM folder layout</span><select data-device-rom-layout="${device.id}">${ROM_LAYOUT_CHOICES.map((choice) => `<option value="${choice.value}" ${(device.rom_layout || "esde") === choice.value ? "selected" : ""}>${escapeHtml(choice.label)}</option>`).join("")}</select><small>${escapeHtml(ROM_LAYOUT_CHOICES.find((choice) => choice.value === (device.rom_layout || "esde"))?.hint || "")}</small></label>`;
   return `<details class="device-admin-details"><summary>Technical details</summary><div class="device-admin-details-body">
     <label class="field"><span>Owner</span>${ownerControl}</label>
-    ${layoutControl}
-    <div data-rom-layout-report></div>
     <div class="device-admin-metrics">
       ${storageMetrics}
       ${!isGroup ? deviceMetric(inventory.present_games, "currently on device", "Library bundles matched to files in this device directory.") : ""}
@@ -3095,6 +3093,18 @@ function deviceAdminDetails(device, target, preview, inventory, isGroup) {
 
 // NextUI/MinUI name system folders "<Display Name> (TAG)" and the tag picks the
 // emulator, so the names share nothing with ES-DE's short ones.
+// Shown in the device header rather than under "Technical details": whether the
+// handheld can see its games at all depends on this, so it must not be collapsed
+// at the bottom of the page or limited to administrators.
+function deviceLayoutControl(device) {
+  const current = device.rom_layout || "esde";
+  const choice = ROM_LAYOUT_CHOICES.find((item) => item.value === current);
+  return `<div class="device-layout-row">
+      <label class="field device-layout-field"><span>ROM folder layout</span><select data-device-rom-layout="${device.id}">${ROM_LAYOUT_CHOICES.map((item) => `<option value="${item.value}" ${current === item.value ? "selected" : ""}>${escapeHtml(item.label)}</option>`).join("")}</select><small>${escapeHtml(choice?.hint || "")} Changing this moves the files for you.</small></label>
+      <div class="device-layout-report" data-rom-layout-report></div>
+    </div>`;
+}
+
 const ROM_LAYOUT_CHOICES = [
   { value: "esde", label: "ES-DE", hint: "Short system folders such as gba/ and snes/." },
   { value: "nextui", label: "NextUI / MinUI", hint: "Tagged folders such as Game Boy Advance (GBA)/." },

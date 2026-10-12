@@ -2028,3 +2028,8 @@ html.game-detail-open body { overflow: hidden; overscroll-behavior: none; }
 .rom-layout-report { margin-top: 10px; }
 .rom-layout-report summary { cursor: pointer; color: var(--text-muted); font-size: 0.8rem; }
 .rom-layout-report .table-wrap { margin-top: 8px; }
+
+.device-layout-row { display: grid; gap: 8px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface); }
+.device-layout-field { margin: 0; }
+.device-layout-field select { max-width: 360px; }
+.device-layout-report:empty { display: none; }
