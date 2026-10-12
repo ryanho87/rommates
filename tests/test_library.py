@@ -821,6 +821,113 @@ class LibraryServiceTests(unittest.TestCase):
         self.service.apply_device(device_id)
         self.assertTrue((Path(device["roms_path"]) / "snes/Zelda.sfc").is_file())
 
+    def test_create_device_accepts_a_layout(self):
+        device = self.service.create_device("brick", rom_layout="nextui")
+        with self.db.connect() as connection:
+            row = connection.execute("SELECT rom_layout FROM devices WHERE id=?", (device["id"],)).fetchone()
+        self.assertEqual(row["rom_layout"], "nextui")
+        self.assertEqual(device["rom_layout"], "nextui")
+        with self.assertRaisesRegex(LibraryError, "Unknown ROM folder layout"):
+            self.service.create_device("bad", rom_layout="retroarch")
+
+    def test_relayout_moves_managed_files_in_place_without_recopying(self):
+        self.write("snes/Super Metroid.sfc", b"snes-rom")
+        self.write("gba/Minish Cap.gba", b"gba-rom")
+        self.service.scan()
+        device = self.service.create_device("brick")
+        device_id = device["id"]
+        for name in ("Super Metroid", "Minish Cap"):
+            self.service.set_selection(device_id, self.game_id(name), True)
+        self.service.apply_device(device_id)
+        device_roms = Path(device["roms_path"])
+        old_snes = device_roms / "snes/Super Metroid.sfc"
+        self.assertTrue(old_snes.is_file())
+        inode_before = old_snes.stat().st_ino
+
+        result = self.service.relayout_device(device_id, "nextui")
+
+        self.assertEqual(result["moved"], 2)
+        self.assertEqual(result["previous"], "esde")
+        new_snes = device_roms / "Super Nintendo Entertainment System (SFC)/Super Metroid.sfc"
+        self.assertTrue(new_snes.is_file())
+        self.assertTrue((device_roms / "Game Boy Advance (GBA)/Minish Cap.gba").is_file())
+        # A rename, not a copy: same inode, so the hardlink to the library survives.
+        self.assertEqual(new_snes.stat().st_ino, inode_before)
+        self.assertFalse(old_snes.exists())
+        # The emptied old system folders are gone.
+        self.assertFalse((device_roms / "snes").exists())
+        self.assertFalse((device_roms / "gba").exists())
+        with self.db.connect() as connection:
+            self.assertEqual(
+                connection.execute("SELECT rom_layout FROM devices WHERE id=?", (device_id,)).fetchone()["rom_layout"],
+                "nextui",
+            )
+            paths = sorted(r["relpath"] for r in connection.execute(
+                "SELECT relpath FROM deployments WHERE device_id=?", (device_id,)))
+        self.assertEqual(paths, [
+            "Game Boy Advance (GBA)/Minish Cap.gba",
+            "Super Nintendo Entertainment System (SFC)/Super Metroid.sfc",
+        ])
+        # Applying afterwards finds everything already in place.
+        again = self.service.apply_device(device_id)
+        self.assertEqual((again["copied"], again["linked"], again["removed"]), (0, 0, 0))
+
+    def test_relayout_leaves_unmapped_platforms_and_round_trips(self):
+        self.write("nds/Pokemon HeartGold.nds", b"ds-rom")
+        self.write("snes/Zelda.sfc", b"snes-rom")
+        self.service.scan()
+        device = self.service.create_device("brick")
+        device_id = device["id"]
+        for name in ("Pokemon HeartGold", "Zelda"):
+            self.service.set_selection(device_id, self.game_id(name), True)
+        self.service.apply_device(device_id)
+        device_roms = Path(device["roms_path"])
+
+        forward = self.service.relayout_device(device_id, "nextui")
+        self.assertEqual((forward["moved"], forward["unchanged"]), (1, 1))
+        self.assertTrue((device_roms / "nds/Pokemon HeartGold.nds").is_file())
+
+        back = self.service.relayout_device(device_id, "esde")
+        self.assertEqual((back["moved"], back["unchanged"]), (1, 1))
+        self.assertTrue((device_roms / "snes/Zelda.sfc").is_file())
+        self.assertFalse((device_roms / "Super Nintendo Entertainment System (SFC)").exists())
+
+    def test_relayout_never_overwrites_a_file_already_at_the_new_path(self):
+        self.write("snes/Zelda.sfc", b"snes-rom")
+        self.service.scan()
+        device = self.service.create_device("brick")
+        device_id = device["id"]
+        self.service.set_selection(device_id, self.game_id("Zelda"), True)
+        self.service.apply_device(device_id)
+        device_roms = Path(device["roms_path"])
+        squatter = device_roms / "Super Nintendo Entertainment System (SFC)/Zelda.sfc"
+        squatter.parent.mkdir(parents=True)
+        squatter.write_bytes(b"someone else's file")
+
+        result = self.service.relayout_device(device_id, "nextui")
+
+        self.assertEqual((result["moved"], result["skipped"]), (0, 1))
+        self.assertEqual(squatter.read_bytes(), b"someone else's file")
+        self.assertTrue((device_roms / "snes/Zelda.sfc").is_file())
+        # The inventory refresh may also adopt the squatter as a second copy of
+        # Zelda, so there can be two deployment rows. What matters is that the
+        # original managed file is still recorded where it actually is.
+        with self.db.connect() as connection:
+            paths = {
+                row["relpath"] for row in connection.execute(
+                    "SELECT relpath FROM deployments WHERE device_id=?", (device_id,)
+                )
+            }
+        self.assertIn("snes/Zelda.sfc", paths)
+
+    def test_relayout_on_an_empty_device_only_flips_the_setting(self):
+        self.write("gba/Any.gba", b"rom")
+        self.service.scan()
+        device = self.service.create_device("brick")
+        result = self.service.relayout_device(device["id"], "nextui")
+        self.assertEqual((result["moved"], result["unchanged"], result["skipped"]), (0, 0, 0))
+        self.assertEqual(result["layout"], "nextui")
+
     def test_discard_device_changes_restores_the_managed_roster(self):
         self.write("gba/Keep Deployed.gba", b"keep")
         self.write("gba/Discard Addition.gba", b"discard")

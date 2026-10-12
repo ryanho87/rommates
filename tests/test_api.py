@@ -1717,7 +1717,10 @@ class ApiIntegrationTests(unittest.TestCase):
 
             device_first.parent.mkdir(parents=True, exist_ok=True)
             device_first.write_bytes(b"same-rom-content")
-            device = self.client.get("/api/devices", headers=self.headers).json()[0]
+            device = next(
+                item for item in self.client.get("/api/devices", headers=self.headers).json()
+                if item["name"] == "handheld"
+            )
             self.main.library.device_inventory(device["id"], refresh=True)
             response = self.client.get(
                 "/api/duplicates?kind=exact&search=Original%20Name",
@@ -2494,6 +2497,87 @@ class ApiIntegrationTests(unittest.TestCase):
             self.assertEqual(response.json()["origins"], {})
         finally:
             save.unlink(missing_ok=True)
+
+
+    def _delete_devices_named(self, *names):
+        placeholders = ",".join("?" for _ in names)
+        with self.main.db.write() as connection:
+            connection.execute(f"DELETE FROM devices WHERE name IN ({placeholders})", names)
+
+    def test_device_creation_accepts_a_rom_layout(self):
+        self.addCleanup(self._delete_devices_named, "brick-layout", "brick-bad")
+        response = self.client.post(
+            "/api/devices", headers=self.headers,
+            json={"name": "brick-layout", "rom_layout": "nextui"},
+        )
+        self.assertEqual(response.status_code, 201, response.text)
+        self.assertEqual(response.json()["rom_layout"], "nextui")
+        rejected = self.client.post(
+            "/api/devices", headers=self.headers,
+            json={"name": "brick-bad", "rom_layout": "retroarch"},
+        )
+        self.assertEqual(rejected.status_code, 422)
+
+    def test_rom_layout_change_runs_as_a_job_that_moves_files(self):
+        self.addCleanup(self._delete_devices_named, "brick-move")
+        created = self.client.post(
+            "/api/devices", headers=self.headers, json={"name": "brick-move"},
+        ).json()
+        device_id = created["id"]
+        game = self.client.get("/api/games", headers=self.headers).json()["items"][0]
+        self.client.put(
+            f"/api/devices/{device_id}/selection", headers=self.headers,
+            json={"game_id": game["id"], "selected": True},
+        )
+        self.wait_for_job(self.client.post(f"/api/devices/{device_id}/apply", headers=self.headers).json()["job_id"])
+
+        response = self.client.put(
+            f"/api/devices/{device_id}/rom-layout", headers=self.headers, json={"layout": "nextui"},
+        )
+        self.assertEqual(response.status_code, 202, response.text)
+        job = self.wait_for_job(response.json()["job_id"])
+        self.assertEqual(job["status"], "complete", job)
+        self.assertEqual(job["result"]["moved"], 1)
+        self.assertIn("Moved 1 files to NextUI / MinUI folders", job["detail"])
+        report = self.client.get(f"/api/devices/{device_id}/rom-layout", headers=self.headers).json()
+        self.assertEqual(report["layout"], "nextui")
+
+
+    def test_preview_and_summary_stay_clean_after_a_layout_change(self):
+        """A relayout moves files in place, so nothing is pending afterwards.
+
+        The preview and summary previously matched deployments against the
+        ES-DE column only, so a NextUI device reported every moved file as an
+        addition and counted only the unchanged ones as managed.
+        """
+        self.addCleanup(self._delete_devices_named, "brick-preview")
+        created = self.client.post(
+            "/api/devices", headers=self.headers, json={"name": "brick-preview"},
+        ).json()
+        device_id = created["id"]
+        game = self.client.get("/api/games", headers=self.headers).json()["items"][0]
+        self.client.put(
+            f"/api/devices/{device_id}/selection", headers=self.headers,
+            json={"game_id": game["id"], "selected": True},
+        )
+        self.wait_for_job(self.client.post(f"/api/devices/{device_id}/apply", headers=self.headers).json()["job_id"])
+        before = self.client.get(f"/api/devices/{device_id}/preview", headers=self.headers).json()
+        self.assertEqual(before["additions"], 0)
+        self.assertGreater(before["managed_files"], 0)
+
+        job = self.wait_for_job(self.client.put(
+            f"/api/devices/{device_id}/rom-layout", headers=self.headers, json={"layout": "nextui"},
+        ).json()["job_id"])
+        self.assertEqual(job["status"], "complete", job)
+
+        after = self.client.get(f"/api/devices/{device_id}/preview", headers=self.headers).json()
+        self.assertEqual(after["additions"], 0)
+        self.assertEqual(after["removals"], 0)
+        self.assertEqual(after["managed_files"], before["managed_files"])
+        self.assertEqual(after["changes"]["additions"], [])
+        summary = self.client.get(f"/api/devices/{device_id}/summary", headers=self.headers).json()
+        self.assertEqual(summary["additions"], 0)
+        self.assertEqual(summary["managed_files"], before["managed_files"])
 
 
 class StartupTokenTests(unittest.TestCase):

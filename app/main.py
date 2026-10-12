@@ -23,7 +23,7 @@ from .config import Settings
 from .db import Database
 from .device_sync import DeviceSyncMonitor
 from .library import JobCancelled, LibraryError, LibraryService
-from .rom_layouts import LAYOUT_LABELS
+from .rom_layouts import LAYOUT_LABELS, relpath_case, relpath_column
 from .mobile_push import MobilePushService, PUSH_EVENTS
 from .mobile_releases import MobileReleaseService
 from .mcp_server import RommatesMCPService, create_mcp_server
@@ -167,6 +167,14 @@ def job_result_detail(kind: str, result: object, fallback: str) -> str:
             f"Kept one copy in {result.get('groups', 0)} duplicate groups and moved "
             f"{result.get('trashed', 0)} bundles to trash"
         )
+    if kind == "device_relayout":
+        label = LAYOUT_LABELS.get(str(result.get("layout", "")), str(result.get("layout", "")))
+        summary = f"Moved {result.get('moved', 0)} files to {label} folders"
+        if result.get("unchanged"):
+            summary += f", {result['unchanged']} already in place"
+        if result.get("skipped"):
+            summary += f", {result['skipped']} skipped because the new path was taken"
+        return summary
     if kind == "device_apply":
         summary = (
             f"Linked {result.get('linked', 0)}, converted {result.get('converted', 0)}, "
@@ -496,6 +504,13 @@ def queue_scan_job() -> dict[str, object]:
     return {"job_id": job_id, "already_running": False}
 
 
+def _device_layout_column(device_id: int) -> str:
+    """The game_files column holding this device's paths under its layout."""
+    with db.connect() as connection:
+        row = connection.execute("SELECT rom_layout FROM devices WHERE id=?", (device_id,)).fetchone()
+    return relpath_column(row["rom_layout"] if row else None)
+
+
 def queue_device_apply_job(
     device_id: int, requested_by: int | None = None
 ) -> dict[str, object]:
@@ -781,6 +796,7 @@ class DeviceCreateRequest(BaseModel):
     clone_device_id: int | None = Field(default=None, ge=1)
     keep_in_sync: bool = False
     storage_capacity_bytes: int = Field(default=0, ge=0, le=1_125_899_906_842_624)
+    rom_layout: str = Field(default="esde", pattern="^(esde|nextui)$")
 
 
 class DeviceOwnerRequest(BaseModel):
@@ -2106,7 +2122,7 @@ def dashboard():
             "(SELECT COUNT(DISTINCT game_id) FROM deployments dp WHERE dp.device_id=d.id) AS deployed_games,"
             "(SELECT COUNT(*) FROM device_selections ds JOIN game_files gf ON gf.game_id=ds.game_id "
             " WHERE ds.device_id=d.id AND NOT EXISTS(SELECT 1 FROM deployments dp WHERE dp.device_id=d.id "
-            " AND dp.game_id=ds.game_id AND dp.relpath=gf.device_relpath)) AS additions,"
+            f" AND dp.game_id=ds.game_id AND dp.relpath={relpath_case('d', 'gf')})) AS additions,"
             "(SELECT COUNT(*) FROM deployments dp WHERE dp.device_id=d.id AND NOT EXISTS("
             " SELECT 1 FROM device_selections ds WHERE ds.device_id=dp.device_id AND ds.game_id=dp.game_id)) AS removals "
             "FROM devices d ORDER BY d.name COLLATE NOCASE"
@@ -2251,12 +2267,14 @@ def games(
     present_expr = "0"
     managed_expr = "0"
     synced_expr = "0"
+    device_column = "device_relpath"
     if device_id is not None:
+        device_column = _device_layout_column(device_id)
         selected_expr = "EXISTS(SELECT 1 FROM device_selected ds WHERE ds.game_id=g.id)"
         present_expr = (
-            "EXISTS(SELECT 1 FROM game_files dgf JOIN device_present df ON df.relpath=dgf.device_relpath "
+            f"EXISTS(SELECT 1 FROM game_files dgf JOIN device_present df ON df.relpath=dgf.{device_column} "
             "WHERE dgf.game_id=g.id AND (SELECT COUNT(DISTINCT ugf.game_id) FROM game_files ugf "
-            "WHERE ugf.device_relpath=dgf.device_relpath)=1)"
+            f"WHERE ugf.{device_column}=dgf.{device_column})=1)"
         )
         managed_expr = "EXISTS(SELECT 1 FROM device_managed dm WHERE dm.game_id=g.id)"
         synced_expr = (
@@ -2373,11 +2391,12 @@ def games(
                     for row in connection.execute(
                         "SELECT DISTINCT gf.game_id,dif.device_id,d.name "
                         "FROM game_files gf JOIN device_inventory_files dif "
-                        "ON dif.relpath=gf.device_relpath "
+                        "ON (dif.relpath=gf.device_relpath OR dif.relpath=gf.nextui_relpath) "
                         "JOIN devices d ON d.id=dif.device_id "
                         f"WHERE gf.game_id IN ({placeholders}) AND {visible_device('d')} "
                         "AND (SELECT COUNT(DISTINCT ugf.game_id) FROM game_files ugf "
-                        "WHERE ugf.device_relpath=gf.device_relpath)=1 "
+                        f"WHERE {relpath_case('d', 'ugf')}={relpath_case('d', 'gf')})=1 "
+                        f"AND dif.relpath={relpath_case('d', 'gf')} "
                         "ORDER BY d.name COLLATE NOCASE",
                         game_ids,
                     )
@@ -2399,7 +2418,7 @@ def games(
             unmatched_files = connection.execute(
                 "SELECT COUNT(*) AS count FROM device_present df WHERE ("
                 "SELECT COUNT(DISTINCT gf.game_id) FROM game_files gf "
-                "WHERE gf.device_relpath=df.relpath)!=1"
+                f"WHERE gf.{device_column}=df.relpath)!=1"
             ).fetchone()["count"]
             inventory_stats = connection.execute(
                 "SELECT COUNT(*) AS files,COALESCE(SUM(size),0) AS bytes "
@@ -2548,7 +2567,7 @@ def duplicate_groups(
             "SELECT id,name FROM devices ORDER BY name COLLATE NOCASE"
         )]
         file_rows = connection.execute(
-            f"SELECT game_id,device_relpath AS relpath FROM game_files WHERE game_id IN ({game_placeholders})",
+            f"SELECT game_id,device_relpath,nextui_relpath FROM game_files WHERE game_id IN ({game_placeholders})",
             game_ids,
         ).fetchall()
     devices_by_game: dict[int, list[str]] = {game_id: [] for game_id in game_ids}
@@ -2561,8 +2580,12 @@ def duplicate_groups(
         for device in devices
     ]
     files_by_game: dict[int, list[str]] = {game_id: [] for game_id in game_ids}
+    # Devices may use different layouts, so a copy counts as present when its
+    # path under either naming scheme is on a device.
     for row in file_rows:
-        files_by_game[row["game_id"]].append(row["relpath"])
+        files_by_game[row["game_id"]].extend(
+            value for value in (row["device_relpath"], row["nextui_relpath"]) if value
+        )
     save_impacts = saves.save_impacts(game_ids)
     items_by_group: dict[str, list[dict[str, object]]] = {key: [] for key in keys}
     for item in items:
@@ -2996,6 +3019,7 @@ def create_device(payload: DeviceCreateRequest, request: Request):
         owner_user_id,
         payload.delivery_mode,
         payload.storage_capacity_bytes,
+        payload.rom_layout,
     )
     owner_label = principal.display_name or principal.username or "An administrator"
     if payload.delivery_mode == "syncthing":
@@ -3401,14 +3425,29 @@ def update_device_deployment_mode(
     return {"mode": payload.mode}
 
 
-@app.put("/api/devices/{device_id}/rom-layout")
+@app.put("/api/devices/{device_id}/rom-layout", status_code=202)
 def update_device_rom_layout(device_id: int, payload: DeviceRomLayoutRequest, request: Request):
-    require_device_access(device_id, request_principal(request))
-    result = library.set_device_rom_layout(device_id, payload.layout)
-    db.activity(
-        "device_rom_layout",
-        f"Device {device_id} ROM folders set to {LAYOUT_LABELS.get(payload.layout, payload.layout)}",
+    principal = request_principal(request)
+    require_device_access(device_id, principal)
+    job_id = enqueue_job(
+        "device_relayout",
+        f"Moving device {device_id} to {LAYOUT_LABELS.get(payload.layout, payload.layout)} folders",
+        relayout_device_and_rescan,
+        device_id,
+        payload.layout,
+        requested_by=principal.id,
     )
+    return {"job_id": job_id}
+
+
+def relayout_device_and_rescan(device_id: int, layout: str, cancel_check=None) -> dict[str, object]:
+    result: dict[str, object] = dict(
+        library.relayout_device(device_id, layout, cancel_check=cancel_check)
+    )
+    with db.connect() as connection:
+        device = connection.execute("SELECT name,path FROM devices WHERE id=?", (device_id,)).fetchone()
+    if device:
+        result["syncthing_rescan"] = syncthing.rescan_device(device["path"], device_label=device["name"])
     return result
 
 
@@ -3424,16 +3463,17 @@ def device_summary_payload(device_id: int) -> dict[str, object]:
         device = connection.execute("SELECT * FROM devices WHERE id=?", (device_id,)).fetchone()
         if not device:
             raise HTTPException(status_code=404, detail="Device was not found")
+        column = relpath_column(device["rom_layout"])
         desired = connection.execute(
             "SELECT COUNT(DISTINCT game_id) AS games,COUNT(*) AS files,"
             "COALESCE(SUM(size),0) AS bytes FROM "
-            "(SELECT ds.game_id,gf.device_relpath,gf.size FROM device_selections ds "
+            f"(SELECT ds.game_id,gf.{column},gf.size FROM device_selections ds "
             "JOIN game_files gf ON gf.game_id=ds.game_id WHERE ds.device_id=?)",
             (device_id,),
         ).fetchone()
         managed = connection.execute(
             "SELECT COUNT(*) AS files,COALESCE(SUM(gf.size),0) AS bytes FROM deployments dp "
-            "JOIN game_files gf ON gf.game_id=dp.game_id AND gf.device_relpath=dp.relpath "
+            f"JOIN game_files gf ON gf.game_id=dp.game_id AND gf.{column}=dp.relpath "
             "WHERE dp.device_id=?",
             (device_id,),
         ).fetchone()
@@ -3444,7 +3484,7 @@ def device_summary_payload(device_id: int) -> dict[str, object]:
         retained_unrecognized_bytes = connection.execute(
             "SELECT COALESCE(SUM(dif.size),0) AS bytes FROM device_inventory_files dif "
             "LEFT JOIN (SELECT relpath FROM deployments WHERE device_id=? UNION "
-            "SELECT gf.device_relpath AS relpath FROM device_selections ds "
+            f"SELECT gf.{column} AS relpath FROM device_selections ds "
             "JOIN game_files gf ON gf.game_id=ds.game_id WHERE ds.device_id=?) accounted "
             "ON accounted.relpath=dif.relpath "
             "WHERE dif.device_id=? AND accounted.relpath IS NULL",
@@ -3453,7 +3493,7 @@ def device_summary_payload(device_id: int) -> dict[str, object]:
         additions = connection.execute(
             "SELECT COUNT(*) AS count FROM device_selections ds JOIN game_files gf ON gf.game_id=ds.game_id "
             "WHERE ds.device_id=? AND NOT EXISTS(SELECT 1 FROM deployments dp WHERE dp.device_id=ds.device_id "
-            "AND dp.game_id=ds.game_id AND dp.relpath=gf.device_relpath)", (device_id,)
+            f"AND dp.game_id=ds.game_id AND dp.relpath=gf.{column})", (device_id,)
         ).fetchone()["count"]
         removals = connection.execute(
             "SELECT COUNT(*) AS count FROM deployments dp WHERE dp.device_id=? "
@@ -3502,12 +3542,15 @@ def device_preview(device_id: int, request: Request):
     library.device_inventory(device_id, refresh=True)
     summary = device_summary_payload(device_id)
     with db.connect() as connection:
+        column = relpath_column(
+            connection.execute("SELECT rom_layout FROM devices WHERE id=?", (device_id,)).fetchone()["rom_layout"]
+        )
         addition_games = connection.execute(
             "SELECT g.id,g.display_name,g.platform,COUNT(*) AS files,"
             "COALESCE(SUM(gf.size),0) AS bytes FROM device_selections ds "
             "JOIN games g ON g.id=ds.game_id JOIN game_files gf ON gf.game_id=ds.game_id "
             "WHERE ds.device_id=? AND NOT EXISTS(SELECT 1 FROM deployments dp WHERE dp.device_id=ds.device_id "
-            "AND dp.game_id=ds.game_id AND dp.relpath=gf.device_relpath) "
+            f"AND dp.game_id=ds.game_id AND dp.relpath=gf.{column}) "
             "GROUP BY g.id,g.display_name,g.platform ORDER BY g.display_name COLLATE NOCASE",
             (device_id,),
         ).fetchall()
@@ -3515,7 +3558,7 @@ def device_preview(device_id: int, request: Request):
             "SELECT g.id,g.display_name,g.platform,COUNT(*) AS files,"
             "COALESCE(SUM(gf.size),0) AS bytes FROM deployments dp "
             "JOIN games g ON g.id=dp.game_id LEFT JOIN game_files gf ON gf.game_id=dp.game_id "
-            "AND gf.device_relpath=dp.relpath WHERE dp.device_id=? "
+            f"AND gf.{column}=dp.relpath WHERE dp.device_id=? "
             "AND NOT EXISTS(SELECT 1 FROM device_selections ds WHERE ds.device_id=dp.device_id "
             "AND ds.game_id=dp.game_id) GROUP BY g.id,g.display_name,g.platform "
             "ORDER BY g.display_name COLLATE NOCASE",

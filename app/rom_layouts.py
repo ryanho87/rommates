@@ -48,6 +48,19 @@ def relpath_column(layout: object) -> str:
     return _COLUMNS[normalize_layout(layout)]
 
 
+def relpath_case(device_alias: str = "d", files_alias: str = "gf") -> str:
+    """A SQL expression selecting the right device path for each row's device.
+
+    For queries that span devices with different layouts, so one column name
+    cannot serve every row. Both aliases are fixed identifiers chosen in code,
+    never caller text, so the result is safe to interpolate.
+    """
+    return (
+        f"CASE {device_alias}.rom_layout WHEN '{NEXTUI}' THEN {files_alias}.nextui_relpath "
+        f"ELSE {files_alias}.device_relpath END"
+    )
+
+
 def device_relpath_for(layout: object, platform: str, library_relpath: str) -> str:
     return _RELPATH[normalize_layout(layout)](platform, library_relpath)
 

@@ -22,7 +22,7 @@ from .config import Settings
 from .db import Database
 from .esde import esde_device_relpath
 from .nextui import nextui_device_relpath
-from .rom_layouts import ROM_LAYOUTS, layout_supports, relpath_column, system_name_for
+from .rom_layouts import ESDE, LAYOUT_LABELS, ROM_LAYOUTS, layout_supports, relpath_column, system_name_for
 
 
 COPY_SUFFIX = ".rommates-copy"
@@ -926,6 +926,7 @@ class LibraryService:
         owner_user_id: int | None = None,
         delivery_mode: str = "syncthing",
         storage_capacity_bytes: int = 0,
+        rom_layout: str = ESDE,
     ) -> dict[str, object]:
         """Create and register a device directory without requiring a library scan."""
         device_name = name.strip()
@@ -943,6 +944,8 @@ class LibraryService:
             raise LibraryError("Delivery mode must be syncthing or download")
         if storage_capacity_bytes < 0:
             raise LibraryError("Storage capacity cannot be negative")
+        if rom_layout not in ROM_LAYOUTS:
+            raise LibraryError("Unknown ROM folder layout")
 
         root = self.settings.devices_root.resolve()
         root.mkdir(parents=True, exist_ok=True)
@@ -977,8 +980,8 @@ class LibraryService:
 
         with self.db.write() as connection:
             connection.execute(
-                "INSERT INTO devices(name,path,deployment_mode,owner_user_id,delivery_mode,storage_capacity_bytes) "
-                "VALUES(?,?,?,?,?,?)",
+                "INSERT INTO devices(name,path,deployment_mode,owner_user_id,delivery_mode,"
+                "storage_capacity_bytes,rom_layout) VALUES(?,?,?,?,?,?,?)",
                 (
                     device_name,
                     device_path,
@@ -986,6 +989,7 @@ class LibraryService:
                     owner_user_id,
                     delivery_mode,
                     storage_capacity_bytes,
+                    rom_layout,
                 ),
             )
             row = connection.execute(
@@ -2267,6 +2271,96 @@ class LibraryService:
                 "UPDATE devices SET rom_layout=? WHERE id=?", (layout, device_id)
             )
         return {"layout": layout, "previous": device["rom_layout"]}
+
+    def relayout_device(
+        self, device_id: int, layout: str, cancel_check: CancelCheck | None = None
+    ) -> dict[str, object]:
+        """Switch a device's layout and move its managed files to match, now.
+
+        A layout only changes the first path component, so this is a rename per
+        file rather than a re-copy: instant, no doubled disk use, and hardlinks
+        stay hardlinks. Only files ROMmates deployed are touched. A file whose
+        new path is already taken is left where it is and reported, so nothing
+        on the device is ever overwritten.
+        """
+        if layout not in ROM_LAYOUTS:
+            raise LibraryError("Unknown ROM folder layout")
+        with self._operation_lock:
+            # Make the deployment records match the disk before trusting them.
+            self.device_inventory(device_id, refresh=True)
+            new_column = relpath_column(layout)
+            with self.db.connect() as connection:
+                device = connection.execute(
+                    "SELECT * FROM devices WHERE id=?", (device_id,)
+                ).fetchone()
+                if not device:
+                    raise LibraryError("Device was not found")
+                rows = connection.execute(
+                    f"SELECT dp.game_id,dp.relpath AS old_relpath,gf.{new_column} AS new_relpath "
+                    "FROM deployments dp JOIN game_files gf ON gf.game_id=dp.game_id "
+                    "AND (gf.device_relpath=dp.relpath OR gf.nextui_relpath=dp.relpath) "
+                    "WHERE dp.device_id=? ORDER BY dp.relpath",
+                    (device_id,),
+                ).fetchall()
+            previous = device["rom_layout"]
+            device_root = _inside(
+                self.settings.devices_root,
+                self.settings.devices_root / device["path"] / "roms",
+            )
+            moved = unchanged = skipped = missing = 0
+            emptied: set[Path] = set()
+            for row in rows:
+                if cancel_check:
+                    cancel_check()
+                old_relpath, new_relpath = row["old_relpath"], row["new_relpath"]
+                if old_relpath == new_relpath:
+                    unchanged += 1
+                    continue
+                source = _inside(device_root, device_root / old_relpath)
+                target = _inside(device_root, device_root / new_relpath)
+                if not source.is_file():
+                    # The record is stale; the inventory refresh will drop it.
+                    self._forget_deployment(device_id, row["game_id"], old_relpath)
+                    missing += 1
+                    continue
+                if target.exists():
+                    skipped += 1
+                    continue
+                target.parent.mkdir(parents=True, exist_ok=True)
+                os.rename(source, target)
+                emptied.add(source.parent)
+                with self.db.write() as connection:
+                    connection.execute(
+                        "UPDATE deployments SET relpath=? WHERE device_id=? AND game_id=? AND relpath=?",
+                        (new_relpath, device_id, row["game_id"], old_relpath),
+                    )
+                moved += 1
+            # Leave no empty system folders behind from the old scheme.
+            for directory in sorted(emptied, key=lambda item: len(item.parts), reverse=True):
+                current = directory
+                while current != device_root and current.is_dir():
+                    try:
+                        current.rmdir()
+                    except OSError:
+                        break
+                    current = current.parent
+            with self.db.write() as connection:
+                connection.execute(
+                    "UPDATE devices SET rom_layout=? WHERE id=?", (layout, device_id)
+                )
+            self._device_inventory_cache.pop(device_id, None)
+            self.db.activity(
+                "device_relayout",
+                f"{device['name']}: moved {moved} files to {LAYOUT_LABELS.get(layout, layout)} folders",
+            )
+            return {
+                "layout": layout,
+                "previous": previous,
+                "moved": moved,
+                "unchanged": unchanged,
+                "skipped": skipped,
+                "missing": missing,
+            }
 
     def device_layout_platforms(self, device_id: int) -> dict[str, object]:
         """Report how each selected platform lands under the device's layout.

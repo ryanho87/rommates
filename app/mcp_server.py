@@ -8,6 +8,7 @@ from typing import Callable, Literal
 from mcp.server import MCPServer
 from mcp.types import ToolAnnotations
 from .db import Database
+from .rom_layouts import relpath_column
 from .library import LibraryError, LibraryService
 
 
@@ -216,10 +217,11 @@ class RommatesMCPService:
         inventory = sorted(self.library.device_inventory(device_id, refresh=True))
         with self.db.connect() as connection:
             device = connection.execute(
-                "SELECT id,name,path,deployment_mode FROM devices WHERE id=?", (device_id,)
+                "SELECT id,name,path,deployment_mode,rom_layout FROM devices WHERE id=?", (device_id,)
             ).fetchone()
             if not device:
                 raise LibraryError("Device was not found")
+            column = relpath_column(device["rom_layout"])
             selected = connection.execute(
                 "SELECT g.id,g.display_name,g.platform,g.primary_relpath,g.size,g.mtime_ns "
                 "FROM device_selections ds JOIN games g ON g.id=ds.game_id "
@@ -227,9 +229,9 @@ class RommatesMCPService:
                 (device_id,),
             ).fetchall()
             desired_files = connection.execute(
-                "SELECT ds.game_id,gf.device_relpath,gf.size,gf.sha256 FROM device_selections ds "
+                f"SELECT ds.game_id,gf.{column} AS device_relpath,gf.size,gf.sha256 FROM device_selections ds "
                 "JOIN game_files gf ON gf.game_id=ds.game_id WHERE ds.device_id=? "
-                "ORDER BY ds.game_id,gf.device_relpath",
+                f"ORDER BY ds.game_id,gf.{column}",
                 (device_id,),
             ).fetchall()
             deployments = connection.execute(
@@ -242,7 +244,7 @@ class RommatesMCPService:
                 "JOIN games g ON g.id=ds.game_id JOIN game_files gf ON gf.game_id=g.id "
                 "WHERE ds.device_id=? AND NOT EXISTS(SELECT 1 FROM deployments dp "
                 "WHERE dp.device_id=ds.device_id AND dp.game_id=ds.game_id "
-                "AND dp.relpath=gf.device_relpath) GROUP BY g.id ORDER BY g.display_name COLLATE NOCASE",
+                f"AND dp.relpath=gf.{column}) GROUP BY g.id ORDER BY g.display_name COLLATE NOCASE",
                 (device_id,),
             ).fetchall()
             removals = connection.execute(

@@ -711,6 +711,7 @@ const JOB_LABELS = {
   bulk_delete: "Moving duplicate bundles to trash…",
   delete: "Moving to trash…",
   device_apply: "Applying device changes…",
+  device_relayout: "Moving ROM folders…",
   device_export: "Preparing ROM package…",
   restore: "Restoring from trash…",
   purge: "Deleting permanently…",
@@ -2698,6 +2699,7 @@ function deviceOnboardingPanel(force = false) {
     <form class="device-onboarding-form" data-device-onboarding-form>
       <label class="field"><span>Device name</span><input class="input" name="name" placeholder="My Retroid Pocket" autocomplete="off" maxlength="100" required><small>This is the editable name people see. ROMmates assigns a separate permanent folder ID.</small></label>
       <label class="field"><span>Get ROMs onto the device</span><select name="delivery_mode"><option value="syncthing">Sync automatically with Syncthing</option><option value="download">Download a ZIP manually</option></select></label>
+      <label class="field"><span>ROM folder layout</span><select name="rom_layout">${ROM_LAYOUT_CHOICES.map((choice) => `<option value="${choice.value}">${escapeHtml(choice.label)} — ${escapeHtml(choice.hint)}</option>`).join("")}</select><small>Pick the frontend the handheld runs. You can change this later and ROMmates moves the files for you.</small></label>
       <label class="field"><span>Usable SD card capacity</span><span class="input-with-suffix"><input class="input" type="number" name="storage_capacity_gib" min="0" max="1048576" step="0.1" inputmode="decimal" placeholder="128"><span>GB</span></span><small>Optional. Leave room for saves and emulator data.</small></label>
       <div class="device-clone-options">
         <label class="field"><span>Start with games from</span><select name="clone_device_id"><option value="">Start with an empty roster</option>${state.devices.map((device) => `<option value="${device.id}">${escapeHtml(device.name)} (${Number(device.selected_games || 0).toLocaleString()} selected)</option>`).join("")}</select></label>
@@ -2763,6 +2765,7 @@ function bindDeviceOnboarding(root = view, inDialog = false) {
           name: displayName,
           deployment_mode: "hardlink",
           delivery_mode: form.elements.delivery_mode.value,
+          rom_layout: form.elements.rom_layout.value,
           storage_capacity_bytes: Math.round(Number(form.elements.storage_capacity_gib.value || 0) * 1024 ** 3),
           clone_device_id: form.elements.clone_device_id.value ? Number(form.elements.clone_device_id.value) : null,
           keep_in_sync: form.elements.keep_in_sync.checked,
@@ -3097,24 +3100,32 @@ const ROM_LAYOUT_CHOICES = [
   { value: "nextui", label: "NextUI / MinUI", hint: "Tagged folders such as Game Boy Advance (GBA)/." },
 ];
 
-// Changing a device's layout renames every destination folder, so the next apply
-// re-copies the roster and removes the managed copies from the old folders.
-async function changeDeviceRomLayout(deviceId, layout, previous) {
+// A layout only changes the folder each file sits in, so switching moves the
+// managed files right away by renaming them in place. Nothing is re-copied and
+// files ROMmates did not deploy are never touched.
+async function changeDeviceRomLayout(deviceId, layout, previous, managedFiles = 0) {
   const choice = ROM_LAYOUT_CHOICES.find((item) => item.value === layout);
+  const count = Number(managedFiles) || 0;
+  const content = count
+    ? `<p class="warning-copy"><strong>${count.toLocaleString()} managed ${count === 1 ? "file" : "files"}</strong> will be moved into ${escapeHtml(choice?.label || layout)} folders now. Files are renamed in place, so nothing is copied twice and hardlinks stay intact.</p><p class="meta">Files ROMmates did not deploy are left alone. If a new path is already taken, that file stays put and is reported.</p>`
+    : `<p>Nothing has been deployed to this device yet, so there is nothing to move. New games will use ${escapeHtml(choice?.label || layout)} folders from the next apply.</p>`;
   const confirmed = await confirmAction({
     title: `Switch this device to ${choice?.label || layout} folders?`,
-    content: `<p class="warning-copy">Every selected game moves to a new folder name on this device. The next apply copies the whole roster again and removes the managed copies from the old folders, which is a full re-sync.</p><p class="meta">Files ROMmates did not deploy are left alone.</p>`,
-    confirmLabel: `Use ${choice?.label || layout} folders`,
+    content,
+    confirmLabel: count ? `Move ${count.toLocaleString()} ${count === 1 ? "file" : "files"}` : `Use ${choice?.label || layout} folders`,
     cancelLabel: "Keep current layout",
-    danger: true,
+    danger: count > 0,
   });
   if (!confirmed) return false;
   try {
-    await api(`/api/devices/${deviceId}/rom-layout`, {
-      method: "PUT",
-      body: JSON.stringify({ layout }),
-    });
-    toast(`Device now uses ${choice?.label || layout} folders. Apply it to move the files.`);
+    const result = await requestJob(
+      `/api/devices/${deviceId}/rom-layout`,
+      { method: "PUT", body: JSON.stringify({ layout }) },
+      count ? "Moving ROM folders" : "Changing folder layout",
+    );
+    const parts = [`Moved ${Number(result.moved || 0).toLocaleString()} files`];
+    if (result.skipped) parts.push(`${result.skipped} skipped (path already taken)`);
+    toast(`${parts.join(", ")}. Device now uses ${choice?.label || layout} folders.`);
     return true;
   } catch (error) {
     toast(error.message, "error");
@@ -3369,7 +3380,7 @@ async function renderDevices() {
     const chosen = select.value;
     if (chosen === previous) return;
     select.disabled = true;
-    const changed = await changeDeviceRomLayout(Number(select.dataset.deviceRomLayout), chosen, previous);
+    const changed = await changeDeviceRomLayout(Number(select.dataset.deviceRomLayout), chosen, previous, preview.managed_files);
     if (!changed) select.value = previous;
     select.disabled = false;
     if (changed) await renderDevices();
