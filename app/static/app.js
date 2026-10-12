@@ -3368,13 +3368,13 @@ async function renderDevices() {
   setViewHtml(`
     ${createdDevicePanel()}
     ${deviceWorkspaceControls(device, target, preview, memberPreviews, inventory, [], isGroup)}
+    ${deviceAdminDetails(device, target, preview, inventory, isGroup)}
     <section class="device-game-section" aria-labelledby="device-game-list-title">
       <h2 class="sr-only" id="device-game-list-title">${state.deviceScope === "all" ? "ROMs available to add" : isGroup ? "ROMs selected for this group" : "ROMs on this device"}</h2>
       ${isAdmin() && !isGroup && inventory.unmatched_files ? `<p class="device-inventory-note">${deviceMetric(inventory.unmatched_files, inventory.unmatched_files === 1 ? "unmatched file" : "unmatched files", "Physical files that ROMmates cannot associate with the current library index.")}</p>` : ""}
       ${libraryToolbar(false, platformItems, platformCountSuffix)}${table}
     </section>
-    ${isGroup ? deviceGroupPanel(target) : ""}
-    ${deviceAdminDetails(device, target, preview, inventory, isGroup)}`);
+    ${isGroup ? deviceGroupPanel(target) : ""}`);
   void syncStatusesPromise.then((syncStatuses) => {
     if (!pageRenderIsCurrent(renderVersion, "devices")) return;
     const summary = view.querySelector("[data-device-sync-summary]");
