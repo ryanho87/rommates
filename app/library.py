@@ -21,6 +21,8 @@ from typing import Callable, Iterable
 from .config import Settings
 from .db import Database
 from .esde import esde_device_relpath
+from .nextui import nextui_device_relpath
+from .rom_layouts import ROM_LAYOUTS, layout_supports, relpath_column, system_name_for
 
 
 COPY_SUFFIX = ".rommates-copy"
@@ -1062,12 +1064,14 @@ class LibraryService:
                     ).fetchone()["id"]
                     connection.execute("DELETE FROM game_files WHERE game_id=?", (game_id,))
                     connection.executemany(
-                        "INSERT INTO game_files(game_id,relpath,device_relpath,size,sha256,kind) VALUES(?,?,?,?,?,?)",
+                        "INSERT INTO game_files(game_id,relpath,device_relpath,nextui_relpath,size,sha256,kind) "
+                        "VALUES(?,?,?,?,?,?,?)",
                         (
                             (
                                 game_id,
                                 item.relpath,
                                 esde_device_relpath(candidate.platform, item.relpath),
+                                nextui_device_relpath(candidate.platform, item.relpath),
                                 item.size,
                                 item.sha256,
                                 item.kind,
@@ -1393,10 +1397,12 @@ class LibraryService:
                 )
                 for old, target in mapping.items():
                     connection.execute(
-                        "UPDATE game_files SET relpath=?,device_relpath=? WHERE game_id=? AND relpath=?",
+                        "UPDATE game_files SET relpath=?,device_relpath=?,nextui_relpath=? "
+                        "WHERE game_id=? AND relpath=?",
                         (
                             _rel(root, target),
                             esde_device_relpath(game["platform"], _rel(root, target)),
+                            nextui_device_relpath(game["platform"], _rel(root, target)),
                             game_id,
                             _rel(root, old),
                         ),
@@ -1575,10 +1581,13 @@ class LibraryService:
                 }
                 files_by_game: dict[int, list[str]] = {game_id: [] for game_id in all_ids}
                 for row in connection.execute(
-                    f"SELECT game_id,device_relpath AS relpath FROM game_files WHERE game_id IN ({placeholders})",
+                    f"SELECT game_id,device_relpath,nextui_relpath FROM game_files "
+                    f"WHERE game_id IN ({placeholders})",
                     all_ids,
                 ):
-                    files_by_game[row["game_id"]].append(row["relpath"])
+                    files_by_game[row["game_id"]].extend(
+                        value for value in (row["device_relpath"], row["nextui_relpath"]) if value
+                    )
                 device_ids = [row["id"] for row in connection.execute("SELECT id FROM devices")]
 
             inventory_paths: set[str] = set()
@@ -1836,14 +1845,21 @@ class LibraryService:
             )
             # Only adopt paths that identify exactly one library game. Ambiguous
             # and unknown files remain visible as unrecognized filesystem data.
+            # Match the paths actually on the device against either layout, and
+            # record the on-disk path. A device whose layout just changed still
+            # has its old folders here, and they must stay managed so the next
+            # apply can move them instead of orphaning them.
             recognized = connection.execute(
-                "SELECT DISTINCT gf.game_id,gf.device_relpath AS relpath "
-                "FROM game_files gf JOIN device_inventory_files dif "
-                "ON dif.relpath=gf.device_relpath "
-                "WHERE dif.device_id=? AND gf.device_relpath IN ("
-                "SELECT gf2.device_relpath FROM game_files gf2 "
-                "GROUP BY gf2.device_relpath HAVING COUNT(DISTINCT gf2.game_id)=1)",
-                (device_id,),
+                "SELECT DISTINCT gf.game_id,dif.relpath AS relpath "
+                "FROM device_inventory_files dif JOIN game_files gf "
+                "ON dif.relpath=gf.device_relpath OR dif.relpath=gf.nextui_relpath "
+                "WHERE dif.device_id=? AND dif.relpath IN ("
+                "SELECT dif2.relpath FROM device_inventory_files dif2 "
+                "JOIN game_files gf2 ON dif2.relpath=gf2.device_relpath "
+                "OR dif2.relpath=gf2.nextui_relpath "
+                "WHERE dif2.device_id=? GROUP BY dif2.relpath "
+                "HAVING COUNT(DISTINCT gf2.game_id)=1)",
+                (device_id, device_id),
             ).fetchall()
             present_game_ids = {row["game_id"] for row in recognized}
             adopted_game_ids = sorted(present_game_ids - known_game_ids)
@@ -2231,6 +2247,62 @@ class LibraryService:
         if not updated:
             raise LibraryError("Device was not found")
 
+    def set_device_rom_layout(self, device_id: int, layout: str) -> dict[str, object]:
+        """Change how a device's ROM folders are named.
+
+        The files already on the device keep their old paths, so the next apply
+        copies every selected game to its new folder and removes the managed
+        copies from the old one. That is a full re-sync, and the caller is
+        expected to have said so.
+        """
+        if layout not in ROM_LAYOUTS:
+            raise LibraryError("Unknown ROM folder layout")
+        with self.db.write() as connection:
+            device = connection.execute(
+                "SELECT rom_layout FROM devices WHERE id=?", (device_id,)
+            ).fetchone()
+            if not device:
+                raise LibraryError("Device was not found")
+            connection.execute(
+                "UPDATE devices SET rom_layout=? WHERE id=?", (layout, device_id)
+            )
+        return {"layout": layout, "previous": device["rom_layout"]}
+
+    def device_layout_platforms(self, device_id: int) -> dict[str, object]:
+        """Report how each selected platform lands under the device's layout.
+
+        Platforms the layout has no folder for keep their library name, so they
+        sync but the frontend will not list them. Surfacing that is the whole
+        point: on NextUI it silently covers DS, N64, PSP and everything newer.
+        """
+        with self.db.connect() as connection:
+            device = connection.execute(
+                "SELECT rom_layout FROM devices WHERE id=?", (device_id,)
+            ).fetchone()
+            if not device:
+                raise LibraryError("Device was not found")
+            rows = connection.execute(
+                "SELECT g.platform,COUNT(DISTINCT g.id) AS games FROM device_selections ds "
+                "JOIN games g ON g.id=ds.game_id WHERE ds.device_id=? "
+                "GROUP BY g.platform ORDER BY g.platform COLLATE NOCASE",
+                (device_id,),
+            ).fetchall()
+        layout = device["rom_layout"]
+        items = [
+            {
+                "platform": row["platform"],
+                "games": row["games"],
+                "folder": system_name_for(layout, row["platform"]),
+                "supported": layout_supports(layout, row["platform"]),
+            }
+            for row in rows
+        ]
+        return {
+            "layout": layout,
+            "items": items,
+            "unsupported_games": sum(item["games"] for item in items if not item["supported"]),
+        }
+
     def _record_deployment(self, device_id: int, game_id: int, relpath: str) -> None:
         with self.db.write() as connection:
             connection.execute(
@@ -2242,17 +2314,18 @@ class LibraryService:
         """Inspect deployed files and identify copies that can become hardlinks."""
         with self.db.connect() as connection:
             device = connection.execute(
-                "SELECT path FROM devices WHERE id=?", (device_id,)
+                "SELECT path,rom_layout FROM devices WHERE id=?", (device_id,)
             ).fetchone()
             if not device:
                 raise LibraryError("Device was not found")
+            column = relpath_column(device["rom_layout"])
             rows = connection.execute(
                 "SELECT dp.game_id,dp.relpath,gf.relpath AS source_relpath,"
                 "g.display_name,g.platform,"
                 "EXISTS(SELECT 1 FROM device_selections ds WHERE ds.device_id=dp.device_id "
                 "AND ds.game_id=dp.game_id) AS selected "
                 "FROM deployments dp LEFT JOIN game_files gf ON gf.game_id=dp.game_id "
-                "AND gf.device_relpath=dp.relpath LEFT JOIN games g ON g.id=dp.game_id "
+                f"AND gf.{column}=dp.relpath LEFT JOIN games g ON g.id=dp.game_id "
                 "WHERE dp.device_id=?",
                 (device_id,),
             ).fetchall()
@@ -2322,7 +2395,7 @@ class LibraryService:
                 if not device:
                     raise LibraryError("Device was not found")
                 selected = connection.execute(
-                    "SELECT g.id AS game_id,gf.relpath AS source_relpath,gf.device_relpath AS relpath,gf.sha256 FROM device_selections ds "
+                    f"SELECT g.id AS game_id,gf.relpath AS source_relpath,gf.{relpath_column(device['rom_layout'])} AS relpath,gf.sha256 FROM device_selections ds "
                     "JOIN games g ON g.id=ds.game_id JOIN game_files gf ON gf.game_id=g.id "
                     "WHERE ds.device_id=? ORDER BY gf.relpath",
                     (device_id,),
@@ -2472,7 +2545,7 @@ class LibraryService:
             with self.db.write() as connection:
                 connection.execute(
                     "INSERT OR REPLACE INTO device_inventory_files(device_id,relpath,size,observed_at) "
-                    "SELECT ?,gf.device_relpath,gf.size,CURRENT_TIMESTAMP "
+                    f"SELECT ?,gf.{relpath_column(device['rom_layout'])},gf.size,CURRENT_TIMESTAMP "
                     "FROM device_selections ds JOIN game_files gf ON gf.game_id=ds.game_id "
                     "WHERE ds.device_id=?",
                     (device_id, device_id),

@@ -3078,13 +3078,68 @@ function deviceAdminDetails(device, target, preview, inventory, isGroup) {
       ${preview.missing ? deviceMetric(preview.missing, "managed files missing", "Recorded deployments no longer present in the device directory.") : ""}
       ${preview.unknown ? deviceMetric(preview.unknown, "storage states unknown", "Storage identity could not be inspected.") : ""}`
     : `${deviceMetric(preview.managed_files, isGroup ? "managed across group" : "managed files", "Files recorded as deployed by ROMmates.")}`;
+  const layoutControl = isGroup ? "" : `<label class="field"><span>ROM folder layout</span><select data-device-rom-layout="${device.id}">${ROM_LAYOUT_CHOICES.map((choice) => `<option value="${choice.value}" ${(device.rom_layout || "esde") === choice.value ? "selected" : ""}>${escapeHtml(choice.label)}</option>`).join("")}</select><small>${escapeHtml(ROM_LAYOUT_CHOICES.find((choice) => choice.value === (device.rom_layout || "esde"))?.hint || "")}</small></label>`;
   return `<details class="device-admin-details"><summary>Technical details</summary><div class="device-admin-details-body">
     <label class="field"><span>Owner</span>${ownerControl}</label>
+    ${layoutControl}
+    <div data-rom-layout-report></div>
     <div class="device-admin-metrics">
       ${storageMetrics}
       ${!isGroup ? deviceMetric(inventory.present_games, "currently on device", "Library bundles matched to files in this device directory.") : ""}
     </div><div class="device-admin-actions">${!isGroup ? '<button class="button secondary small" type="button" data-device-storage-inspect>Inspect hardlink storage</button>' : ""}${readyAction}</div>
   </div></details>`;
+}
+
+// NextUI/MinUI name system folders "<Display Name> (TAG)" and the tag picks the
+// emulator, so the names share nothing with ES-DE's short ones.
+const ROM_LAYOUT_CHOICES = [
+  { value: "esde", label: "ES-DE", hint: "Short system folders such as gba/ and snes/." },
+  { value: "nextui", label: "NextUI / MinUI", hint: "Tagged folders such as Game Boy Advance (GBA)/." },
+];
+
+// Changing a device's layout renames every destination folder, so the next apply
+// re-copies the roster and removes the managed copies from the old folders.
+async function changeDeviceRomLayout(deviceId, layout, previous) {
+  const choice = ROM_LAYOUT_CHOICES.find((item) => item.value === layout);
+  const confirmed = await confirmAction({
+    title: `Switch this device to ${choice?.label || layout} folders?`,
+    content: `<p class="warning-copy">Every selected game moves to a new folder name on this device. The next apply copies the whole roster again and removes the managed copies from the old folders, which is a full re-sync.</p><p class="meta">Files ROMmates did not deploy are left alone.</p>`,
+    confirmLabel: `Use ${choice?.label || layout} folders`,
+    cancelLabel: "Keep current layout",
+    danger: true,
+  });
+  if (!confirmed) return false;
+  try {
+    await api(`/api/devices/${deviceId}/rom-layout`, {
+      method: "PUT",
+      body: JSON.stringify({ layout }),
+    });
+    toast(`Device now uses ${choice?.label || layout} folders. Apply it to move the files.`);
+    return true;
+  } catch (error) {
+    toast(error.message, "error");
+    return false;
+  }
+}
+
+// Shows where each selected platform lands, and warns about the ones the layout
+// has no folder for. On NextUI that silently covers DS, N64, PSP and newer.
+async function fillRomLayoutReport(deviceId) {
+  const slot = view.querySelector("[data-rom-layout-report]");
+  if (!slot) return;
+  let data;
+  try {
+    data = await api(`/api/devices/${deviceId}/rom-layout`);
+  } catch {
+    return;
+  }
+  if (!data.items?.length) return;
+  const unsupported = data.items.filter((item) => !item.supported);
+  const warning = unsupported.length
+    ? `<p class="issue-warning"><strong>${unsupported.length} selected ${unsupported.length === 1 ? "platform has" : "platforms have"} no folder in this layout</strong> (${data.unsupported_games.toLocaleString()} ${data.unsupported_games === 1 ? "game" : "games"}). They keep their library folder name, so they sync but the handheld will not list them.</p>`
+    : "";
+  const rows = data.items.map((item) => `<tr><td><code>${escapeHtml(item.platform)}</code></td><td>${item.supported ? `<code>${escapeHtml(item.folder)}</code>` : `<code>${escapeHtml(item.folder)}</code> <span class="badge exact">no emulator</span>`}</td><td class="meta">${item.games.toLocaleString()}</td></tr>`).join("");
+  slot.innerHTML = `${warning}<details class="rom-layout-report"><summary>Destination folders (${data.items.length})</summary><div class="table-wrap"><table><thead><tr><th>Library platform</th><th>Device folder</th><th>Games</th></tr></thead><tbody>${rows}</tbody></table></div></details>`;
 }
 
 function deviceGroupCreationPanel(force = false) {
@@ -3308,6 +3363,18 @@ async function renderDevices() {
   bindFilters(renderDevices);
   bindDeviceOnboarding();
   bindDeviceGroupCreation();
+  view.querySelector("[data-device-rom-layout]")?.addEventListener("change", async (event) => {
+    const select = event.currentTarget;
+    const previous = device.rom_layout || "esde";
+    const chosen = select.value;
+    if (chosen === previous) return;
+    select.disabled = true;
+    const changed = await changeDeviceRomLayout(Number(select.dataset.deviceRomLayout), chosen, previous);
+    if (!changed) select.value = previous;
+    select.disabled = false;
+    if (changed) await renderDevices();
+  });
+  if (!isGroup) void fillRomLayoutReport(device.id);
   if (needsBackgroundInventoryRefresh) {
     state.deviceInventoriesRefreshed.add(device.id);
     window.setTimeout(() => {

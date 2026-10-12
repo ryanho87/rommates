@@ -2024,3 +2024,7 @@ html.game-detail-open body { overflow: hidden; overscroll-behavior: none; }
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: 0.01ms !important; }
   .navigation-loading span { animation: none; }
 }
+
+.rom-layout-report { margin-top: 10px; }
+.rom-layout-report summary { cursor: pointer; color: var(--text-muted); font-size: 0.8rem; }
+.rom-layout-report .table-wrap { margin-top: 8px; }

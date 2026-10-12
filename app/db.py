@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS game_files (
     game_id INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
     relpath TEXT NOT NULL,
     device_relpath TEXT NOT NULL DEFAULT '',
+    nextui_relpath TEXT NOT NULL DEFAULT '',
     size INTEGER NOT NULL,
     sha256 TEXT NOT NULL,
     kind TEXT NOT NULL,
@@ -194,6 +195,7 @@ CREATE TABLE IF NOT EXISTS devices (
     path TEXT NOT NULL UNIQUE,
     deployment_mode TEXT NOT NULL DEFAULT 'hardlink' CHECK(deployment_mode IN ('copy','hardlink')),
     delivery_mode TEXT NOT NULL DEFAULT 'syncthing' CHECK(delivery_mode IN ('syncthing','download')),
+    rom_layout TEXT NOT NULL DEFAULT 'esde' CHECK(rom_layout IN ('esde','nextui')),
     roster_group_id INTEGER REFERENCES device_roster_groups(id) ON DELETE SET NULL,
     owner_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
     syncthing_ready_at TEXT,
@@ -1109,6 +1111,39 @@ class Database:
                     connection.execute(f"ALTER TABLE {table} ADD COLUMN vault_id INTEGER REFERENCES save_vaults(id)")
                 connection.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_vault ON {table}(vault_id,id)")
             connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(39)")
+
+            # Per-device ROM folder layout. NextUI/MinUI name system folders
+            # "<Display Name> (TAG)", which shares nothing with ES-DE's short
+            # names, so the device path can no longer be one global value.
+            device_columns = {row["name"] for row in connection.execute("PRAGMA table_info(devices)")}
+            if "rom_layout" not in device_columns:
+                connection.execute(
+                    "ALTER TABLE devices ADD COLUMN rom_layout TEXT NOT NULL DEFAULT 'esde'"
+                )
+            game_file_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(game_files)")
+            }
+            if "nextui_relpath" not in game_file_columns:
+                connection.execute(
+                    "ALTER TABLE game_files ADD COLUMN nextui_relpath TEXT NOT NULL DEFAULT ''"
+                )
+            from .nextui import nextui_device_relpath
+
+            rows = connection.execute(
+                "SELECT gf.rowid,g.platform,gf.relpath FROM game_files gf "
+                "JOIN games g ON g.id=gf.game_id WHERE gf.nextui_relpath=''"
+            ).fetchall()
+            connection.executemany(
+                "UPDATE game_files SET nextui_relpath=? WHERE rowid=?",
+                (
+                    (nextui_device_relpath(row["platform"], row["relpath"]), row["rowid"])
+                    for row in rows
+                ),
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_game_files_nextui_relpath ON game_files(nextui_relpath)"
+            )
+            connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(40)")
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:

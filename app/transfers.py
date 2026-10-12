@@ -16,6 +16,7 @@ from typing import AsyncIterator, Iterator
 from .config import Settings
 from .db import Database
 from .library import DESCRIPTOR_EXTENSIONS, LibraryError, LibraryService, _inside
+from .rom_layouts import relpath_column
 
 
 MAX_UPLOAD_FILES = 20_000
@@ -526,11 +527,14 @@ class TransferService:
             device = connection.execute("SELECT * FROM devices WHERE id=?", (device_id,)).fetchone()
             if not device:
                 raise TransferError("Device was not found", 404)
+            # The package mirrors the device's own folder layout, so a NextUI
+            # device downloads "Game Boy Advance (GBA)/..." rather than "gba/...".
+            column = relpath_column(device["rom_layout"])
             rows = connection.execute(
-                "SELECT g.display_name,g.platform,gf.relpath,gf.device_relpath,gf.size "
+                f"SELECT g.display_name,g.platform,gf.relpath,gf.{column} AS device_relpath,gf.size "
                 "FROM device_selections ds JOIN games g ON g.id=ds.game_id "
-                "JOIN game_files gf ON gf.game_id=g.id WHERE ds.device_id=? "
-                "ORDER BY g.platform COLLATE NOCASE,g.display_name COLLATE NOCASE,gf.device_relpath",
+                f"JOIN game_files gf ON gf.game_id=g.id WHERE ds.device_id=? "
+                f"ORDER BY g.platform COLLATE NOCASE,g.display_name COLLATE NOCASE,gf.{column}",
                 (device_id,),
             ).fetchall()
             game_count = connection.execute(

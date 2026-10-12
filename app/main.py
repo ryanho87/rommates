@@ -23,6 +23,7 @@ from .config import Settings
 from .db import Database
 from .device_sync import DeviceSyncMonitor
 from .library import JobCancelled, LibraryError, LibraryService
+from .rom_layouts import LAYOUT_LABELS
 from .mobile_push import MobilePushService, PUSH_EVENTS
 from .mobile_releases import MobileReleaseService
 from .mcp_server import RommatesMCPService, create_mcp_server
@@ -767,6 +768,10 @@ class BulkSelectionRequest(BaseModel):
 
 class DeviceDeploymentModeRequest(BaseModel):
     mode: str = Field(pattern="^hardlink$")
+
+
+class DeviceRomLayoutRequest(BaseModel):
+    layout: str = Field(pattern="^(esde|nextui)$")
 
 
 class DeviceCreateRequest(BaseModel):
@@ -3394,6 +3399,23 @@ def update_device_deployment_mode(
     require_device_access(device_id, request_principal(request))
     library.set_device_deployment_mode(device_id, payload.mode)
     return {"mode": payload.mode}
+
+
+@app.put("/api/devices/{device_id}/rom-layout")
+def update_device_rom_layout(device_id: int, payload: DeviceRomLayoutRequest, request: Request):
+    require_device_access(device_id, request_principal(request))
+    result = library.set_device_rom_layout(device_id, payload.layout)
+    db.activity(
+        "device_rom_layout",
+        f"Device {device_id} ROM folders set to {LAYOUT_LABELS.get(payload.layout, payload.layout)}",
+    )
+    return result
+
+
+@app.get("/api/devices/{device_id}/rom-layout")
+def device_rom_layout(device_id: int, request: Request):
+    require_device_access(device_id, request_principal(request))
+    return library.device_layout_platforms(device_id)
 
 
 def device_summary_payload(device_id: int) -> dict[str, object]:

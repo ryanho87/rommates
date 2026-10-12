@@ -748,6 +748,79 @@ class LibraryServiceTests(unittest.TestCase):
         self.assertEqual(removed["removed"], 1)
         self.assertFalse((device_roms / "gba/Metroid.gba").exists())
 
+    def test_nextui_device_deploys_into_tagged_system_folders(self):
+        self.write("snes/Chrono Trigger.sfc", b"snes-rom")
+        self.write("nds/Pokemon HeartGold.nds", b"ds-rom")
+        self.service.scan()
+        device = self.service.create_device("brick")
+        device_id = device["id"]
+        self.service.set_selection(device_id, self.game_id("Chrono Trigger"), True)
+        self.service.set_selection(device_id, self.game_id("Pokemon HeartGold"), True)
+
+        self.service.set_device_rom_layout(device_id, "nextui")
+        self.service.apply_device(device_id)
+
+        device_roms = Path(device["roms_path"])
+        # Mapped platform lands in NextUI's tagged folder.
+        self.assertTrue((device_roms / "Super Nintendo Entertainment System (SFC)/Chrono Trigger.sfc").is_file())
+        self.assertFalse((device_roms / "snes").exists())
+        # Unmapped platform keeps its library folder rather than being guessed at.
+        self.assertTrue((device_roms / "nds/Pokemon HeartGold.nds").is_file())
+
+    def test_switching_layout_moves_managed_files_on_the_next_apply(self):
+        self.write("snes/Super Metroid.sfc", b"snes-rom")
+        self.service.scan()
+        device = self.service.create_device("brick")
+        device_id = device["id"]
+        self.service.set_selection(device_id, self.game_id("Super Metroid"), True)
+        self.service.apply_device(device_id)
+        device_roms = Path(device["roms_path"])
+        self.assertTrue((device_roms / "snes/Super Metroid.sfc").is_file())
+
+        self.service.set_device_rom_layout(device_id, "nextui")
+        result = self.service.apply_device(device_id)
+
+        tagged = device_roms / "Super Nintendo Entertainment System (SFC)/Super Metroid.sfc"
+        self.assertTrue(tagged.is_file())
+        # The old managed copy is cleaned up rather than left behind as a duplicate.
+        self.assertFalse((device_roms / "snes/Super Metroid.sfc").exists())
+        self.assertEqual(result["removed"], 1)
+
+    def test_layout_report_flags_platforms_nextui_cannot_run(self):
+        self.write("gba/Minish Cap.gba", b"gba-rom")
+        self.write("nds/Pokemon HeartGold.nds", b"ds-rom")
+        self.service.scan()
+        device = self.service.create_device("brick")
+        device_id = device["id"]
+        self.service.set_selection(device_id, self.game_id("Minish Cap"), True)
+        self.service.set_selection(device_id, self.game_id("Pokemon HeartGold"), True)
+        self.service.set_device_rom_layout(device_id, "nextui")
+
+        report = self.service.device_layout_platforms(device_id)
+
+        by_platform = {item["platform"]: item for item in report["items"]}
+        self.assertEqual(by_platform["gba"]["folder"], "Game Boy Advance (GBA)")
+        self.assertTrue(by_platform["gba"]["supported"])
+        self.assertFalse(by_platform["nds"]["supported"])
+        self.assertEqual(by_platform["nds"]["folder"], "nds")
+        self.assertEqual(report["unsupported_games"], 1)
+
+    def test_unknown_layout_is_rejected(self):
+        self.write("gba/Any.gba", b"rom")
+        self.service.scan()
+        device = self.service.create_device("brick")
+        with self.assertRaisesRegex(LibraryError, "Unknown ROM folder layout"):
+            self.service.set_device_rom_layout(device["id"], "retroarch")
+
+    def test_esde_devices_are_unaffected_by_the_new_column(self):
+        self.write("snes/Zelda.sfc", b"snes-rom")
+        self.service.scan()
+        device = self.service.create_device("deck")
+        device_id = device["id"]
+        self.service.set_selection(device_id, self.game_id("Zelda"), True)
+        self.service.apply_device(device_id)
+        self.assertTrue((Path(device["roms_path"]) / "snes/Zelda.sfc").is_file())
+
     def test_discard_device_changes_restores_the_managed_roster(self):
         self.write("gba/Keep Deployed.gba", b"keep")
         self.write("gba/Discard Addition.gba", b"discard")
