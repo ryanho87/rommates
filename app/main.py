@@ -22,6 +22,7 @@ from .auth import AuthService, PASSWORD_MIN_LENGTH, Principal, ROLES
 from .config import Settings
 from .db import Database
 from .device_sync import DeviceSyncMonitor
+from .save_sync import SaveSyncMonitor
 from .library import JobCancelled, LibraryError, LibraryService
 from .rom_layouts import LAYOUT_LABELS, relpath_case, relpath_column
 from .mobile_push import MobilePushService, PUSH_EVENTS
@@ -80,6 +81,7 @@ syncthing = SyncthingService(settings)
 notifications = NotificationService(settings, db)
 mobile_push = MobilePushService(settings, db)
 mobile_releases = MobileReleaseService(db, mobile_push)
+save_syncs = SaveSyncMonitor(settings, db, syncthing, notifications)
 device_syncs = DeviceSyncMonitor(
     db,
     syncthing,
@@ -717,6 +719,7 @@ async def lifespan(_: FastAPI):
     auth.initialize()
     mobile_push.start()
     device_syncs.start()
+    save_syncs.start()
     scheduler_stop = threading.Event()
     scheduler_thread = threading.Thread(target=save_scheduler, args=(scheduler_stop,), daemon=True)
     scheduler_thread.start()
@@ -740,6 +743,7 @@ async def lifespan(_: FastAPI):
         scheduler_thread.join(timeout=2)
         artwork_thumbnails.close()
         device_syncs.close()
+        save_syncs.close()
         mobile_push.close()
         notifications.close()
 
@@ -2953,10 +2957,14 @@ def devices(request: Request):
             "rg.owner_user_id AS roster_group_owner_user_id,"
             "u.username AS owner_username,u.display_name AS owner_display_name,"
             "(SELECT COUNT(*) FROM device_selections ds WHERE ds.device_id=d.id) AS selected_games,"
-            "(SELECT COUNT(DISTINCT dp.game_id) FROM deployments dp WHERE dp.device_id=d.id) AS deployed_games "
+            "(SELECT COUNT(DISTINCT dp.game_id) FROM deployments dp WHERE dp.device_id=d.id) AS deployed_games,"
+            "dss.connected AS save_sync_connected,dss.last_seen AS save_sync_last_seen,"
+            "dss.need_items AS save_sync_need_items,dss.need_bytes AS save_sync_need_bytes,"
+            "dss.checked_at AS save_sync_checked_at "
             "FROM devices d "
             "LEFT JOIN device_roster_groups rg ON rg.id=d.roster_group_id "
             "LEFT JOIN users u ON u.id=d.owner_user_id "
+            "LEFT JOIN device_save_sync dss ON dss.device_id=d.id "
             f"{owner_filter} ORDER BY d.name COLLATE NOCASE",
             params,
         ).fetchall()

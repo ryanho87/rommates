@@ -352,6 +352,20 @@ CREATE TABLE IF NOT EXISTS save_snapshot_files (
     sha256 TEXT NOT NULL,
     PRIMARY KEY(snapshot_id, relpath)
 );
+
+CREATE TABLE IF NOT EXISTS device_save_sync (
+    device_id INTEGER PRIMARY KEY REFERENCES devices(id) ON DELETE CASCADE,
+    folder_id TEXT NOT NULL DEFAULT '',
+    connected INTEGER NOT NULL DEFAULT 0,
+    last_seen TEXT,
+    completion REAL NOT NULL DEFAULT 0,
+    need_items INTEGER NOT NULL DEFAULT 0,
+    need_bytes INTEGER NOT NULL DEFAULT 0,
+    checked_at TEXT NOT NULL,
+    behind_since TEXT,
+    reconnect_notified_at TEXT,
+    stale_notified_at TEXT
+);
 CREATE INDEX IF NOT EXISTS idx_save_snapshot_files_hash ON save_snapshot_files(sha256);
 
 CREATE TABLE IF NOT EXISTS save_conflict_resolutions (
@@ -1172,6 +1186,25 @@ class Database:
                 "CREATE INDEX IF NOT EXISTS idx_game_files_batocera_relpath ON game_files(batocera_relpath)"
             )
             connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(41)")
+
+            # Per-device save-folder sync state, kept by SaveSyncMonitor so the
+            # UI can warn before a stale handheld save gets written.
+            connection.executescript("""
+CREATE TABLE IF NOT EXISTS device_save_sync (
+    device_id INTEGER PRIMARY KEY REFERENCES devices(id) ON DELETE CASCADE,
+    folder_id TEXT NOT NULL DEFAULT '',
+    connected INTEGER NOT NULL DEFAULT 0,
+    last_seen TEXT,
+    completion REAL NOT NULL DEFAULT 0,
+    need_items INTEGER NOT NULL DEFAULT 0,
+    need_bytes INTEGER NOT NULL DEFAULT 0,
+    checked_at TEXT NOT NULL,
+    behind_since TEXT,
+    reconnect_notified_at TEXT,
+    stale_notified_at TEXT
+);
+            """)
+            connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(42)")
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:

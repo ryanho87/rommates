@@ -1667,6 +1667,8 @@ async function renderOverview() {
   const saveReview = (data.saves.matching?.orphan || 0) + (data.saves.matching?.possible || 0) + (data.saves.matching?.ambiguous || 0);
   if (saveReview) attention.push({ view: "saves", label: `${saveReview.toLocaleString()} save names need review`, detail: `${(data.saves.matching?.orphan || 0).toLocaleString()} have no ROM match`, tone: "warning", saveTab: "matches" });
   if (pendingDeviceFiles) attention.push({ view: "devices", label: `${pendingDeviceFiles.toLocaleString()} pending device file changes`, detail: "Selections have not been fully applied", tone: "accent" });
+  const saveSyncIssues = (state.devices || []).map((device) => ({ device, sync: saveSyncState(device) })).filter((item) => item.sync && item.sync.tone === "warning");
+  if (saveSyncIssues.length) attention.push({ view: "devices", label: `${saveSyncIssues.length} ${saveSyncIssues.length === 1 ? "device is" : "devices are"} behind on saves`, detail: saveSyncIssues.map((item) => `${item.device.name}: ${item.sync.label}`).join(" · "), tone: "warning" });
   if (data.cleanup.trash) attention.push({ view: "trash", label: `${data.cleanup.trash.toLocaleString()} bundles in trash`, detail: "Recoverable until permanently purged", tone: "neutral" });
   const missingArtwork = Math.max(0, collection.games - data.artwork.games);
   if (missingArtwork) attention.push({ view: "library", label: `${missingArtwork.toLocaleString()} games without artwork`, detail: data.screenscraper_configured ? "Select games to scrape missing assets" : "ScreenScraper credentials are not configured", tone: "neutral" });
@@ -2945,6 +2947,26 @@ function deviceSyncSummary(statuses) {
   };
 }
 
+// Whether a handheld's save folder is caught up. A stale local save written on
+// a device wins Syncthing's newest-timestamp tiebreak, so "behind" or "dark for
+// a week" is the warning to see before launching a game there.
+function saveSyncState(device) {
+  if (!device || device.save_sync_checked_at == null) return null;
+  const need = Number(device.save_sync_need_items || 0);
+  const connected = Number(device.save_sync_connected) === 1;
+  const seen = device.save_sync_last_seen ? new Date(device.save_sync_last_seen) : null;
+  const days = seen && !Number.isNaN(seen.getTime()) ? Math.floor((Date.now() - seen.getTime()) / 86400000) : null;
+  if (need > 0) return { tone: "warning", label: `${need.toLocaleString()} ${need === 1 ? "file" : "files"} behind`, detail: connected ? "Downloading now · wait before playing" : "Catches up when it next connects" };
+  if (!connected && days !== null && days >= 7) return { tone: "warning", label: `Offline ${days} days`, detail: `Last synced ${seen.toLocaleDateString()} · may be stale` };
+  return { tone: "ok", label: "Up to date", detail: connected ? "Connected" : seen ? `Last synced ${seen.toLocaleDateString()}` : "" };
+}
+
+function saveSyncLine(device) {
+  const sync = saveSyncState(device);
+  if (!sync) return "";
+  return `<div class="device-save-sync ${sync.tone === "warning" ? "is-warning" : ""}"><span class="device-fact-label">Save sync</span><strong>${escapeHtml(sync.label)}</strong>${sync.detail ? `<span>${escapeHtml(sync.detail)}</span>` : ""}</div>`;
+}
+
 function deviceSyncSummaryMarkup(sync) {
   return `<span class="device-fact-label">Sync status</span>
     <strong class="sync-tone-${sync.tone}">${escapeHtml(sync.label)}</strong>
@@ -3048,6 +3070,7 @@ function deviceWorkspaceControls(device, target, preview, memberPreviews, invent
       ${deviceStorageSummary(target, memberPreviews)}
       <div class="device-platform-summary"><span class="device-fact-label">${isGroup ? "Shared roster by platform" : "On-device storage by platform"}</span><div>${platformSummary}</div></div>
       <div class="device-sync-summary" data-device-sync-summary>${deviceSyncSummaryMarkup(sync)}</div>
+      ${isGroup ? "" : saveSyncLine(device)}
     </section>
     ${isGroup ? "" : deviceLayoutControl(device)}
     <div class="device-mode-row">
