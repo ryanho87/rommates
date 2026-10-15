@@ -3920,12 +3920,26 @@ function saveConflictsHtml(data) {
     return `${toolbar}<div class="empty-state save-empty compact"><div><h2>${state.saveConflictSearch ? "No conflicts match this search" : "No unresolved save conflicts"}</h2><p>${state.saveConflictSearch ? "Try a broader search." : "If two devices edit the same save concurrently, Syncthing's preserved branch will appear here."}</p></div></div>${history}`;
   }
   const rows = data.items.map((item, index) => {
-    const source = item.device_name || item.device_id || "Unknown device";
+    // Syncthing's conflict suffix names the device whose write WON; the preserved
+    // copy is whatever was live before that write. Label both sides by where they
+    // actually came from, and show each copy's in-game save count and snapshot
+    // history so an old save that came back is obvious.
+    const source = item.device_name || item.device_id || "another device";
+    const writer = item.canonical_origin_name || item.canonical_origin_id;
+    const when = (ns) => new Date(Number(ns) / 1e6).toLocaleString();
+    const provenance = (history, counter) => {
+      const parts = [];
+      if (counter !== null && counter !== undefined) parts.push(`${Number(counter).toLocaleString()} in-game saves`);
+      if (history) parts.push(history.count === 1 ? `live save in 1 snapshot (${history.last.slice(0, 10)})` : `live save in ${history.count} snapshots (${history.first.slice(0, 10)} – ${history.last.slice(0, 10)})`);
+      else parts.push("never captured in a snapshot");
+      return `<span class="conflict-provenance">${escapeHtml(parts.join(" · "))}</span>`;
+    };
     const current = item.canonical_exists
-      ? `<div><strong>Current</strong><span>${formatBytes(item.canonical_size)} · ${new Date(Number(item.canonical_mtime_ns) / 1e6).toLocaleString()}</span><code>${escapeHtml(item.canonical_sha256.slice(0, 12))}</code></div>`
-      : `<div><strong>Current missing</strong><span>The conflict is the only surviving version.</span></div>`;
-    const conflict = `<div><strong>Conflict from ${escapeHtml(source)}</strong><span>${formatBytes(item.conflict_size)} · ${new Date(Number(item.conflict_mtime_ns) / 1e6).toLocaleString()}</span><code>${escapeHtml(item.conflict_sha256.slice(0, 12))}</code></div>`;
-    return `<tr><td class="name-cell"><strong>${escapeHtml(item.content_name || item.canonical_relpath.split("/").pop())}</strong><code class="save-path">${escapeHtml(item.canonical_relpath)}</code><span class="path-line">${escapeHtml(item.emulator)}${item.core ? ` · ${escapeHtml(item.core)}` : ""} · conflict recorded ${escapeHtml(item.conflict_at)}</span></td><td><div class="conflict-versions">${current}${conflict}</div></td><td><span class="badge ${item.identical ? "unique" : "exact"}">${item.identical ? "Identical content" : "Different progress"}</span></td><td><div class="bulk-actions"><button class="button secondary small" data-resolve-conflict="${index}" data-decision="current" ${item.canonical_exists ? "" : "disabled"}>${item.identical ? "Remove duplicate" : "Keep current"}</button><button class="button small" data-resolve-conflict="${index}" data-decision="conflict">${item.canonical_exists ? "Use conflict" : "Restore conflict"}</button></div></td></tr>`;
+      ? `<div><strong>Current${writer ? ` · written by ${escapeHtml(writer)}` : ""}</strong><span>${formatBytes(item.canonical_size)} · ${when(item.canonical_mtime_ns)}</span>${provenance(item.canonical_history, item.canonical_save_counter)}<code>${escapeHtml(item.canonical_sha256.slice(0, 12))}</code></div>`
+      : `<div><strong>Current missing</strong><span>The previous version is the only surviving copy.</span></div>`;
+    const conflict = `<div><strong>Previous version</strong><span>replaced by a write from ${escapeHtml(source)} on ${escapeHtml(item.conflict_at)}</span><span>${formatBytes(item.conflict_size)} · ${when(item.conflict_mtime_ns)}</span>${provenance(item.conflict_history, item.conflict_save_counter)}<code>${escapeHtml(item.conflict_sha256.slice(0, 12))}</code></div>`;
+    const hint = item.hint ? `<p class="conflict-hint">${escapeHtml(item.hint)}</p>` : "";
+    return `<tr><td class="name-cell"><strong>${escapeHtml(item.content_name || item.canonical_relpath.split("/").pop())}</strong><code class="save-path">${escapeHtml(item.canonical_relpath)}</code><span class="path-line">${escapeHtml(item.emulator)}${item.core ? ` · ${escapeHtml(item.core)}` : ""} · conflict recorded ${escapeHtml(item.conflict_at)}</span></td><td><div class="conflict-versions">${current}${conflict}</div></td><td><span class="badge ${item.identical ? "unique" : "exact"}">${item.identical ? "Identical content" : "Different progress"}</span>${hint}</td><td><div class="bulk-actions"><button class="button secondary small" data-resolve-conflict="${index}" data-decision="current" ${item.canonical_exists ? "" : "disabled"}>${item.identical ? "Remove duplicate" : "Keep current"}</button><button class="button small" data-resolve-conflict="${index}" data-decision="conflict">Restore previous</button></div></td></tr>`;
   }).join("");
   return `${toolbar}<p class="save-match-note">ROMmates never resolves conflicts automatically. Both versions are captured in a safety snapshot before the selected branch replaces the live save.</p><div class="table-wrap"><table><thead><tr><th>Save</th><th>Preserved versions</th><th>Comparison</th><th>Resolution</th></tr></thead><tbody>${rows}</tbody></table></div>${infiniteFooter(data, data.total === 1 ? "save conflict" : "save conflicts")}`;
 }

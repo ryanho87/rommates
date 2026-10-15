@@ -541,8 +541,52 @@ class SaveSnapshotService:
             "available": self.available(),
         }
 
+    @staticmethod
+    def _gen3_save_counter(path: Path) -> int | None:
+        """In-game save count for a Pokémon Generation III (GBA) save, else None.
+
+        Gen 3 saves hold two slots of 14 sectors; each sector footer carries a
+        signature and a save index that the game increments on every save. The
+        framing survives ROM hacks even when the trainer data inside moves, so
+        it is the one honest "which copy has more progress" signal we have.
+        """
+        if path.suffix.casefold() not in {".srm", ".sav", ".fla"}:
+            return None
+        try:
+            if path.stat().st_size > 262144:
+                return None
+            data = path.read_bytes()
+        except OSError:
+            return None
+        if len(data) < 114688:
+            return None
+        best: int | None = None
+        for slot in (0, 1):
+            index: int | None = None
+            for section in range(14):
+                offset = slot * 57344 + section * 4096
+                if int.from_bytes(data[offset + 0xFF8:offset + 0xFFC], "little") != 0x08012025:
+                    index = None
+                    break
+                index = int.from_bytes(data[offset + 0xFFC:offset + 0x1000], "little")
+            if index is not None and (best is None or index > best):
+                best = index
+        return best
+
+    def _snapshot_history(self, connection, sha256: str) -> dict[str, object] | None:
+        """When this exact content was the live save, according to the snapshots."""
+        row = connection.execute(
+            "SELECT COUNT(*) AS n,MIN(s.created_at) AS first,MAX(s.created_at) AS last "
+            "FROM save_snapshot_files f JOIN save_snapshots s ON s.id=f.snapshot_id "
+            "WHERE f.sha256=? AND s.vault_id IS ?",
+            (sha256, self.vault_id),
+        ).fetchone()
+        if not row or not row["n"]:
+            return None
+        return {"count": row["n"], "first": row["first"], "last": row["last"]}
+
     def _conflict_record(
-        self, path: Path, device_names: dict[str, str] | None = None
+        self, path: Path, device_names: dict[str, str] | None = None, history_lookup=None
     ) -> dict[str, object] | None:
         path = path.resolve()
         match = SYNC_CONFLICT_NAME.match(path.name)
@@ -577,6 +621,31 @@ class SaveSnapshotService:
             if prefix.casefold().startswith(device_id.casefold()) or device_id.casefold().startswith(prefix.casefold()):
                 device_name = name
                 break
+        # Provenance, so a reader can tell which copy is the real progress:
+        # how many in-game saves each holds, and when each content was the live
+        # save. Syncthing keeps whichever file has the newer timestamp, which is
+        # exactly how an old save written with a fresh timestamp wins.
+        canonical_counter = self._gen3_save_counter(canonical) if canonical_exists else None
+        conflict_counter = self._gen3_save_counter(path)
+        canonical_history = history_lookup(canonical_hash) if history_lookup and canonical_hash else None
+        conflict_history = history_lookup(conflict_hash) if history_lookup else None
+        hint = ""
+        if canonical_counter is not None and conflict_counter is not None and canonical_counter != conflict_counter:
+            if conflict_counter > canonical_counter:
+                hint = (
+                    f"The previous version has more in-game saves ({conflict_counter} vs {canonical_counter}). "
+                    "The current save looks like an older one that came back."
+                )
+            else:
+                hint = f"The current version has more in-game saves ({canonical_counter} vs {conflict_counter})."
+        elif canonical_exists and canonical_history:
+            conflict_written = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(conflict_stat.st_mtime_ns / 1e9))
+            if str(canonical_history["last"]) < conflict_written:
+                hint = (
+                    f"The current content was last the live save on {str(canonical_history['last'])[:10]}, "
+                    f"before the previous version was written on {conflict_written[:10]}. "
+                    "It looks like an older save that came back."
+                )
         classification = self._classify(canonical.relative_to(root).as_posix())
         return {
             "conflict_relpath": conflict_relpath,
@@ -592,6 +661,11 @@ class SaveSnapshotService:
             "canonical_mtime_ns": canonical_mtime_ns,
             "canonical_sha256": canonical_hash,
             "identical": bool(canonical_hash and canonical_hash == conflict_hash),
+            "canonical_save_counter": canonical_counter,
+            "conflict_save_counter": conflict_counter,
+            "canonical_history": canonical_history,
+            "conflict_history": conflict_history,
+            "hint": hint,
             **classification,
         }
 
@@ -605,10 +679,14 @@ class SaveSnapshotService:
         items: list[dict[str, object]] = []
         if self.available():
             needle = search.strip().casefold()
-            for path in self._source_paths():
-                if ".sync-conflict-" not in path.name.casefold():
-                    continue
-                item = self._conflict_record(path, device_names)
+            with self.db.connect() as connection:
+                lookup = lambda sha256: self._snapshot_history(connection, sha256)
+                candidates = [
+                    path for path in self._source_paths()
+                    if ".sync-conflict-" in path.name.casefold()
+                ]
+                records = [self._conflict_record(path, device_names, lookup) for path in candidates]
+            for item in records:
                 if not item:
                     continue
                 if needle and not any(

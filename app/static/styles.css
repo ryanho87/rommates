@@ -2033,3 +2033,6 @@ html.game-detail-open body { overflow: hidden; overscroll-behavior: none; }
 .device-layout-field { margin: 0; }
 .device-layout-field select { max-width: 360px; }
 .device-layout-report:empty { display: none; }
+
+.conflict-provenance { display: block; color: var(--text-muted); font-size: 0.78rem; }
+.conflict-hint { margin: 8px 0 0; max-width: 34ch; color: var(--warning); font-size: 0.8rem; line-height: 1.45; }

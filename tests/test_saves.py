@@ -204,6 +204,66 @@ class SaveSnapshotTests(unittest.TestCase):
         self.assertEqual(current.read_bytes(), b"ryan-progress")
         self.assertEqual(conflict.read_bytes(), b"brother-progress")
 
+    @staticmethod
+    def _gen3_save(save_index: int) -> bytes:
+        """A minimal Pokémon Gen 3 save: two 14-sector slots with valid footers."""
+        data = bytearray(b"\xff" * 131072)
+        for slot in (0, 1):
+            index = save_index if slot == 0 else max(save_index - 1, 0)
+            for section in range(14):
+                offset = slot * 57344 + section * 4096
+                data[offset + 0xFF4:offset + 0xFF6] = section.to_bytes(2, "little")
+                data[offset + 0xFF8:offset + 0xFFC] = (0x08012025).to_bytes(4, "little")
+                data[offset + 0xFFC:offset + 0x1000] = index.to_bytes(4, "little")
+        return bytes(data)
+
+    def test_conflict_shows_save_counters_history_and_a_progress_hint(self):
+        # The live save is an old one (13 saves) that was snapshotted while live;
+        # the preserved copy holds the real progress (55 saves) and was never live.
+        self.write("retroarch/mGBA/Emerald.srm", self._gen3_save(13))
+        self.service.create_snapshot(trigger="automatic")
+        self.write(
+            "retroarch/mGBA/Emerald.sync-conflict-20261010-224753-REWXJAI.srm",
+            self._gen3_save(55),
+        )
+
+        item = self.service.conflicts(device_names={"REWXJAI-LONG-ID": "Retroid Pocket 5"})["items"][0]
+
+        self.assertEqual(item["canonical_save_counter"], 13)
+        self.assertEqual(item["conflict_save_counter"], 55)
+        self.assertEqual(item["canonical_history"]["count"], 1)
+        self.assertIsNone(item["conflict_history"])
+        self.assertIn("more in-game saves (55 vs 13)", item["hint"])
+        self.assertIn("older one that came back", item["hint"])
+        # Attribution still names the device whose write produced the conflict.
+        self.assertEqual(item["device_name"], "Retroid Pocket 5")
+
+    def test_conflict_hint_falls_back_to_snapshot_timing_for_other_games(self):
+        # Not a Gen 3 save, so no counters: the only signal is that the current
+        # content was last live in a snapshot before the preserved copy was written.
+        current = self.write("retroarch/Snes9x/Chrono.srm", b"old-progress")
+        self.service.create_snapshot(trigger="automatic")
+        conflict = self.write(
+            "retroarch/Snes9x/Chrono.sync-conflict-20261010-224753-REWXJAI.srm", b"new-progress"
+        )
+        import os, time
+        later = time.time() + 86400 * 30
+        os.utime(conflict, (later, later))
+
+        item = self.service.conflicts()["items"][0]
+
+        self.assertIsNone(item["canonical_save_counter"])
+        self.assertIsNone(item["conflict_save_counter"])
+        self.assertEqual(item["canonical_history"]["count"], 1)
+        self.assertIn("older save that came back", item["hint"])
+
+    def test_conflict_with_no_signal_has_no_hint(self):
+        self.write("retroarch/Snes9x/Chrono.srm", b"a")
+        self.write("retroarch/Snes9x/Chrono.sync-conflict-20261010-224753-REWXJAI.srm", b"b")
+        item = self.service.conflicts()["items"][0]
+        self.assertEqual(item["hint"], "")
+        self.assertIsNone(item["canonical_history"])
+
     def test_conflict_resolution_snapshots_both_versions_before_using_conflict(self):
         current = self.write("retroarch/mGBA/Pokemon Pinball.srm", b"ryan-progress")
         conflict = self.write(

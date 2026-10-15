@@ -639,7 +639,7 @@ def check_private_saves(check_conflicts: bool = False) -> None:
                     source = conflict.get("device_name") or conflict.get("device_id") or "another device"
                     private_save_notice(
                         vault["owner_user_id"], "Save conflict needs review",
-                        f"{conflict['canonical_relpath']} has a competing version from {source}.",
+                        f"{conflict['canonical_relpath']} was replaced by a write from {source}; the previous version is kept for review.",
                         f"vault:{vault['id']}:conflict:{conflict['conflict_relpath']}:{conflict['conflict_sha256']}",
                     )
         except Exception as exc:
@@ -682,7 +682,7 @@ def save_scheduler(stop: threading.Event) -> None:
                 safe_notify(
                     "save_conflict",
                     "Save conflict needs review",
-                    f"{conflict['canonical_relpath']} has a competing version from {source}.",
+                    f"{conflict['canonical_relpath']} was replaced by a write from {source}; the previous version is kept for review.",
                     "saves",
                     dedupe_key=(
                         f"save-conflict:{conflict['conflict_relpath']}:"
@@ -3998,7 +3998,28 @@ def save_conflicts(
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ):
-    return saves.conflicts(search, limit, offset, _vault_device_names(saves))
+    names = _vault_device_names(saves)
+    result = saves.conflicts(search, limit, offset, names)
+    # Which device last wrote the *current* file, from Syncthing. Together with
+    # the snapshot history this tells the reader where each copy came from.
+    entries = [
+        (item["canonical_relpath"], item["canonical_mtime_ns"])
+        for item in result["items"] if item.get("canonical_exists")
+    ]
+    storage_key = save_vaults.get(saves.vault_id)["storage_key"] if saves.vault_id is not None else ""
+    try:
+        origins = syncthing.file_origins(saves.settings.saves_root, entries, storage_key) if entries else {}
+    except Exception:
+        origins = {}
+    for item in result["items"]:
+        origin = origins.get(item["canonical_relpath"], "")
+        item["canonical_origin_id"] = origin
+        item["canonical_origin_name"] = next(
+            (name for known, name in names.items()
+             if origin and (known.casefold().startswith(origin.casefold()) or origin.casefold().startswith(known.casefold()))),
+            "",
+        )
+    return result
 
 
 class SaveOriginsRequest(BaseModel):
