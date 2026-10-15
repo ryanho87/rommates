@@ -97,6 +97,37 @@ class SaveSyncMonitor:
             self._legacy_folder_id = self.syncthing._save_folder_id(self.settings.saves_root)
         return self._legacy_folder_id
 
+    def _device_stats(self) -> dict[str, str]:
+        """Syncthing's real last-seen per device, which the connections list lacks
+        for anything not connected during the current Syncthing session."""
+        try:
+            payload = self.syncthing._get("/rest/stats/device")
+        except Exception:
+            return {}
+        if not isinstance(payload, dict):
+            return {}
+        return {
+            str(key): str((value or {}).get("lastSeen") or "")
+            for key, value in payload.items() if isinstance(value, dict)
+        }
+
+    def _folder_members(self, folder_id: str) -> set[str] | None:
+        """Device IDs sharing a folder; None when Syncthing cannot be asked."""
+        try:
+            payload = self.syncthing._get(f"/rest/config/folders/{folder_id}")
+        except Exception:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        return {
+            str(item.get("deviceID") or "")
+            for item in payload.get("devices", []) if isinstance(item, dict)
+        }
+
+    @staticmethod
+    def _match(remote_id: str, keys) -> str | None:
+        return next((key for key in keys if key and (key.startswith(remote_id) or remote_id.startswith(key))), None)
+
     def _completion(self, folder_id: str, device_id: str) -> dict[str, object]:
         query = urlencode({"folder": folder_id, "device": device_id})
         payload = self.syncthing._get(f"/rest/db/completion?{query}")
@@ -111,6 +142,8 @@ class SaveSyncMonitor:
             return 0
         now = now or datetime.now(timezone.utc)
         status = self.syncthing.status(refresh=True)
+        stats = self._device_stats()
+        members_by_folder: dict[str, set[str] | None] = {}
         live = {
             str(item.get("device_id") or ""): item
             for item in status.get("devices", [])
@@ -142,14 +175,30 @@ class SaveSyncMonitor:
             folder_id = self._folder_for(device["id"], vault_folders)
             if not folder_id:
                 continue
+            connected = bool(entry and entry.get("connected"))
+            stats_key = self._match(remote_id, stats)
+            last_seen = _parse_when(stats.get(stats_key)) if stats_key else None
+            if last_seen is None and entry:
+                last_seen = _parse_when(entry.get("last_seen"))
+            if connected:
+                last_seen = now
+            # A device that does not share the save folder is not behind on it;
+            # Syncthing would otherwise report every file as missing.
+            if folder_id not in members_by_folder:
+                members_by_folder[folder_id] = self._folder_members(folder_id)
+            members = members_by_folder[folder_id]
+            tracks_saves = True if members is None else self._match(remote_id, members) is not None
+            if not tracks_saves:
+                self._record(
+                    device, "", connected, last_seen, 0.0, 0, 0,
+                    previous.get(device["id"]), now, tracks_saves=False,
+                )
+                checked += 1
+                continue
             try:
                 completion = self._completion(folder_id, remote_id)
             except Exception:
                 completion = {}
-            connected = bool(entry and entry.get("connected"))
-            last_seen = _parse_when(entry.get("last_seen")) if entry else None
-            if connected:
-                last_seen = now
             need_items = int(completion.get("needItems") or 0)
             need_bytes = int(completion.get("needBytes") or 0)
             percent = float(completion.get("completion") or 0.0)
@@ -171,6 +220,7 @@ class SaveSyncMonitor:
         need_bytes: int,
         previous: dict[str, Any] | None,
         now: datetime,
+        tracks_saves: bool = True,
     ) -> None:
         behind = need_items > 0
         was_connected = bool(previous and previous.get("connected"))
@@ -182,17 +232,22 @@ class SaveSyncMonitor:
 
         if connected and not was_connected:
             # Opt-in "it's online" alert; carries the save state so it is useful on its own.
-            state = (
-                f"{need_items} save {'file' if need_items == 1 else 'files'} still to download; "
-                "wait before playing" if behind else "saves up to date"
-            )
+            if not tracks_saves:
+                state = "not syncing saves"
+            elif behind:
+                state = (
+                    f"{need_items} save {'file' if need_items == 1 else 'files'} still to download; "
+                    "wait before playing"
+                )
+            else:
+                state = "saves up to date"
             self._notify(
                 "device_online",
                 f"{device['name']} came online",
                 f"Connected to Syncthing — {state}.",
                 dedupe_key=f"device-online:{device['id']}:{now.strftime('%Y%m%d%H%M')}",
             )
-        if connected and not was_connected and behind and not reconnect_notified_at:
+        if tracks_saves and connected and not was_connected and behind and not reconnect_notified_at:
             self._notify(
                 "save_sync_behind",
                 f"{device['name']} is back online but still behind on saves",
@@ -208,7 +263,7 @@ class SaveSyncMonitor:
         days_dark = None if last_seen is None else (now - last_seen).total_seconds() / 86400
         if connected:
             stale_notified_at = None
-        elif days_dark is not None and days_dark >= self.stale_after_days and not stale_notified_at:
+        elif tracks_saves and days_dark is not None and days_dark >= self.stale_after_days and not stale_notified_at:
             self._notify(
                 "save_sync_stale",
                 f"{device['name']} has not synced saves for {int(days_dark)} days",

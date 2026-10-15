@@ -17,6 +17,8 @@ class FakeSyncthing:
     def __init__(self):
         self.devices: dict[str, dict] = {}
         self.completion: dict[tuple[str, str], dict] = {}
+        self.stats: dict[str, dict] = {}
+        self.members: set[str] = set()
 
     def status(self, refresh: bool = False):
         return {"devices": list(self.devices.values())}
@@ -25,12 +27,23 @@ class FakeSyncthing:
         return "saves-folder"
 
     def _get(self, path):
+        if path == "/rest/stats/device":
+            return self.stats
+        if path.startswith("/rest/config/folders/"):
+            return {"devices": [{"deviceID": device_id} for device_id in sorted(self.members)]}
         query = parse_qs(urlparse(path).query)
         return self.completion.get((query["folder"][0], query["device"][0]), {"needItems": 0, "needBytes": 0, "completion": 100})
 
     # helpers for the scenarios
-    def set(self, device_id, *, connected, last_seen=None, need=0):
-        self.devices[device_id] = {"device_id": device_id, "name": device_id[:7], "connected": connected, "last_seen": last_seen or ""}
+    def set(self, device_id, *, connected, last_seen=None, need=0, member=True, stats_seen=None):
+        # The connections list only knows a last-seen for the current session;
+        # the real value lives in /rest/stats/device, which is what the monitor uses.
+        self.devices[device_id] = {"device_id": device_id, "name": device_id[:7], "connected": connected, "last_seen": ""}
+        self.stats[device_id] = {"lastSeen": stats_seen if stats_seen is not None else (last_seen or "0001-01-01T00:00:00Z")}
+        if member:
+            self.members.add(device_id)
+        else:
+            self.members.discard(device_id)
         self.completion[("saves-folder", device_id)] = {"needItems": need, "needBytes": need * 131072, "completion": 100 if not need else 80}
 
 
@@ -137,6 +150,29 @@ class SaveSyncMonitorTests(unittest.TestCase):
         self.tick()
         self.assertEqual(self.notifications.events(), [])
         self.assertIsNone(self.monitor.latest(self.device_id)["last_seen"])
+
+    def test_a_device_that_does_not_share_the_save_folder_is_neutral(self):
+        # Syncthing reports every file as missing for a non-member; that is not
+        # "behind", and a dark non-member must not be flagged as stale either.
+        self.syncthing.set(self.RG, connected=False, last_seen=(self.now - timedelta(days=30)).isoformat(), need=623, member=False)
+        self.tick()
+        row = self.monitor.latest(self.device_id)
+        self.assertEqual(row["folder_id"], "")
+        self.assertEqual(row["need_items"], 0)
+        self.assertEqual(self.notifications.events(), [])
+
+        self.syncthing.set(self.RG, connected=True, need=623, member=False)
+        self.tick()
+        self.assertEqual(self.notifications.events(), ["device_online"])
+        self.assertIn("not syncing saves", self.notifications.sent[0][2])
+
+    def test_last_seen_comes_from_device_stats_not_the_connections_list(self):
+        # The status entry carries the session zero-time; stats has the truth.
+        self.syncthing.set(self.RG, connected=False, need=0, stats_seen=(self.now - timedelta(days=9)).isoformat())
+        self.tick()
+        self.assertEqual(self.notifications.events(), ["save_sync_stale"])
+        self.assertIn("9 days", self.notifications.sent[0][1])
+        self.assertTrue(self.monitor.latest(self.device_id)["last_seen"].startswith((self.now - timedelta(days=9)).strftime("%Y-%m-%d")))
 
     def test_nothing_happens_without_syncthing(self):
         self.syncthing.configured = False

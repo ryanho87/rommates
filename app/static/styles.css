@@ -2041,3 +2041,4 @@ html.game-detail-open body { overflow: hidden; overscroll-behavior: none; }
 .device-save-sync strong { color: var(--success); }
 .device-save-sync span:not(.device-fact-label) { color: var(--text-muted); }
 .device-save-sync.is-warning strong { color: var(--warning); }
+.device-save-sync.is-neutral strong { color: var(--text-muted); }

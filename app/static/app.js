@@ -2952,6 +2952,9 @@ function deviceSyncSummary(statuses) {
 // a week" is the warning to see before launching a game there.
 function saveSyncState(device) {
   if (!device || device.save_sync_checked_at == null) return null;
+  // An empty folder id means the device does not share the save folder at all:
+  // nothing to be behind on, but worth saying, since its progress never syncs.
+  if (device.save_sync_folder_id === "") return { tone: "neutral", label: "Not syncing saves", detail: "Share the save folder with this device to sync progress" };
   const need = Number(device.save_sync_need_items || 0);
   const connected = Number(device.save_sync_connected) === 1;
   const seen = device.save_sync_last_seen ? new Date(device.save_sync_last_seen) : null;
@@ -2964,7 +2967,7 @@ function saveSyncState(device) {
 function saveSyncLine(device) {
   const sync = saveSyncState(device);
   if (!sync) return "";
-  return `<div class="device-save-sync ${sync.tone === "warning" ? "is-warning" : ""}"><span class="device-fact-label">Save sync</span><strong>${escapeHtml(sync.label)}</strong>${sync.detail ? `<span>${escapeHtml(sync.detail)}</span>` : ""}</div>`;
+  return `<div class="device-save-sync ${sync.tone === "warning" ? "is-warning" : sync.tone === "neutral" ? "is-neutral" : ""}"><span class="device-fact-label">Save sync</span><strong>${escapeHtml(sync.label)}</strong>${sync.detail ? `<span>${escapeHtml(sync.detail)}</span>` : ""}</div>`;
 }
 
 function deviceSyncSummaryMarkup(sync) {

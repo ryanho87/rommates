@@ -2960,7 +2960,7 @@ def devices(request: Request):
             "(SELECT COUNT(DISTINCT dp.game_id) FROM deployments dp WHERE dp.device_id=d.id) AS deployed_games,"
             "dss.connected AS save_sync_connected,dss.last_seen AS save_sync_last_seen,"
             "dss.need_items AS save_sync_need_items,dss.need_bytes AS save_sync_need_bytes,"
-            "dss.checked_at AS save_sync_checked_at "
+            "dss.checked_at AS save_sync_checked_at,dss.folder_id AS save_sync_folder_id "
             "FROM devices d "
             "LEFT JOIN device_roster_groups rg ON rg.id=d.roster_group_id "
             "LEFT JOIN users u ON u.id=d.owner_user_id "
