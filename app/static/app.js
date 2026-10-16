@@ -3968,7 +3968,7 @@ function saveConflictsHtml(data) {
       : "";
     const conflict = `<div><strong>Previous version</strong><span>replaced by a write from ${escapeHtml(source)} on ${escapeHtml(item.conflict_at)}</span>${resent}<span>${formatBytes(item.conflict_size)} · ${when(item.conflict_mtime_ns)}</span>${provenance(item.conflict_history, item.conflict_save_counter)}<code>${escapeHtml(item.conflict_sha256.slice(0, 12))}</code></div>`;
     const hint = item.hint ? `<p class="conflict-hint">${escapeHtml(item.hint)}</p>` : "";
-    return `<tr><td class="name-cell"><strong>${escapeHtml(item.content_name || item.canonical_relpath.split("/").pop())}</strong><code class="save-path">${escapeHtml(item.canonical_relpath)}</code><span class="path-line">${escapeHtml(item.emulator)}${item.core ? ` · ${escapeHtml(item.core)}` : ""} · conflict recorded ${escapeHtml(item.conflict_at)}</span></td><td><div class="conflict-versions">${current}${conflict}</div></td><td><span class="badge ${item.identical ? "unique" : "exact"}">${item.identical ? "Identical content" : "Different progress"}</span>${hint}</td><td><div class="bulk-actions"><button class="button secondary small" data-resolve-conflict="${index}" data-decision="current" ${item.canonical_exists ? "" : "disabled"}>${item.identical ? "Remove duplicate" : "Keep current"}</button><button class="button small" data-resolve-conflict="${index}" data-decision="conflict">Restore previous</button></div></td></tr>`;
+    return `<tr><td class="name-cell"><strong>${escapeHtml(item.content_name || item.canonical_relpath.split("/").pop())}</strong><code class="save-path">${escapeHtml(item.canonical_relpath)}</code><span class="path-line">${escapeHtml(item.emulator)}${item.core ? ` · ${escapeHtml(item.core)}` : ""} · conflict recorded ${escapeHtml(item.conflict_at)}</span></td><td><div class="conflict-versions">${current}${conflict}</div></td><td><span class="badge ${item.identical ? "unique" : "exact"}">${item.identical ? "Identical content" : "Different progress"}</span>${hint}</td><td><div class="bulk-actions"><button class="button secondary small" data-resolve-conflict="${index}" data-decision="current" ${item.canonical_exists ? "" : "disabled"}>${item.identical ? "Remove duplicate" : "Keep current"}</button><button class="button small" data-resolve-conflict="${index}" data-decision="conflict">Restore previous</button><button class="button secondary small" type="button" data-save-history="${escapeHtml(item.canonical_relpath)}">History</button></div></td></tr>`;
   }).join("");
   return `${toolbar}<p class="save-match-note">ROMmates never resolves conflicts automatically. Both versions are captured in a safety snapshot before the selected branch replaces the live save.</p><div class="table-wrap"><table><thead><tr><th>Save</th><th>Preserved versions</th><th>Comparison</th><th>Resolution</th></tr></thead><tbody>${rows}</tbody></table></div>${infiniteFooter(data, data.total === 1 ? "save conflict" : "save conflicts")}`;
 }
@@ -4024,7 +4024,7 @@ function currentSavesHtml(data, inventory) {
   if (!data.items.length) {
     return `${emulatorSummary}${toolbar}<div class="empty-state save-empty"><div><h2>${state.saveSearch ? "No saves match this search" : "No save files found"}</h2><p>${state.saveSearch ? "Try part of the filename, emulator, or relative directory." : "No emulator save data has arrived through Syncthing yet."}</p></div></div>`;
   }
-  return `${emulatorSummary}${toolbar}<div class="table-wrap"><table><thead><tr>${saveSortHeader("path", "Save path")}${saveSortHeader("emulator", "Emulator")}${saveSortHeader("type", "Type")}${saveSortHeader("size", "Size")}${saveSortHeader("modified", "Modified")}<th>Last written by</th></tr></thead><tbody>${data.items.map((item) => `<tr><td class="name-cell"><code class="save-path">${escapeHtml(item.relpath)}</code>${item.core ? `<span class="path-line">${escapeHtml(item.core)}</span>` : ""}</td><td>${escapeHtml(item.emulator)}</td><td><span class="badge ${item.kind === "save" ? "unique" : item.kind === "state" ? "possible" : "cancelled"}">${escapeHtml(item.kind)}</span></td><td class="meta">${formatBytes(item.size)}</td><td class="meta">${new Date(Number(item.mtime_ns) / 1e6).toLocaleString()}</td><td class="meta save-origin" data-save-origin="${escapeHtml(item.relpath)}">—</td></tr>`).join("")}</tbody></table></div>${infiniteFooter(data, data.total === 1 ? "vault file" : "vault files")}`;
+  return `${emulatorSummary}${toolbar}<div class="table-wrap"><table><thead><tr>${saveSortHeader("path", "Save path")}${saveSortHeader("emulator", "Emulator")}${saveSortHeader("type", "Type")}${saveSortHeader("size", "Size")}${saveSortHeader("modified", "Modified")}<th>Last written by</th><th><span class="sr-only">History</span></th></tr></thead><tbody>${data.items.map((item) => `<tr><td class="name-cell"><code class="save-path">${escapeHtml(item.relpath)}</code>${item.core ? `<span class="path-line">${escapeHtml(item.core)}</span>` : ""}</td><td>${escapeHtml(item.emulator)}</td><td><span class="badge ${item.kind === "save" ? "unique" : item.kind === "state" ? "possible" : "cancelled"}">${escapeHtml(item.kind)}</span></td><td class="meta">${formatBytes(item.size)}</td><td class="meta">${new Date(Number(item.mtime_ns) / 1e6).toLocaleString()}</td><td class="meta save-origin" data-save-origin="${escapeHtml(item.relpath)}">—</td><td><button class="button secondary small" type="button" data-save-history="${escapeHtml(item.relpath)}">History</button></td></tr>`).join("")}</tbody></table></div>${infiniteFooter(data, data.total === 1 ? "vault file" : "vault files")}`;
 }
 
 // Syncthing only reports the modifying device one file at a time, so the files
@@ -4113,6 +4113,97 @@ function saveSettingsHtml(settings) {
   return `<form class="save-settings" data-save-settings><div class="settings-section"><h2>Schedule</h2><p>Set the interval to 0 to disable scheduled snapshots while leaving manual snapshots available.</p><label class="device-choice"><input type="checkbox" name="enabled" ${settings.enabled ? "checked" : ""}><span>Enable automatic snapshots</span></label><label class="field"><span>Interval in minutes</span><input class="input" type="number" name="interval_minutes" min="0" max="10080" value="${settings.interval_minutes}"></label></div><div class="settings-section"><h2>Retention</h2><p>Pinned snapshots are always retained. Each older tier keeps one representative snapshot per period.</p><div class="retention-grid"><label class="field"><span>Recent snapshots</span><input class="input" type="number" name="retention_recent" min="1" max="1000" value="${settings.retention_recent}"></label><label class="field"><span>Daily copies</span><input class="input" type="number" name="retention_daily" min="0" max="3650" value="${settings.retention_daily}"></label><label class="field"><span>Weekly copies</span><input class="input" type="number" name="retention_weekly" min="0" max="520" value="${settings.retention_weekly}"></label><label class="field"><span>Monthly copies</span><input class="input" type="number" name="retention_monthly" min="0" max="240" value="${settings.retention_monthly}"></label></div></div><div class="settings-paths"><span>Live source <code>${escapeHtml(settings.source_root)}</code></span><span>Snapshot storage <code>${escapeHtml(settings.snapshots_root)}</code></span></div><button class="button">Save settings</button></form>`;
 }
 
+// The history of one save as a timeline: the live save changing hands on the
+// main line, conflict copies as branches off it, resolutions as merges (restore)
+// or dropped branches (keep current). Each device gets a colour; a version whose
+// author Syncthing never told us is drawn hollow and labelled honestly.
+function saveHistoryHtml(history) {
+  const palette = 6;
+  const deviceSlots = new Map();
+  const slotFor = (deviceId) => {
+    if (!deviceId) return -1;
+    if (!deviceSlots.has(deviceId)) deviceSlots.set(deviceId, deviceSlots.size % palette);
+    return deviceSlots.get(deviceId);
+  };
+  const stamp = (text) => (text ? `${String(text).slice(0, 16)} UTC` : "unknown time");
+  const counter = (value) => (value === null || value === undefined ? "" : ` · ${Number(value).toLocaleString()} in-game saves`);
+  const who = (name, id) => name || (id ? `device ${id}` : "an unknown device");
+  const versions = new Map((history.versions || []).map((item) => [item.sha256, item]));
+  // Colour by class, not an inline style: the app's CSP forbids inline styles.
+  const dot = (deviceId, extra = "") => {
+    const slot = slotFor(deviceId);
+    return `<span class="tl-dot ${slot < 0 ? "is-unknown" : `tl-c${slot}`} ${extra}"></span>`;
+  };
+  const forked = new Set();
+  const items = [];
+  let lastRestored = "";
+  for (const event of history.events || []) {
+    const version = versions.get(event.sha256) || {};
+    const snapshots = version.snapshots ? ` · in ${version.snapshots} ${version.snapshots === 1 ? "snapshot" : "snapshots"}` : "";
+    const hash = event.sha256 ? `<code>${escapeHtml(String(event.sha256).slice(0, 12))}</code>` : "";
+    if (event.type === "live") {
+      if (event.sha256 === lastRestored) {
+        // The snapshot after a restore just confirms it; one line is enough.
+        items[items.length - 1] = items[items.length - 1].replace("</span></div></li>", ` · confirmed in snapshot #${event.snapshot_id}</span></div></li>`);
+        lastRestored = "";
+        continue;
+      }
+      lastRestored = "";
+      const cameBack = forked.has(event.sha256);
+      const title = cameBack
+        ? "Previous version became the live save again"
+        : event.previous_sha256 ? `New version written by ${escapeHtml(who(event.origin_name, event.origin_id))}` : `First captured · written by ${escapeHtml(who(event.origin_name, event.origin_id))}`;
+      items.push(`<li class="tl-event tl-live ${cameBack ? "tl-merge" : ""}">${dot(event.origin_id)}<div class="tl-body"><strong>${title}</strong><span class="tl-meta">snapshot #${event.snapshot_id} · ${escapeHtml(stamp(event.at))}${counter(event.save_counter)}${snapshots} ${hash}</span></div></li>`);
+    } else if (event.type === "fork") {
+      forked.add(event.sha256);
+      const winner = who(event.winner_name, event.winner_id);
+      const author = event.origin_id ? ` · this copy was written by ${escapeHtml(who(event.origin_name, event.origin_id))}` : "";
+      items.push(`<li class="tl-event tl-fork">${dot(event.origin_id, "is-branch")}<div class="tl-body"><strong>Conflict: a write from ${escapeHtml(winner)} replaced the live save</strong><span class="tl-meta">the previous version was kept as a conflict copy${event.conflict_at ? ` on ${escapeHtml(event.conflict_at)}` : ""}${author}${counter(event.save_counter)} ${hash}</span></div></li>`);
+    } else if (event.type === "resolved") {
+      const restored = event.decision === "conflict";
+      lastRestored = restored ? event.sha256 : "";
+      items.push(`<li class="tl-event ${restored ? "tl-merge" : "tl-drop"}">${dot(restored ? (versions.get(event.conflict_sha256) || {}).origin_id : (versions.get(event.canonical_sha256) || {}).origin_id, restored ? "" : "is-branch")}<div class="tl-body"><strong>${restored ? "You restored the previous version" : "You kept the current version"}</strong><span class="tl-meta">${escapeHtml(stamp(event.at))} · ${restored ? "the conflict copy became the live save" : "the conflict copy was removed"} · safety snapshot #${event.safety_snapshot_id} ${hash}</span></div></li>`);
+    }
+  }
+  const current = history.current;
+  if (current) {
+    const version = versions.get(current.sha256) || {};
+    const author = who(current.origin_name || version.origin_name, current.origin_id || version.origin_id);
+    const note = current.in_snapshot ? "" : " · not yet captured in a snapshot";
+    items.push(`<li class="tl-event tl-current">${dot(current.origin_id || version.origin_id)}<div class="tl-body"><strong>Live now · last written by ${escapeHtml(author)}</strong><span class="tl-meta">${new Date(Number(current.mtime_ns) / 1e6).toLocaleString()} · ${formatBytes(current.size)}${counter(current.save_counter)}${note} <code>${escapeHtml(String(current.sha256).slice(0, 12))}</code></span></div></li>`);
+  } else {
+    items.push(`<li class="tl-event tl-current tl-missing">${dot("")}<div class="tl-body"><strong>No live save right now</strong><span class="tl-meta">The file is not in the save folder.</span></div></li>`);
+  }
+  for (const relpath of history.unresolved_conflicts || []) {
+    items.push(`<li class="tl-event tl-fork tl-pending">${dot("", "is-branch")}<div class="tl-body"><strong>Unresolved conflict copy</strong><span class="tl-meta"><code class="save-path">${escapeHtml(relpath)}</code> · resolve it from the Conflicts tab</span></div></li>`);
+  }
+  const contributors = (history.versions || []).reduce((map, item) => {
+    const key = item.origin_id || "";
+    const entry = map.get(key) || { id: key, name: item.origin_name, versions: 0 };
+    entry.versions += 1;
+    return map.set(key, entry);
+  }, new Map());
+  const legend = [...contributors.values()].sort((a, b) => b.versions - a.versions).map((entry) => `<span class="tl-legend-item">${dot(entry.id)}${escapeHtml(entry.id ? who(entry.name, entry.id) : "unknown device")} <small>${entry.versions} ${entry.versions === 1 ? "version" : "versions"}</small></span>`).join("");
+  const caveat = history.origins_recorded
+    ? ""
+    : `<p class="tl-caveat">Authors are recorded when a snapshot is taken, starting with this release. Earlier versions show as unknown; the live file's author comes from Syncthing directly.</p>`;
+  const empty = !(history.events || []).length && !current
+    ? `<p class="meta">No snapshot has captured this save yet.</p>`
+    : "";
+  return `<div class="save-history"><p class="tl-summary"><code class="save-path">${escapeHtml(history.relpath)}</code><span class="meta">${escapeHtml(history.emulator || "")}${history.core ? ` · ${escapeHtml(history.core)}` : ""} · ${versions.size} ${versions.size === 1 ? "version" : "versions"} seen</span></p><div class="tl-legend">${legend}</div>${caveat}${empty}<ol class="save-timeline">${items.join("")}</ol></div>`;
+}
+
+async function openSaveHistory(relpath) {
+  const history = await api(`/api/saves/history?relpath=${encodeURIComponent(relpath)}`);
+  await chooseAction({
+    title: `History of ${history.content_name || relpath.split("/").pop()}`,
+    content: saveHistoryHtml(history),
+    confirmLabel: "Close",
+    cancelLabel: "",
+    wide: true,
+  });
+}
+
 async function renderSaves() {
   const renderVersion = beginPageRender();
   setHeading("Saves", "Sync your progress across devices, keep backups, and resolve conflicting saves.");
@@ -4189,6 +4280,9 @@ async function renderSaves() {
   setViewHtml(`${vaultSelector}${saveHeader(overview)}${connections}${saveTabs(overview)}${content}`);
   fillSaveOrigins();
   bindPrivateSaveSetup();
+  view.querySelectorAll("[data-save-history]").forEach((button) => button.addEventListener("click", () => {
+    openSaveHistory(button.dataset.saveHistory).catch((error) => toast(error.message, "error"));
+  }));
   view.querySelector("[data-save-vault]")?.addEventListener("change", (event) => {
     state.saveVaultId = Number(event.target.value) || null;
     state.saveSnapshotId = null;
@@ -4827,6 +4921,7 @@ function chooseAction({ title, content, confirmLabel, cancelLabel = "Cancel", al
   dialogContent.innerHTML = content;
   dialogConfirm.textContent = confirmLabel;
   dialogCancel.textContent = cancelLabel;
+  dialogCancel.classList.toggle("hidden", !cancelLabel);
   dialogAlternate.textContent = alternateLabel;
   dialogAlternate.classList.toggle("hidden", !alternateLabel);
   dialogConfirm.className = `button ${danger ? "danger" : ""}`;
@@ -4840,6 +4935,7 @@ function chooseAction({ title, content, confirmLabel, cancelLabel = "Cancel", al
       dialog.classList.remove("wide");
       dialog.querySelector(".dialog-actions")?.classList.remove("has-alternate");
       dialogAlternate.classList.add("hidden");
+      dialogCancel.classList.remove("hidden");
       resolve(dialog.returnValue || "cancel");
     };
     dialog.addEventListener("close", close);

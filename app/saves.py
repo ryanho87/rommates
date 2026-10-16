@@ -9,7 +9,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Callable
 
 from .config import Settings
@@ -72,6 +72,9 @@ EMULATOR_PLATFORMS = {
 IGNORED_SAVE_NAMES = frozenset({".ds_store", ".stfolder", ".stfolder (1)", ".stignore"})
 
 
+OriginLookup = Callable[[list[tuple[str, int]]], dict[str, str]]
+
+
 @dataclass(frozen=True)
 class SaveFile:
     relpath: str
@@ -88,6 +91,10 @@ class SaveSnapshotService:
         self._settings_table = "save_settings" if vault_id is None else "save_vault_settings"
         self._settings_id = 1 if vault_id is None else vault_id
         self._operation_lock = threading.RLock()
+        # Optional: (relpath, mtime_ns) pairs -> Syncthing device that last wrote
+        # each file. Set by the app when Syncthing is configured; snapshots record
+        # the answer so the history of a save keeps its authors.
+        self.origin_lookup: OriginLookup | None = None
 
     @property
     def blob_root(self) -> Path:
@@ -411,13 +418,12 @@ class SaveSnapshotService:
                     "SELECT * FROM save_snapshots WHERE vault_id IS ? ORDER BY id DESC LIMIT 1",
                     (self.vault_id,),
                 ).fetchone()
-                previous_files = {
-                    row["relpath"]: row["sha256"]
-                    for row in connection.execute(
-                        "SELECT relpath,sha256 FROM save_snapshot_files WHERE snapshot_id=?",
-                        (latest["id"],),
-                    )
-                } if latest else {}
+                previous_rows = connection.execute(
+                    "SELECT relpath,sha256,origin_device FROM save_snapshot_files WHERE snapshot_id=?",
+                    (latest["id"],),
+                ).fetchall() if latest else []
+            previous_files = {row["relpath"]: row["sha256"] for row in previous_rows}
+            previous_origins = {row["relpath"]: row["origin_device"] for row in previous_rows}
             # Snapshot manifests are immutable, so an identical latest tree is
             # already a complete safety point. Reuse it for manual, scheduled,
             # and pre-operation snapshots instead of publishing duplicate
@@ -437,6 +443,7 @@ class SaveSnapshotService:
                 1 for path in current_files.keys() & previous_files.keys()
                 if current_files[path] != previous_files[path]
             )
+            origins = self._snapshot_origins(files, previous_files, previous_origins)
             if progress_callback:
                 progress_callback(92, "Publishing snapshot manifest")
             with self.db.write() as connection:
@@ -460,10 +467,10 @@ class SaveSnapshotService:
                 )
                 snapshot_id = connection.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
                 connection.executemany(
-                    "INSERT INTO save_snapshot_files(snapshot_id,relpath,size,mtime_ns,sha256) "
-                    "VALUES(?,?,?,?,?)",
+                    "INSERT INTO save_snapshot_files(snapshot_id,relpath,size,mtime_ns,sha256,origin_device) "
+                    "VALUES(?,?,?,?,?,?)",
                     (
-                        (snapshot_id, item.relpath, item.size, item.mtime_ns, item.sha256)
+                        (snapshot_id, item.relpath, item.size, item.mtime_ns, item.sha256, origins.get(item.relpath, ""))
                         for item in files
                     ),
                 )
@@ -483,6 +490,234 @@ class SaveSnapshotService:
                 "removed": removed,
                 "pruned": pruned,
             }
+
+    def _snapshot_origins(
+        self,
+        files: list[SaveFile],
+        previous_files: dict[str, str],
+        previous_origins: dict[str, str],
+    ) -> dict[str, str]:
+        """Who wrote each file in this snapshot.
+
+        Unchanged files keep the author recorded last time. Only new or changed
+        content is asked of Syncthing, which knows the modifier of the version
+        it currently holds and nothing older -- hence recording it here.
+        """
+        origins = {
+            item.relpath: previous_origins.get(item.relpath, "")
+            for item in files
+            if previous_files.get(item.relpath) == item.sha256 and previous_origins.get(item.relpath)
+        }
+        if not self.origin_lookup:
+            return origins
+        pending = [(item.relpath, item.mtime_ns) for item in files if item.relpath not in origins]
+        if not pending:
+            return origins
+        try:
+            found = self.origin_lookup(pending)
+        except Exception:
+            # Syncthing being unreachable must never block a snapshot.
+            return origins
+        origins.update({relpath: device for relpath, device in found.items() if device})
+        return origins
+
+    @staticmethod
+    def _device_name_for(device_names: dict[str, str] | None, origin: str) -> str:
+        if not origin or not device_names:
+            return ""
+        folded = origin.casefold()
+        for known, name in device_names.items():
+            known_folded = known.casefold()
+            if known_folded.startswith(folded) or folded.startswith(known_folded):
+                return name
+        return ""
+
+    @staticmethod
+    def _conflict_stamp(match: re.Match[str]) -> str:
+        return (
+            f"{match.group('date')[0:4]}-{match.group('date')[4:6]}-{match.group('date')[6:8]} "
+            f"{match.group('time')[0:2]}:{match.group('time')[2:4]}:{match.group('time')[4:6]}"
+        )
+
+    def history(self, relpath: str, device_names: dict[str, str] | None = None) -> dict[str, object]:
+        """Every version of one save that the snapshots have seen, and who wrote it.
+
+        A conflict copy's history belongs to the save it forked from, so either
+        path may be asked for. The result is a time-ordered list of events: the
+        live save changing hands, a conflict copy appearing (a fork), a
+        resolution (a merge or a dropped branch), and the live file right now.
+        """
+        # Resolved, because resolve_relpath() returns resolved paths and the two
+        # must agree for relative_to() below.
+        root = self.settings.saves_root.resolve()
+        normalized = PurePosixPath(relpath.strip().replace("\\", "/"))
+        if not normalized.parts or ".." in normalized.parts or normalized.is_absolute():
+            raise LibraryError("Choose a save path inside the save folder")
+        match = SYNC_CONFLICT_NAME.match(normalized.name)
+        canonical_name = f"{match.group('base')}{match.group('extension') or ''}" if match else normalized.name
+        canonical = normalized.with_name(canonical_name)
+        canonical_relpath = canonical.as_posix()
+        stem = PurePosixPath(canonical_name).stem
+        extension = PurePosixPath(canonical_name).suffix
+
+        def is_copy_of(name: str) -> bool:
+            found = SYNC_CONFLICT_NAME.match(name)
+            return bool(found) and found.group("base") == stem and (found.group("extension") or "") == extension
+
+        escape = lambda text: text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        prefix = canonical.with_name(f"{stem}.sync-conflict-").as_posix()
+        with self.db.connect() as connection:
+            rows = connection.execute(
+                "SELECT f.relpath,f.size,f.sha256,f.origin_device,s.id AS snapshot_id,s.created_at "
+                "FROM save_snapshot_files f JOIN save_snapshots s ON s.id=f.snapshot_id "
+                "WHERE s.vault_id IS ? AND (f.relpath=? OR f.relpath LIKE ? ESCAPE '\\') "
+                "ORDER BY s.id",
+                (self.vault_id, canonical_relpath, f"{escape(prefix)}%"),
+            ).fetchall()
+            resolutions = connection.execute(
+                "SELECT * FROM save_conflict_resolutions WHERE vault_id IS ? AND canonical_relpath=? ORDER BY id",
+                (self.vault_id, canonical_relpath),
+            ).fetchall()
+        rows = [row for row in rows if row["relpath"] == canonical_relpath or is_copy_of(PurePosixPath(row["relpath"]).name)]
+
+        versions: dict[str, dict[str, object]] = {}
+        counters: dict[str, int | None] = {}
+
+        def counter_for(sha256: str) -> int | None:
+            if sha256 not in counters:
+                blob = self._blob_path(sha256)
+                counters[sha256] = self._gen3_save_counter(blob, extension) if blob.is_file() else None
+            return counters[sha256]
+
+        def version(sha256: str, size: int) -> dict[str, object]:
+            item = versions.get(sha256)
+            if item is None:
+                item = versions[sha256] = {
+                    "sha256": sha256,
+                    "size": size,
+                    "save_counter": counter_for(sha256),
+                    "origin_id": "",
+                    "origin_name": "",
+                    "first_seen": None,
+                    "last_seen": None,
+                    "snapshots": 0,
+                    "seen_as": [],
+                }
+            return item
+
+        events: list[dict[str, object]] = []
+        live_by_snapshot: dict[int, str] = {}
+        known_copies: set[str] = set()
+        last_live = ""
+        for row in rows:
+            item = version(row["sha256"], row["size"])
+            item["snapshots"] += 1
+            item["first_seen"] = item["first_seen"] or row["created_at"]
+            item["last_seen"] = row["created_at"]
+            if row["origin_device"] and not item["origin_id"]:
+                item["origin_id"] = row["origin_device"]
+                item["origin_name"] = self._device_name_for(device_names, row["origin_device"])
+            if row["relpath"] == canonical_relpath:
+                if "live" not in item["seen_as"]:
+                    item["seen_as"].append("live")
+                live_by_snapshot[row["snapshot_id"]] = row["sha256"]
+                if row["sha256"] != last_live:
+                    events.append({
+                        "type": "live",
+                        "at": row["created_at"],
+                        "sha256": row["sha256"],
+                        "snapshot_id": row["snapshot_id"],
+                        "origin_id": row["origin_device"],
+                        "origin_name": self._device_name_for(device_names, row["origin_device"]),
+                        "save_counter": item["save_counter"],
+                        "previous_sha256": last_live,
+                    })
+                    last_live = row["sha256"]
+            else:
+                if "conflict" not in item["seen_as"]:
+                    item["seen_as"].append("conflict")
+                if row["relpath"] in known_copies:
+                    continue
+                known_copies.add(row["relpath"])
+                copy = SYNC_CONFLICT_NAME.match(PurePosixPath(row["relpath"]).name)
+                winner = copy.group("device") if copy else ""
+                events.append({
+                    "type": "fork",
+                    "at": row["created_at"],
+                    "conflict_at": self._conflict_stamp(copy) if copy else "",
+                    "sha256": row["sha256"],
+                    "snapshot_id": row["snapshot_id"],
+                    "conflict_relpath": row["relpath"],
+                    "winner_id": winner,
+                    "winner_name": self._device_name_for(device_names, winner),
+                    "origin_id": row["origin_device"],
+                    "origin_name": self._device_name_for(device_names, row["origin_device"]),
+                    "save_counter": item["save_counter"],
+                    "live_sha256": live_by_snapshot.get(row["snapshot_id"], last_live),
+                })
+        for row in resolutions:
+            for sha256 in (row["canonical_sha256"], row["conflict_sha256"]):
+                if sha256 and sha256 not in versions:
+                    version(sha256, 0)
+            events.append({
+                "type": "resolved",
+                "at": row["resolved_at"],
+                "decision": row["decision"],
+                "conflict_relpath": row["conflict_relpath"],
+                "conflict_sha256": row["conflict_sha256"],
+                "canonical_sha256": row["canonical_sha256"],
+                "sha256": row["conflict_sha256"] if row["decision"] == "conflict" else row["canonical_sha256"],
+                "device_id": row["device_id"],
+                "device_name": row["device_name"] or self._device_name_for(device_names, row["device_id"]),
+                "safety_snapshot_id": row["safety_snapshot_id"],
+            })
+
+        current: dict[str, object] | None = None
+        live_path = self.resolve_relpath(canonical_relpath)
+        if live_path is not None:
+            stat = live_path.stat()
+            sha256 = self._hash_path(live_path)
+            item = version(sha256, stat.st_size)
+            if item["size"] == 0:
+                item["size"] = stat.st_size
+            if item["save_counter"] is None:
+                item["save_counter"] = self._gen3_save_counter(live_path)
+            current = {
+                "relpath": canonical_relpath,
+                "sha256": sha256,
+                "size": stat.st_size,
+                "mtime_ns": stat.st_mtime_ns,
+                "save_counter": item["save_counter"],
+                "in_snapshot": item["snapshots"] > 0,
+            }
+        pending_copies = []
+        parent = live_path.parent if live_path is not None else (root / canonical).parent
+        if parent.is_dir():
+            for path in sorted(parent.iterdir()):
+                if path.is_file() and not path.is_symlink() and is_copy_of(path.name) and not self._ignored_relative(path.relative_to(root)):
+                    pending_copies.append(path.relative_to(root).as_posix())
+
+        # Chronological. Snapshot and resolution stamps are both UTC
+        # "YYYY-MM-DD HH:MM:SS", so string order is time order.
+        events.sort(key=lambda event: (str(event["at"]), 0 if event["type"] == "live" else 1))
+        contributors: dict[str, dict[str, object]] = {}
+        for item in versions.values():
+            key = str(item["origin_id"] or "")
+            entry = contributors.setdefault(key, {"device_id": key, "device_name": item["origin_name"], "versions": 0})
+            entry["versions"] += 1
+        classification = self._classify(canonical_relpath)
+        return {
+            "relpath": canonical_relpath,
+            "content_name": classification.get("content_name") or stem,
+            "emulator": classification.get("emulator"),
+            "core": classification.get("core"),
+            "versions": sorted(versions.values(), key=lambda item: str(item["first_seen"] or "9999")),
+            "events": events,
+            "current": current,
+            "unresolved_conflicts": pending_copies,
+            "contributors": sorted(contributors.values(), key=lambda item: (-int(item["versions"]), str(item["device_name"]))),
+            "origins_recorded": any(item["origin_id"] for item in versions.values()),
+        }
 
     def list_snapshots(self, limit: int = 100, offset: int = 0) -> dict[str, object]:
         with self.db.connect() as connection:
@@ -542,15 +777,17 @@ class SaveSnapshotService:
         }
 
     @staticmethod
-    def _gen3_save_counter(path: Path) -> int | None:
+    def _gen3_save_counter(path: Path, suffix: str | None = None) -> int | None:
         """In-game save count for a Pokémon Generation III (GBA) save, else None.
 
         Gen 3 saves hold two slots of 14 sectors; each sector footer carries a
         signature and a save index that the game increments on every save. The
         framing survives ROM hacks even when the trainer data inside moves, so
         it is the one honest "which copy has more progress" signal we have.
+        ``suffix`` overrides the path's own extension for stored blobs, which
+        are named by hash.
         """
-        if path.suffix.casefold() not in {".srm", ".sav", ".fla"}:
+        if (path.suffix if suffix is None else suffix).casefold() not in {".srm", ".sav", ".fla"}:
             return None
         try:
             if path.stat().st_size > 262144:

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import threading
+from typing import Callable
 import uuid
 from dataclasses import replace
 from pathlib import Path
@@ -18,6 +19,9 @@ class SaveVaultService:
         self.db = db
         self._lock = threading.RLock()
         self._services: dict[int, SaveSnapshotService] = {}
+        # Called with (service, storage_key) once per newly built vault service,
+        # so the app can hand it collaborators such as the Syncthing origin lookup.
+        self.configure_service: Callable[[SaveSnapshotService, str], None] | None = None
 
     @property
     def root(self) -> Path:
@@ -84,6 +88,8 @@ class SaveVaultService:
                 )
                 service = SaveSnapshotService(private_settings, self.db, vault_id)
                 service.initialize()
+                if self.configure_service:
+                    self.configure_service(service, key)
                 self._services[vault_id] = service
             return service
 

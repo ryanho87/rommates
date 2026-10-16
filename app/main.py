@@ -78,6 +78,21 @@ artwork_thumbnails = ArtworkThumbnailCache(settings, db)
 ranking_service = RankingService(settings, db)
 transfers = TransferService(settings, db, library)
 syncthing = SyncthingService(settings)
+
+
+def _save_origin_lookup(source_root: Path, storage_key: str = ""):
+    """Snapshot-time author lookup: which Syncthing device last wrote each file."""
+    def lookup(entries: list[tuple[str, int]]) -> dict[str, str]:
+        if not syncthing.configured:
+            return {}
+        return syncthing.file_origins(source_root, entries, storage_key)
+    return lookup
+
+
+saves.origin_lookup = _save_origin_lookup(settings.saves_root)
+save_vaults.configure_service = lambda service, key: setattr(
+    service, "origin_lookup", _save_origin_lookup(service.settings.saves_root, key)
+)
 notifications = NotificationService(settings, db)
 mobile_push = MobilePushService(settings, db)
 mobile_releases = MobileReleaseService(db, mobile_push)
@@ -4109,6 +4124,35 @@ def save_origins(payload: SaveOriginsRequest, saves: SaveSnapshotService = Depen
                 break
         items[relpath] = {"device_id": device_id, "device_name": name}
     return {"origins": items, "available": syncthing.configured}
+
+
+@app.get("/api/saves/history")
+def save_history(relpath: str = Query(..., min_length=1, max_length=1024), saves: SaveSnapshotService = Depends(require_save_service)):
+    """Every captured version of one save and which device wrote it."""
+    names = _vault_device_names(saves)
+    try:
+        result = saves.history(relpath, names)
+    except LibraryError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    current = result.get("current")
+    if isinstance(current, dict):
+        # The live file's author comes from Syncthing directly; it may not have
+        # been snapshotted yet.
+        storage_key = save_vaults.get(saves.vault_id)["storage_key"] if saves.vault_id is not None else ""
+        try:
+            origins = syncthing.file_origins(
+                saves.settings.saves_root, [(current["relpath"], current["mtime_ns"])], storage_key
+            )
+        except Exception:
+            origins = {}
+        origin = origins.get(current["relpath"], "")
+        current["origin_id"] = origin
+        current["origin_name"] = saves._device_name_for(names, origin)
+        for item in result["versions"]:
+            if item["sha256"] == current["sha256"] and not item["origin_id"] and origin:
+                item["origin_id"] = origin
+                item["origin_name"] = current["origin_name"]
+    return result
 
 
 @app.post("/api/saves/conflicts/resolve", status_code=202)

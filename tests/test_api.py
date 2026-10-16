@@ -2340,6 +2340,67 @@ class ApiIntegrationTests(unittest.TestCase):
         self.assertEqual(current.read_bytes(), b"current-progress")
         self.assertFalse(conflict.exists())
         self.assertIn("safety_snapshot_id", job["result"])
+        # The resolved file must be indexed right away or a handheld's stale copy
+        # can still win Syncthing's newest-write tiebreak. Unconfigured here, so
+        # the attempt is recorded rather than made.
+        self.assertFalse(job["result"]["syncthing_rescan"]["requested"])
+        self.assertIn("not configured", job["result"]["syncthing_rescan"]["error"])
+
+    def test_resolving_a_conflict_rescans_its_directory_in_syncthing(self):
+        current = self.root / "saves/retroarch/mGBA/Rescan Test.srm"
+        conflict = self.root / "saves/retroarch/mGBA/Rescan Test.sync-conflict-20260829-183000-ABC1234.srm"
+        current.parent.mkdir(parents=True, exist_ok=True)
+        current.write_bytes(b"current")
+        conflict.write_bytes(b"other")
+        item = self.client.get("/api/saves/conflicts?search=Rescan%20Test", headers=self.headers).json()["items"][0]
+        with patch.object(
+            self.main.syncthing, "rescan_saves",
+            return_value={"requested": True, "folders": [{"folder_id": "saves", "subpath": "retroarch/mGBA"}], "error": None},
+        ) as rescan:
+            response = self.client.post(
+                "/api/saves/conflicts/resolve",
+                headers=self.headers,
+                json={
+                    "conflict_relpath": item["conflict_relpath"],
+                    "decision": "conflict",
+                    "expected_canonical_sha256": item["canonical_sha256"],
+                    "expected_conflict_sha256": item["conflict_sha256"],
+                    "device_id": item["device_id"],
+                    "device_name": "",
+                },
+            )
+            job = self.wait_for_job(response.json()["job_id"])
+        self.assertEqual(job["status"], "complete")
+        self.assertEqual(current.read_bytes(), b"other")
+        rescan.assert_called_once()
+        root, storage_key, subpaths = rescan.call_args.args
+        self.assertEqual(root, self.main.settings.saves_root)
+        self.assertEqual(storage_key, "")
+        self.assertEqual(subpaths, ["retroarch/mGBA"])
+        self.assertTrue(job["result"]["syncthing_rescan"]["requested"])
+
+    def test_save_history_lists_versions_and_rejects_escapes(self):
+        save = self.root / "saves/retroarch/mGBA/History API Test.srm"
+        save.parent.mkdir(parents=True, exist_ok=True)
+        save.write_bytes(b"first")
+        self.wait_for_job(self.client.post("/api/saves/snapshots", headers=self.headers, json={"note": ""}).json()["job_id"])
+        save.write_bytes(b"second")
+        response = self.client.get(
+            "/api/saves/history", headers=self.headers,
+            params={"relpath": "retroarch/mGBA/History API Test.srm"},
+        )
+        self.assertEqual(response.status_code, 200)
+        history = response.json()
+        self.assertEqual(history["relpath"], "retroarch/mGBA/History API Test.srm")
+        self.assertEqual([event["type"] for event in history["events"]], ["live"])
+        self.assertFalse(history["current"]["in_snapshot"])
+        self.assertIn("origin_id", history["current"])
+        self.assertEqual(len(history["versions"]), 2)
+        self.assertEqual(
+            self.client.get("/api/saves/history", headers=self.headers, params={"relpath": "../x.srm"}).status_code,
+            400,
+        )
+        self.assertEqual(self.client.get("/api/saves/history", params={"relpath": "a.srm"}).status_code, 401)
 
     def test_scan_report_lists_every_unreadable_path(self):
         outside = self.root / "outside.gba"

@@ -350,6 +350,7 @@ CREATE TABLE IF NOT EXISTS save_snapshot_files (
     size INTEGER NOT NULL,
     mtime_ns INTEGER NOT NULL,
     sha256 TEXT NOT NULL,
+    origin_device TEXT NOT NULL DEFAULT '',
     PRIMARY KEY(snapshot_id, relpath)
 );
 
@@ -1205,6 +1206,18 @@ CREATE TABLE IF NOT EXISTS device_save_sync (
 );
             """)
             connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(42)")
+
+            # Which Syncthing device wrote each captured save version. Recorded at
+            # snapshot time because Syncthing only remembers the modifier of the
+            # version it currently holds; older history is otherwise lost.
+            snapshot_file_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(save_snapshot_files)")
+            }
+            if "origin_device" not in snapshot_file_columns:
+                connection.execute(
+                    "ALTER TABLE save_snapshot_files ADD COLUMN origin_device TEXT NOT NULL DEFAULT ''"
+                )
+            connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES(43)")
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:

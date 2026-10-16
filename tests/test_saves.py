@@ -217,6 +217,108 @@ class SaveSnapshotTests(unittest.TestCase):
                 data[offset + 0xFFC:offset + 0x1000] = index.to_bytes(4, "little")
         return bytes(data)
 
+    def test_snapshots_record_who_wrote_each_file_and_carry_it_forward(self):
+        calls = []
+
+        def lookup(entries):
+            calls.append(sorted(relpath for relpath, _ in entries))
+            return {relpath: {"retroarch/mGBA/A.srm": "RETROID", "retroarch/mGBA/B.srm": "ROTATE"}.get(relpath, "") for relpath, _ in entries}
+
+        self.service.origin_lookup = lookup
+        self.write("retroarch/mGBA/A.srm", b"a1")
+        self.write("retroarch/mGBA/B.srm", b"b1")
+        first = self.service.create_snapshot()["snapshot_id"]
+        self.write("retroarch/mGBA/A.srm", b"a2")
+        second = self.service.create_snapshot()["snapshot_id"]
+
+        with self.db.connect() as connection:
+            rows = {
+                (row["snapshot_id"], row["relpath"]): row["origin_device"]
+                for row in connection.execute("SELECT snapshot_id,relpath,origin_device FROM save_snapshot_files")
+            }
+        self.assertEqual(rows[(first, "retroarch/mGBA/A.srm")], "RETROID")
+        self.assertEqual(rows[(first, "retroarch/mGBA/B.srm")], "ROTATE")
+        self.assertEqual(rows[(second, "retroarch/mGBA/A.srm")], "RETROID")
+        self.assertEqual(rows[(second, "retroarch/mGBA/B.srm")], "ROTATE")
+        # Only the changed file is asked of Syncthing the second time.
+        self.assertEqual(calls, [["retroarch/mGBA/A.srm", "retroarch/mGBA/B.srm"], ["retroarch/mGBA/A.srm"]])
+
+    def test_snapshot_survives_a_failing_origin_lookup(self):
+        def lookup(entries):
+            raise OSError("syncthing down")
+
+        self.service.origin_lookup = lookup
+        self.write("retroarch/mGBA/A.srm", b"a1")
+        result = self.service.create_snapshot()
+        self.assertFalse(result["unchanged"])
+        with self.db.connect() as connection:
+            row = connection.execute("SELECT origin_device FROM save_snapshot_files").fetchone()
+        self.assertEqual(row["origin_device"], "")
+
+    def test_history_traces_versions_forks_and_resolutions(self):
+        import hashlib
+
+        origins = {}
+        self.service.origin_lookup = lambda entries: {relpath: origins.get(relpath, "") for relpath, _ in entries}
+        names = {"RETROID-LONG-ID": "Retroid Pocket 5", "REWXJAI-LONG-ID": "rg_rotate"}
+
+        old = self._gen3_save(13)
+        new = self._gen3_save(55)
+        origins["retroarch/mGBA/Emerald.srm"] = "RETROID"
+        self.write("retroarch/mGBA/Emerald.srm", old)
+        self.service.create_snapshot(trigger="automatic")
+        # rg_rotate's stale write won the tiebreak: the real progress is demoted to a copy.
+        copy_relpath = "retroarch/mGBA/Emerald.sync-conflict-20261016-113000-REWXJAI.srm"
+        origins[copy_relpath] = "RETROID"
+        self.write(copy_relpath, new)
+        self.service.create_snapshot(trigger="automatic")
+
+        history = self.service.history(copy_relpath, names)
+        self.assertEqual(history["relpath"], "retroarch/mGBA/Emerald.srm")
+        self.assertEqual(history["content_name"], "Emerald")
+        self.assertEqual([event["type"] for event in history["events"]], ["live", "fork"])
+        live, fork = history["events"]
+        self.assertEqual(live["origin_name"], "Retroid Pocket 5")
+        self.assertEqual(live["save_counter"], 13)
+        self.assertEqual(fork["winner_name"], "rg_rotate")
+        self.assertEqual(fork["conflict_at"], "2026-10-16 11:30:00")
+        self.assertEqual(fork["save_counter"], 55)
+        self.assertEqual(fork["live_sha256"], hashlib.sha256(old).hexdigest())
+        self.assertEqual(history["unresolved_conflicts"], [copy_relpath])
+        self.assertEqual(history["current"]["sha256"], hashlib.sha256(old).hexdigest())
+        self.assertTrue(history["origins_recorded"])
+
+        self.service.resolve_conflict(
+            copy_relpath, "conflict",
+            hashlib.sha256(old).hexdigest(), hashlib.sha256(new).hexdigest(),
+            "REWXJAI", "rg_rotate",
+        )
+        history = self.service.history("retroarch/mGBA/Emerald.srm", names)
+        self.assertEqual([event["type"] for event in history["events"]], ["live", "fork", "resolved"])
+        resolved = history["events"][-1]
+        self.assertEqual(resolved["decision"], "conflict")
+        self.assertEqual(resolved["sha256"], hashlib.sha256(new).hexdigest())
+        self.assertEqual(history["current"]["sha256"], hashlib.sha256(new).hexdigest())
+        self.assertEqual(history["current"]["save_counter"], 55)
+        self.assertEqual(history["unresolved_conflicts"], [])
+        by_hash = {item["sha256"]: item for item in history["versions"]}
+        self.assertEqual(by_hash[hashlib.sha256(new).hexdigest()]["seen_as"], ["conflict"])
+        self.assertEqual(by_hash[hashlib.sha256(old).hexdigest()]["seen_as"], ["live"])
+        self.assertEqual(len(history["versions"]), 2)
+
+    def test_history_rejects_paths_outside_the_save_folder(self):
+        with self.assertRaises(LibraryError):
+            self.service.history("../etc/passwd")
+        with self.assertRaises(LibraryError):
+            self.service.history("/retroarch/x.srm")
+
+    def test_history_of_an_unknown_save_is_empty_but_well_formed(self):
+        history = self.service.history("retroarch/mGBA/Nothing.srm")
+        self.assertEqual(history["versions"], [])
+        self.assertEqual(history["events"], [])
+        self.assertIsNone(history["current"])
+        self.assertFalse(history["origins_recorded"])
+
     def test_conflict_shows_save_counters_history_and_a_progress_hint(self):
         # The live save is an old one (13 saves) that was snapshotted while live;
         # the preserved copy holds the real progress (55 saves) and was never live.
