@@ -264,6 +264,48 @@ class SaveSnapshotTests(unittest.TestCase):
         self.assertEqual(item["hint"], "")
         self.assertIsNone(item["canonical_history"])
 
+    def test_restoring_a_conflict_stamps_the_live_file_with_the_current_time(self):
+        # Syncthing settles concurrent changes by newest modification time. A
+        # restore that keeps the copy's old stamp loses to any stale save a
+        # handheld writes later, which is exactly how a restore gets undone.
+        import os, time
+        current = self.write("retroarch/mGBA/Emerald.srm", self._gen3_save(13))
+        conflict = self.write(
+            "retroarch/mGBA/Emerald.sync-conflict-20261016-113000-F6G43OM.srm", self._gen3_save(55)
+        )
+        old = time.time() - 30 * 86400
+        os.utime(conflict, (old, old))
+        item = self.service.conflicts()["items"][0]
+        started = time.time()
+
+        self.service.resolve_conflict(
+            item["conflict_relpath"], "conflict", item["canonical_sha256"], item["conflict_sha256"],
+        )
+
+        self.assertEqual(self.service._gen3_save_counter(current), 55)
+        self.assertGreaterEqual(current.stat().st_mtime, started - 1)
+        self.assertGreater(current.stat().st_mtime, old + 86400)
+
+    def test_a_conflict_copy_that_comes_back_after_resolution_is_flagged(self):
+        # Resolving deletes the copy, but a handheld that still holds it can
+        # re-announce it on reconnect and a modification beats a deletion.
+        self.write("retroarch/mGBA/Emerald.srm", self._gen3_save(55))
+        self.write("retroarch/mGBA/Emerald.sync-conflict-20261009-224819-REWXJAI.srm", self._gen3_save(40))
+        item = self.service.conflicts()["items"][0]
+        self.service.resolve_conflict(
+            item["conflict_relpath"], "current", item["canonical_sha256"], item["conflict_sha256"],
+        )
+        self.assertEqual(self.service.conflicts()["total"], 0)
+
+        self.write("retroarch/mGBA/Emerald.sync-conflict-20261009-224819-REWXJAI.srm", self._gen3_save(40))
+
+        again = self.service.conflicts()["items"][0]
+        self.assertEqual(again["previously_resolved_decision"], "current")
+        self.assertTrue(again["previously_resolved_at"])
+        self.assertIn("already resolved", again["hint"])
+        self.assertIn("kept the current version", again["hint"])
+        self.assertIn("sent it back", again["hint"])
+
     def test_conflict_resolution_snapshots_both_versions_before_using_conflict(self):
         current = self.write("retroarch/mGBA/Pokemon Pinball.srm", b"ryan-progress")
         conflict = self.write(

@@ -3963,7 +3963,10 @@ function saveConflictsHtml(data) {
     const current = item.canonical_exists
       ? `<div><strong>Current${writer ? ` · written by ${escapeHtml(writer)}` : ""}</strong><span>${formatBytes(item.canonical_size)} · ${when(item.canonical_mtime_ns)}</span>${provenance(item.canonical_history, item.canonical_save_counter)}<code>${escapeHtml(item.canonical_sha256.slice(0, 12))}</code></div>`
       : `<div><strong>Current missing</strong><span>The previous version is the only surviving copy.</span></div>`;
-    const conflict = `<div><strong>Previous version</strong><span>replaced by a write from ${escapeHtml(source)} on ${escapeHtml(item.conflict_at)}</span><span>${formatBytes(item.conflict_size)} · ${when(item.conflict_mtime_ns)}</span>${provenance(item.conflict_history, item.conflict_save_counter)}<code>${escapeHtml(item.conflict_sha256.slice(0, 12))}</code></div>`;
+    const resent = item.previously_resolved_at
+      ? `<span class="conflict-provenance conflict-resent">already resolved ${escapeHtml(String(item.previously_resolved_at).slice(0, 10))} (${item.previously_resolved_decision === "conflict" ? "restored" : "kept current"})${item.conflict_origin_name || item.conflict_origin_id ? ` · sent back by ${escapeHtml(item.conflict_origin_name || item.conflict_origin_id)}` : " · sent back by a device"}</span>`
+      : "";
+    const conflict = `<div><strong>Previous version</strong><span>replaced by a write from ${escapeHtml(source)} on ${escapeHtml(item.conflict_at)}</span>${resent}<span>${formatBytes(item.conflict_size)} · ${when(item.conflict_mtime_ns)}</span>${provenance(item.conflict_history, item.conflict_save_counter)}<code>${escapeHtml(item.conflict_sha256.slice(0, 12))}</code></div>`;
     const hint = item.hint ? `<p class="conflict-hint">${escapeHtml(item.hint)}</p>` : "";
     return `<tr><td class="name-cell"><strong>${escapeHtml(item.content_name || item.canonical_relpath.split("/").pop())}</strong><code class="save-path">${escapeHtml(item.canonical_relpath)}</code><span class="path-line">${escapeHtml(item.emulator)}${item.core ? ` · ${escapeHtml(item.core)}` : ""} · conflict recorded ${escapeHtml(item.conflict_at)}</span></td><td><div class="conflict-versions">${current}${conflict}</div></td><td><span class="badge ${item.identical ? "unique" : "exact"}">${item.identical ? "Identical content" : "Different progress"}</span>${hint}</td><td><div class="bulk-actions"><button class="button secondary small" data-resolve-conflict="${index}" data-decision="current" ${item.canonical_exists ? "" : "disabled"}>${item.identical ? "Remove duplicate" : "Keep current"}</button><button class="button small" data-resolve-conflict="${index}" data-decision="conflict">Restore previous</button></div></td></tr>`;
   }).join("");
@@ -4279,14 +4282,26 @@ async function renderSaves() {
     const item = conflictData?.items[Number(button.dataset.resolveConflict)];
     if (!item) return;
     const decision = button.dataset.decision;
-    const chosen = decision === "conflict" ? `the conflict from ${item.device_name || item.device_id || "the other device"}` : "the current version";
-    const warning = item.identical
-      ? "The files have identical content, so this only removes Syncthing's extra conflict copy."
-      : `The unselected branch will leave the live vault, but both versions remain recoverable in the safety snapshot.`;
+    const saves = (count) => (count === null || count === undefined ? "" : ` (${Number(count).toLocaleString()} in-game saves)`);
+    const game = item.content_name || item.canonical_relpath.split("/").pop();
+    let title, body, confirmLabel;
+    if (item.identical) {
+      title = "Remove the duplicate copy?";
+      body = `<p>Both copies of <strong>${escapeHtml(game)}</strong> have identical content, so this only removes Syncthing's extra conflict copy. Nothing about the live save changes.</p>`;
+      confirmLabel = "Remove duplicate";
+    } else if (decision === "conflict") {
+      title = `Restore the previous version of ${escapeHtml(game)}?`;
+      body = `<p class="warning-copy">The <strong>previous version</strong>${saves(item.conflict_save_counter)} becomes the live save and Syncthing sends it to every device.</p><p>The <strong>current version</strong>${saves(item.canonical_save_counter)} is kept in a safety snapshot first, so this can be undone.</p><p>The restored file is stamped with the current time, so a stale copy still sitting on a handheld cannot out-rank it later.</p>`;
+      confirmLabel = "Restore previous version";
+    } else {
+      title = `Keep the current version of ${escapeHtml(game)}?`;
+      body = `<p class="warning-copy">The <strong>current version</strong>${saves(item.canonical_save_counter)} stays the live save.</p><p>The <strong>previous version</strong>${saves(item.conflict_save_counter)} is kept in a safety snapshot and its copy is removed from the save folder.</p>`;
+      confirmLabel = "Keep current version";
+    }
     const confirmed = await confirmAction({
-      title: `${decision === "conflict" ? "Use conflict version" : "Keep current version"}?`,
-      content: `<p class="warning-copy">ROMmates will select <strong>${escapeHtml(chosen)}</strong> for <code>${escapeHtml(item.canonical_relpath)}</code>.</p><p>${escapeHtml(warning)}</p><p>Close the emulator on every device and let Syncthing finish before continuing.</p>`,
-      confirmLabel: item.identical ? "Remove duplicate" : `Use ${decision === "conflict" ? "conflict" : "current"}`,
+      title,
+      content: `${body}<p>Close the emulator on every device and let Syncthing finish before continuing.</p>`,
+      confirmLabel,
       cancelLabel: "Leave unresolved",
       danger: !item.identical,
     });

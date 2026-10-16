@@ -573,6 +573,19 @@ class SaveSnapshotService:
                 best = index
         return best
 
+    def _resolution_history(self, connection, conflict_relpath: str) -> dict[str, object] | None:
+        """The last decision recorded for this exact conflict copy, if any.
+
+        Resolving deletes the copy here, but a handheld that still holds it can
+        announce it as modified when it reconnects, and a modification beats a
+        concurrent deletion, so the copy comes back looking new."""
+        row = connection.execute(
+            "SELECT decision,resolved_at FROM save_conflict_resolutions "
+            "WHERE conflict_relpath=? AND vault_id IS ? ORDER BY id DESC LIMIT 1",
+            (conflict_relpath, self.vault_id),
+        ).fetchone()
+        return {"decision": row["decision"], "resolved_at": row["resolved_at"]} if row else None
+
     def _snapshot_history(self, connection, sha256: str) -> dict[str, object] | None:
         """When this exact content was the live save, according to the snapshots."""
         row = connection.execute(
@@ -586,7 +599,8 @@ class SaveSnapshotService:
         return {"count": row["n"], "first": row["first"], "last": row["last"]}
 
     def _conflict_record(
-        self, path: Path, device_names: dict[str, str] | None = None, history_lookup=None
+        self, path: Path, device_names: dict[str, str] | None = None, history_lookup=None,
+        resolution_lookup=None,
     ) -> dict[str, object] | None:
         path = path.resolve()
         match = SYNC_CONFLICT_NAME.match(path.name)
@@ -646,6 +660,13 @@ class SaveSnapshotService:
                     f"before the previous version was written on {conflict_written[:10]}. "
                     "It looks like an older save that came back."
                 )
+        resolved = resolution_lookup(conflict_relpath) if resolution_lookup else None
+        if resolved:
+            verb = "restored" if resolved["decision"] == "conflict" else "kept the current version"
+            hint = (
+                f"This copy was already resolved on {str(resolved['resolved_at'])[:10]} (you {verb}); "
+                "a device that still had it sent it back. " + hint
+            ).strip()
         classification = self._classify(canonical.relative_to(root).as_posix())
         return {
             "conflict_relpath": conflict_relpath,
@@ -665,6 +686,8 @@ class SaveSnapshotService:
             "conflict_save_counter": conflict_counter,
             "canonical_history": canonical_history,
             "conflict_history": conflict_history,
+            "previously_resolved_at": resolved["resolved_at"] if resolved else None,
+            "previously_resolved_decision": resolved["decision"] if resolved else None,
             "hint": hint,
             **classification,
         }
@@ -681,11 +704,14 @@ class SaveSnapshotService:
             needle = search.strip().casefold()
             with self.db.connect() as connection:
                 lookup = lambda sha256: self._snapshot_history(connection, sha256)
+                resolutions = lambda relpath: self._resolution_history(connection, relpath)
                 candidates = [
                     path for path in self._source_paths()
                     if ".sync-conflict-" in path.name.casefold()
                 ]
-                records = [self._conflict_record(path, device_names, lookup) for path in candidates]
+                records = [
+                    self._conflict_record(path, device_names, lookup, resolutions) for path in candidates
+                ]
             for item in records:
                 if not item:
                     continue
@@ -765,6 +791,12 @@ class SaveSnapshotService:
                     if self._hash_path(staged, cancel_check) != expected_conflict_sha256:
                         raise LibraryError("The staged conflict version failed its integrity check")
                     os.replace(staged, canonical)
+                    # Stamp the restore with the current time: Syncthing settles
+                    # concurrent changes by newest modification time, so a
+                    # restore carrying its old stamp loses to any stale copy a
+                    # handheld writes afterwards -- which is how a restore gets
+                    # undone the next time that handheld connects.
+                    os.utime(canonical, None)
                     conflict.unlink()
                 finally:
                     staged.unlink(missing_ok=True)
@@ -1287,6 +1319,8 @@ class SaveSnapshotService:
                         temp = target.with_name(f".{target.name}.{uuid.uuid4().hex}.rommates-restore")
                         shutil.copy2(desired_root / row["relpath"], temp)
                         os.replace(temp, target)
+                        # See resolve_conflict: a restore must out-rank stale copies.
+                        os.utime(target, None)
                         if progress_callback:
                             progress_callback(
                                 min(90, 66 + int(index / max(len(desired_rows), 1) * 24)),

@@ -4014,19 +4014,28 @@ def save_conflicts(
         (item["canonical_relpath"], item["canonical_mtime_ns"])
         for item in result["items"] if item.get("canonical_exists")
     ]
+    # The conflict copy too: a device that still held an already-resolved copy
+    # re-announces it on reconnect, and Syncthing records that device as its
+    # last modifier, which is the answer to "why is this back?".
+    entries += [(item["conflict_relpath"], item["conflict_mtime_ns"]) for item in result["items"]]
     storage_key = save_vaults.get(saves.vault_id)["storage_key"] if saves.vault_id is not None else ""
     try:
         origins = syncthing.file_origins(saves.settings.saves_root, entries, storage_key) if entries else {}
     except Exception:
         origins = {}
-    for item in result["items"]:
-        origin = origins.get(item["canonical_relpath"], "")
-        item["canonical_origin_id"] = origin
-        item["canonical_origin_name"] = next(
+    def name_for(origin: str) -> str:
+        return next(
             (name for known, name in names.items()
              if origin and (known.casefold().startswith(origin.casefold()) or origin.casefold().startswith(known.casefold()))),
             "",
         )
+    for item in result["items"]:
+        canonical_origin = origins.get(item["canonical_relpath"], "")
+        conflict_origin = origins.get(item["conflict_relpath"], "")
+        item["canonical_origin_id"] = canonical_origin
+        item["canonical_origin_name"] = name_for(canonical_origin)
+        item["conflict_origin_id"] = conflict_origin
+        item["conflict_origin_name"] = name_for(conflict_origin)
     return result
 
 
