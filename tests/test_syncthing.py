@@ -175,6 +175,54 @@ class SyncthingServiceTests(unittest.TestCase):
         self.assertTrue(result["requested"])
         self.assertEqual(result["folders"][0]["subpath"], "devices/odin2/roms")
 
+    def test_rescan_saves_targets_the_save_folder_and_each_touched_directory(self):
+        calls = []
+
+        def fake_urlopen(request, timeout):
+            calls.append((request.get_method(), request.full_url))
+            if request.get_method() == "GET":
+                return FakeResponse(
+                    json.dumps([{"id": "wc0mo-tslmc", "path": "/media/Emulation/saves"}]).encode()
+                )
+            return FakeResponse(b"")
+
+        service = SyncthingService(self.settings())
+        with patch("app.syncthing.urlopen", side_effect=fake_urlopen):
+            result = service.rescan_saves(
+                Path("/emulation/saves"), "", ["retroarch/mGBA", "retroarch/mGBA/", ""]
+            )
+
+        self.assertTrue(result["requested"])
+        self.assertEqual(result["folders"], [{"folder_id": "wc0mo-tslmc", "subpath": "retroarch/mGBA"}])
+        posts = [url for method, url in calls if method == "POST"]
+        self.assertEqual(len(posts), 1)
+        self.assertIn("/rest/db/scan?folder=wc0mo-tslmc&sub=retroarch%2FmGBA", posts[0])
+
+    def test_rescan_saves_for_a_vault_scans_the_whole_folder_without_a_lookup(self):
+        calls = []
+
+        def fake_urlopen(request, timeout):
+            calls.append((request.get_method(), request.full_url))
+            return FakeResponse(b"")
+
+        service = SyncthingService(self.settings())
+        with patch("app.syncthing.urlopen", side_effect=fake_urlopen):
+            result = service.rescan_saves(Path("/emulation/save-vaults/vault-x"), "vault-x")
+
+        self.assertTrue(result["requested"])
+        self.assertEqual(result["folders"], [{"folder_id": "rommates-saves-vault-x", "subpath": ""}])
+        self.assertEqual(calls, [("POST", "http://syncthing:8384/rest/db/scan?folder=rommates-saves-vault-x")])
+
+    def test_rescan_saves_is_best_effort_when_no_folder_matches(self):
+        service = SyncthingService(self.settings())
+        with patch(
+            "app.syncthing.urlopen",
+            return_value=FakeResponse(json.dumps([{"id": "roms", "path": "/roms"}]).encode()),
+        ):
+            result = service.rescan_saves(Path("/emulation/saves"))
+        self.assertFalse(result["requested"])
+        self.assertIn("No Syncthing folder matched", result["error"])
+
     def test_rescan_device_is_best_effort_when_no_folder_matches(self):
         service = SyncthingService(self.settings())
         with patch(

@@ -8,7 +8,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, contextmanager
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from urllib.parse import quote
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
@@ -289,6 +289,34 @@ def notify_job_result(kind: str, detail: str, result: object) -> None:
     safe_notify(event, title, job_result_detail(kind, result, detail), path)
 
 
+def rescan_saves_after_job(operation, result: dict[str, object]) -> dict[str, object]:
+    """Index a save that a resolve/restore job just wrote so it propagates now.
+
+    Syncthing picks the newest modification time when two devices disagree, so
+    a restore that is not indexed promptly can be beaten by a handheld's stale
+    write. Conflict resolutions touch one file; restores may touch the whole
+    tree, so they rescan the whole save folder.
+    """
+    service = getattr(operation, "__self__", None)
+    if not isinstance(service, SaveSnapshotService):
+        return {"requested": False, "folders": [], "error": "Not a save operation"}
+    storage_key = ""
+    if service.vault_id is not None:
+        storage_key = str(save_vaults.get(service.vault_id).get("storage_key") or "")
+    subpaths: list[str] = []
+    relpath = str(result.get("canonical_relpath") or "")
+    if relpath:
+        parent = PurePosixPath(relpath).parent.as_posix()
+        subpaths.append("" if parent == "." else parent)
+    try:
+        rescan = syncthing.rescan_saves(service.settings.saves_root, storage_key, subpaths)
+    except Exception as exc:
+        rescan = {"requested": False, "folders": [], "error": str(exc)}
+    if syncthing.configured and not rescan.get("requested"):
+        db.activity("syncthing", f"Save folder rescan was not requested: {rescan.get('error')}")
+    return rescan
+
+
 def run_job(
     job_id: int,
     kind: str,
@@ -376,6 +404,8 @@ def run_job(
                     db.activity("ranking", f"Ranking matches could not be refreshed: {exc}")
             if kind in {"artwork_scrape", "artwork_bulk"} and isinstance(result, dict):
                 job_issues.extend(str(issue) for issue in result.get("issues", []))
+            if kind in {"save_conflict", "save_restore"} and isinstance(result, dict):
+                result["syncthing_rescan"] = rescan_saves_after_job(operation, result)
             if kind == "device_apply" and isinstance(result, dict):
                 rescan = result.get("syncthing_rescan")
                 transferred = int(result.get("linked") or 0) + int(result.get("copied") or 0)

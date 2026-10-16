@@ -2273,6 +2273,8 @@ class ApiIntegrationTests(unittest.TestCase):
         )
         restore_job = self.wait_for_job(restored.json()["job_id"])
         self.assertEqual(restore_job["status"], "complete")
+        # A restore may touch any save, so the whole folder is rescanned.
+        self.assertIn("syncthing_rescan", restore_job["result"])
         self.assertEqual(save.read_bytes(), b"version-one")
         self.assertEqual(manifest.read_bytes(), b"manifest-one")
         self.assertFalse(extra.exists())

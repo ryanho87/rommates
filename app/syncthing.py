@@ -169,6 +169,49 @@ class SyncthingService:
             error = "Syncthing returned an unreadable folder configuration"
         return {"requested": False, "folders": [], "error": error}
 
+    def rescan_saves(
+        self, source_root: Path, storage_key: str = "", subpaths: list[str] | None = None
+    ) -> dict[str, object]:
+        """Ask Syncthing to index save files ROMmates just wrote.
+
+        Syncthing's filesystem watcher does not reliably notice writes made from
+        another container, so a restored save can sit unindexed until the next
+        periodic scan -- long enough for a handheld's stale copy to win the
+        tiebreak. ``subpaths`` are directories below the save root to limit the
+        scan to; an empty list scans the whole folder. Best-effort, like
+        rescan_device: the files are already in place when this runs.
+        """
+        if not self.configured:
+            return {"requested": False, "folders": [], "error": "Syncthing API is not configured"}
+        try:
+            folder_id = self._save_folder_id(source_root, storage_key)
+            if not folder_id:
+                return {
+                    "requested": False,
+                    "folders": [],
+                    "error": "No Syncthing folder matched the save folder",
+                }
+            targets = sorted({sub.strip("/") for sub in (subpaths or []) if sub.strip("/")}) or [""]
+            rescanned = []
+            for subpath in targets:
+                parameters = {"folder": folder_id}
+                if subpath:
+                    parameters["sub"] = subpath
+                self._post(f"/rest/db/scan?{urlencode(parameters)}")
+                rescanned.append({"folder_id": folder_id, "subpath": subpath})
+            return {"requested": True, "folders": rescanned, "error": None}
+        except HTTPError as exc:
+            error = (
+                "Syncthing rejected the API key"
+                if exc.code in {401, 403}
+                else f"Syncthing API returned HTTP {exc.code}"
+            )
+        except (URLError, TimeoutError):
+            error = "Syncthing could not be reached"
+        except (OSError, ValueError, json.JSONDecodeError):
+            error = "Syncthing returned an unreadable folder configuration"
+        return {"requested": False, "folders": [], "error": error}
+
     def _syncthing_device_path(
         self, device_path: str, configured_folders: list[dict[str, Any]]
     ) -> str:
