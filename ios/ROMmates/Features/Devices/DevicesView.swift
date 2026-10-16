@@ -468,6 +468,9 @@ private struct DeviceDetailView: View {
     @State private var sort: GameSort = .nameAscending
     @State private var totalGames = 0
     @State private var loadingGames = true
+    @State private var loadingMoreGames = false
+    @State private var loadedQuery = ""
+    @State private var libraryPlatforms: [String] = []
     @State private var hasLoadedGames = false
     @State private var didInitializePlatform = false
     @State private var didRefreshInventory = false
@@ -493,6 +496,11 @@ private struct DeviceDetailView: View {
         self.didUpdate = didUpdate
         _scope = State(initialValue: group == nil ? "on_device" : "selected")
     }
+
+    // Large shelves (GBA alone is over 900 games) arrive a page at a time; the
+    // list asks for the next page when its loading row scrolls into view.
+    private static let gamePageSize = 100
+    private static let gamePageLimit = 1000
 
     private var isGroup: Bool { group != nil }
     private var targetName: String { group?.name ?? device.name }
@@ -533,11 +541,18 @@ private struct DeviceDetailView: View {
         return ROMTheme.violet
     }
     private var queryID: String { "\(scope)|\(platform)|\(sort.rawValue)" }
-    private var platformOptions: [String] {
+    // Platforms with games in the current view, which is where a new visit lands.
+    private var viewPlatformOptions: [String] {
         var values = Set(inventory?.platforms.map(\.platform) ?? [])
         values.formUnion(inventory?.presentPlatforms.map(\.platform) ?? [])
         values.formUnion(inventory?.selectedPlatforms.map(\.platform) ?? [])
         if !platform.isEmpty { values.insert(platform) }
+        return values.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+    }
+    // Every library platform stays pickable in every view. A roster with no PSX
+    // games must still offer PSX, or the games look missing rather than unselected.
+    private var platformOptions: [String] {
+        let values = Set(viewPlatformOptions).union(libraryPlatforms)
         return values.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
     }
     private var platformMetrics: [DeviceInventory.Platform] {
@@ -709,6 +724,7 @@ private struct DeviceDetailView: View {
                     platform: $platform,
                     sort: $sort,
                     platforms: platformOptions,
+                    defaultPlatform: viewPlatformOptions.first ?? "",
                     counts: Dictionary(
                         uniqueKeysWithValues: (inventory?.platforms ?? []).map { ($0.platform, $0.count) }
                     ),
@@ -750,6 +766,15 @@ private struct DeviceDetailView: View {
                             }
                             .padding(.vertical, 3)
                         }
+                    }
+                    if games.count < totalGames {
+                        HStack {
+                            Spacer()
+                            ProgressView()
+                            Spacer()
+                        }
+                        .listRowSeparator(.hidden)
+                        .task(id: games.count) { await loadMoreGames() }
                     }
                 }
             }
@@ -811,6 +836,7 @@ private struct DeviceDetailView: View {
             }
         }
         .task(id: queryID) { await load() }
+        .task { await loadLibraryPlatforms() }
         .task(id: hasLoadedGames) {
             guard hasLoadedGames, !didRefreshInventory else { return }
             didRefreshInventory = true
@@ -844,6 +870,12 @@ private struct DeviceDetailView: View {
         let requestedScope = scope
         let requestedPlatform = platform
         let requestedSort = sort
+        let requestedQuery = "\(requestedScope)|\(requestedPlatform)|\(requestedSort.rawValue)"
+        // A reload of the same view (after a toggle, apply or discard) keeps every
+        // page the reader has already scrolled to; a new view starts at one page.
+        let limit = requestedQuery == loadedQuery
+            ? min(Self.gamePageLimit, max(Self.gamePageSize, games.count))
+            : Self.gamePageSize
         if games.isEmpty && !refreshDeviceInventory { loadingGames = true }
         defer {
             if requestedScope == scope && requestedPlatform == platform && requestedSort == sort {
@@ -859,17 +891,18 @@ private struct DeviceDetailView: View {
                     .init(name: "platform", value: requestedPlatform),
                     .init(name: "sort", value: requestedSort.rawValue),
                     .init(name: "refresh_device_inventory", value: String(refreshDeviceInventory)),
-                    .init(name: "limit", value: "500"),
+                    .init(name: "limit", value: String(limit)),
                 ],
                 fresh: refreshDeviceInventory
             )
             guard requestedScope == scope, requestedPlatform == platform, requestedSort == sort else { return }
             games = response.items
             totalGames = response.total
+            loadedQuery = requestedQuery
             inventory = response.deviceInventory
             if !didInitializePlatform {
                 didInitializePlatform = true
-                if requestedPlatform.isEmpty, let first = platformOptions.first {
+                if requestedPlatform.isEmpty, let first = viewPlatformOptions.first {
                     platform = first
                     return
                 }
@@ -879,6 +912,45 @@ private struct DeviceDetailView: View {
                 await refreshOtherGroupInventories()
             }
             await loadSummaries()
+        } catch let error as URLError where error.code == .cancelled {
+        } catch is CancellationError {
+        } catch { model.report(error) }
+    }
+
+    private func loadLibraryPlatforms() async {
+        do {
+            let response: [PlatformSummary] = try await model.request("/api/platforms")
+            libraryPlatforms = response.map(\.platform)
+        } catch {
+            // The picker falls back to the platforms of the current view.
+        }
+    }
+
+    private func loadMoreGames() async {
+        guard !loadingGames, !loadingMoreGames, games.count < totalGames else { return }
+        let requestedScope = scope
+        let requestedPlatform = platform
+        let requestedSort = sort
+        let offset = games.count
+        loadingMoreGames = true
+        defer { loadingMoreGames = false }
+        do {
+            let response: GameList = try await model.request(
+                "/api/games",
+                query: [
+                    .init(name: "device_id", value: String(device.id)),
+                    .init(name: "device_scope", value: requestedScope),
+                    .init(name: "platform", value: requestedPlatform),
+                    .init(name: "sort", value: requestedSort.rawValue),
+                    .init(name: "limit", value: String(Self.gamePageSize)),
+                    .init(name: "offset", value: String(offset)),
+                ]
+            )
+            guard requestedScope == scope, requestedPlatform == platform, requestedSort == sort,
+                  games.count == offset else { return }
+            let existing = Set(games.map(\.id))
+            games.append(contentsOf: response.items.filter { !existing.contains($0.id) })
+            totalGames = response.total
         } catch let error as URLError where error.code == .cancelled {
         } catch is CancellationError {
         } catch { model.report(error) }
@@ -1305,16 +1377,13 @@ private struct DeviceCriteriaBar: View {
     @Binding var platform: String
     @Binding var sort: GameSort
     let platforms: [String]
+    let defaultPlatform: String
     let counts: [String: Int]
     let total: Int
     let loading: Bool
 
     private var platformLabel: String {
         platform.isEmpty ? "All platforms" : platform.uppercased()
-    }
-
-    private var defaultPlatform: String {
-        platforms.first ?? ""
     }
 
     private var hasCustomCriteria: Bool {
@@ -1332,11 +1401,7 @@ private struct DeviceCriteriaBar: View {
                     Picker("Platform", selection: $platform) {
                         Text("All platforms").tag("")
                         ForEach(platforms, id: \.self) { value in
-                            if let count = counts[value] {
-                                Text("\(value.uppercased()) (\(count.formatted()))").tag(value)
-                            } else {
-                                Text(value.uppercased()).tag(value)
-                            }
+                            Text("\(value.uppercased()) (\((counts[value] ?? 0).formatted()))").tag(value)
                         }
                     }
                 }
@@ -1482,7 +1547,14 @@ private struct DeviceGamesEmptyState: View {
     }
 
     private var message: String {
-        if !platform.isEmpty { return "Choose another platform or clear the filter." }
+        if !platform.isEmpty {
+            switch scope {
+            case "changes": return "No \(platform.uppercased()) changes are staged."
+            case "on_device", "selected":
+                return "Switch the view to Library to add \(platform.uppercased()) games."
+            default: return "Choose another platform or clear the filter."
+            }
+        }
         switch scope {
         case "changes": return "Your staged collection matches the device."
         case "on_device": return "Use Library to choose games for this device."
